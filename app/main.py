@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import copy
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
-from .metrics import build_snapshot, filter_prod_details, filter_sales_details
+from .metrics import build_snapshot, build_trends_light, filter_prod_details, filter_sales_details
 from .demo import demo_snapshot
 from .settings import settings
 from .storage import Storage
@@ -32,6 +33,8 @@ subscribers = set()
 refresh_trigger = asyncio.Event()
 last_error = None
 sync_tasks = {}
+trend_cache = {}
+trend_cache_time = {}
 
 
 def current_month():
@@ -44,6 +47,64 @@ def auth_hash():
 
 def is_public_path(path: str):
     return path in {"/login", "/health"} or path.startswith("/static/")
+
+def _default_dormant_stages(available):
+    if not available:return []
+    out=[]
+    for s in available:
+        n=str(s).strip().lower()
+        if 'черн' in n: continue
+        if 'в производство' in n: continue
+        if 'возврат' in n and 'потенциаль' not in n: continue
+        out.append(s)
+    return out
+
+def _dormant_stages(available):
+    raw=storage.get_setting('dormant_stages','').strip()
+    if raw:
+        try:
+            vals=json.loads(raw)
+            if isinstance(vals,list):return vals
+        except:pass
+    return _default_dormant_stages(available)
+
+def _apply_runtime(snap, details, month):
+    x=copy.deepcopy(snap)
+    x['plans']=storage.plan_dict(month)
+    x['team']=storage.team()
+    x['comments']=storage.comments(month)
+    x['manual_nps']=storage.manual_nps(month)
+    available=x.get('available_dormant_stages') or []
+    selected=_dormant_stages(available)
+    x['dormant_config']={'selected_stages':selected,'available_stages':available}
+    prod_details=(details or {}).get('production') or {}
+    all_rows=list(prod_details.get('dormant') or [])
+    rows=[r for r in all_rows if not selected or r.get('stage') in selected]
+    p=x.get('production',{});k=p.get('kpi',{})
+    k['dormant_all_count']=len(all_rows);k['dormant_all_amount']=round(sum(float(r.get('amount') or 0) for r in all_rows),2)
+    k['dormant_count']=len(rows);k['dormant_amount']=round(sum(float(r.get('amount') or 0) for r in rows),2)
+    with_reason=[r for r in rows if r.get('stuck_reasons')]
+    k['dormant_with_reason_pct']=round(len(with_reason)/len(rows)*100,1) if rows else 0
+    p.setdefault('dormant',{})['with_reason_count']=len(with_reason);p['dormant']['with_reason_pct']=k['dormant_with_reason_pct']
+    from collections import defaultdict
+    acc=defaultdict(int)
+    for r in rows:
+        for reason in r.get('stuck_reasons') or []:acc[reason]+=1
+    p['dormant']['reasons']=[{'name':a,'count':b,'pct':round(b/len(rows)*100,1) if rows else 0} for a,b in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
+    try:
+        from datetime import datetime as _dt
+        start=_dt.fromisoformat(x['month_start'].replace('Z','+00:00'));end=_dt.fromisoformat(x['month_end'].replace('Z','+00:00'));now=_dt.now(start.tzinfo)
+        expected=[];overdue=[]
+        for r in rows:
+            v=r.get('expected_close')
+            if not v:continue
+            try:d=_dt.fromisoformat(v.replace('Z','+00:00'))
+            except:continue
+            if start<=d<end:expected.append(r)
+            if d.date()<now.date():overdue.append(r)
+        k['dormant_expected_count']=len(expected);k['dormant_overdue_count']=len(overdue)
+    except:pass
+    return x
 
 
 async def ensure_snapshot(month: str, period: str, force=False):
@@ -140,7 +201,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.2.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -182,7 +243,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.1.0"}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.2.0"}
 
 
 @app.get("/api/snapshot")
@@ -195,7 +256,7 @@ async def api_snapshot(month: str = Query(default=""), period: str = Query(defau
         stale=time.monotonic()-cache_time.get(key,0)>=ttl
         if stale:
             schedule_snapshot(month,period,force=True)
-        return {**cache[key], "plans": storage.plan_dict(month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+        return {**_apply_runtime(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
     # Первый расчёт запускаем в фоне и НЕ держим HTTP-запрос открытым минутами.
     schedule_snapshot(month,period,force=False)
     return JSONResponse({
@@ -206,34 +267,86 @@ async def api_snapshot(month: str = Query(default=""), period: str = Query(defau
 
 @app.get("/api/drilldown")
 async def drilldown(
-    scope: str,
-    metric: str,
-    month: str = "",
-    period: str = "month",
-    period_type: str = "current",
-    manager: str | None = None,
-    group: str | None = None,
-    source: str | None = None,
-    product: str | None = None,
-    expert: str | None = None,
-    stage: str | None = None,
-    reason: str | None = None,
-    week: int | None = None,
+    scope: str, metric: str, month: str = "", period: str = "month", period_type: str = "current",
+    manager: str | None = None, group: str | None = None, source: str | None = None, product: str | None = None,
+    expert: str | None = None, stage: str | None = None, reason: str | None = None, week: int | None = None,
+    offset: int = 0, limit: int = 100,
 ):
-    month = month or current_month()
-    await ensure_snapshot(month, period)
-    key=(month,period)
+    month = month or current_month(); key=(month,period)
+    if key not in detail_cache:
+        schedule_snapshot(month,period,force=False)
+        return JSONResponse({"loading":True,"message":"Расшифровка готовится вместе со snapshot"},status_code=202)
     details=detail_cache.get(key,{})
     if scope == "sales":
         rows=filter_sales_details(details.get("sales",{}), metric, period_type, manager, group, source, product, week, stage)
     elif scope == "production":
         rows=filter_prod_details(details.get("production",{}), metric, expert, product, stage, reason)
-    else:
-        raise HTTPException(400,"scope должен быть sales или production")
-    # Ограничиваем размер ответа, но отдаем общее число.
+        if metric.startswith('dormant') or metric=='dormant_count':
+            selected=_dormant_stages((cache.get(key,{}) or {}).get('available_dormant_stages') or [])
+            if selected:rows=[r for r in rows if r.get('stage') in selected]
+    else: raise HTTPException(400,"scope должен быть sales или production")
     rows=sorted(rows,key=lambda r:(r.get("close") or r.get("created") or "", r.get("id") or ""),reverse=True)
-    return {"count":len(rows),"rows":rows[:1000]}
+    limit=max(20,min(int(limit),200));offset=max(0,int(offset))
+    return {"count":len(rows),"offset":offset,"limit":limit,"rows":rows[offset:offset+limit]}
 
+
+
+class TeamBody(BaseModel):
+    role: str
+    name: str
+    admin_key: str = ""
+
+class CommentBody(BaseModel):
+    month: str
+    scope: str
+    metric: str
+    comment: str = ""
+
+class NpsBody(BaseModel):
+    month: str
+    expert: str
+    value: float
+    note: str = ""
+    admin_key: str = ""
+
+class DormantConfigBody(BaseModel):
+    stages: list[str]
+    admin_key: str = ""
+
+@app.get('/api/team')
+async def get_team(): return storage.team()
+
+@app.post('/api/team')
+async def add_team(body: TeamBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
+    storage.add_team_member(body.role,body.name);return {'ok':True,'team':storage.team()}
+
+@app.delete('/api/team')
+async def del_team(role:str,name:str,admin_key:str=''):
+    if settings.admin_key and not secrets.compare_digest(admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
+    storage.remove_team_member(role,name);return {'ok':True,'team':storage.team()}
+
+@app.put('/api/comment')
+async def save_comment(body: CommentBody):
+    storage.set_comment(body.month,body.scope,body.metric,body.comment);return {'ok':True,'comments':storage.comments(body.month)}
+
+@app.put('/api/nps')
+async def save_nps(body: NpsBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
+    if body.value<0 or body.value>10:raise HTTPException(400,'NPS должен быть от 0 до 10')
+    storage.set_manual_nps(body.month,body.expert,body.value,body.note);return {'ok':True,'manual_nps':storage.manual_nps(body.month)}
+
+@app.put('/api/dormant-config')
+async def save_dormant_config(body: DormantConfigBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
+    storage.set_setting('dormant_stages',json.dumps(body.stages,ensure_ascii=False));return {'ok':True,'stages':body.stages}
+
+@app.get('/api/dynamics')
+async def dynamics(month:str='',months:int=6):
+    month=month or current_month();months=max(3,min(int(months),12));key=(month,months)
+    if key in trend_cache and time.monotonic()-trend_cache_time.get(key,0)<600:return {'ok':True,'rows':trend_cache[key]}
+    rows=await build_trends_light(client,month,months,settings.timezone)
+    trend_cache[key]=rows;trend_cache_time[key]=time.monotonic();return {'ok':True,'rows':rows}
 
 class PlanBody(BaseModel):
     month: str

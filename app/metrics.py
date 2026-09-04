@@ -768,6 +768,8 @@ async def build_snapshot(client, month_key: str, period: str, tz_name: str):
         "ok":True,"updated_at":updated_at,"month_key":month_key,"period":period,
         "month_start":start.isoformat(),"month_end":end.isoformat(),"pace":month_pace(month_key,tz_name),
         "sales":sales,"production":production,"_details":details,
+        "available_users": sorted(set((meta.get("users") or {}).values())),
+        "available_dormant_stages": sorted(set((meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {}).values())),
         "metric_status": {
             "upsells": {"connected": False, "note":"В Bitrix не найдено отдельное надежное поле «Допродажа» — требуется mapping."},
             "upsell_bonus": {"connected": False, "note":"Расчет премии за допродажи подключится после mapping поля допродажи."},
@@ -820,4 +822,65 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
     if stage: rows=[r for r in rows if r.get("stage")==stage]
     if reason:
         rows=[r for r in rows if reason in (r.get("stuck_reasons") or []) or r.get("return_reason")==reason]
+    return rows
+
+
+async def build_trends_light(client, end_month: str, months: int, tz_name: str):
+    tz=ZoneInfo(tz_name)
+    y,m=map(int,end_month.split('-'))
+    keys=[]
+    for i in range(months-1,-1,-1):
+        yy=y; mm=m-i
+        while mm<=0: yy-=1; mm+=12
+        while mm>12: yy+=1; mm-=12
+        keys.append(f"{yy:04d}-{mm:02d}")
+    start=month_bounds(keys[0],tz_name)[0]
+    end=month_bounds(keys[-1],tz_name)[1]
+    sales_created_task=client.deal_list({"CATEGORY_ID":0,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
+    sales_won_task=client.deal_list({"CATEGORY_ID":0,"STAGE_ID":SALES_WON,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    leads_task=client.lead_list({">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},LEAD_SELECT)
+    prod_new_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
+    prod_closed_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,"STAGE_ID":PROD_WON,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    prod_returns_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,"STAGE_ID":PROD_RETURN,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    sc,sw,leads,pn,pc,pr=await asyncio.gather(sales_created_task,sales_won_task,leads_task,prod_new_task,prod_closed_task,prod_returns_task)
+    out={k:{"month":k,"deals":0,"sales":0,"sales_amount":0.0,"avg_check":0.0,"leads":0,"qualified":0,
+            "prod_new":0,"prod_new_amount":0.0,"prod_closed":0,"prod_closed_amount":0.0,"prod_conversion":0.0,
+            "avg_prod_days":0.0,"returns":0} for k in keys}
+    def key_of(v):
+        d=parse_dt(v,tz);return d.strftime('%Y-%m') if d else None
+    for d in sc or []:
+        k=key_of(d.get('DATE_CREATE')); 
+        if k in out: out[k]['deals']+=1
+    for d in sw or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out: out[k]['sales']+=1; out[k]['sales_amount']+=money(d)
+    qneedle='качественный лид'
+    for l in leads or []:
+        k=key_of(l.get('DATE_CREATE'))
+        if k in out:
+            out[k]['leads']+=1
+            if str(l.get('STATUS_ID') or '').upper()=='CONVERTED':out[k]['qualified']+=1
+    for d in pn or []:
+        k=key_of(d.get('DATE_CREATE'))
+        if k in out: out[k]['prod_new']+=1; out[k]['prod_new_amount']+=money(d)
+    days_by={k:[] for k in keys}; period_closed={k:0 for k in keys}
+    for d in pc or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out:
+            out[k]['prod_closed']+=1; out[k]['prod_closed_amount']+=money(d)
+            s=parse_dt(d.get(F_PROD_START),tz); c=parse_dt(d.get('CLOSEDATE'),tz)
+            bd=business_days(s,c)
+            if bd is not None:days_by[k].append(bd)
+            if key_of(d.get('DATE_CREATE'))==k:period_closed[k]+=1
+    for d in pr or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out: out[k]['returns']+=1
+    rows=[]
+    for k in keys:
+        x=out[k]
+        x['sales_amount']=round(x['sales_amount'],2);x['prod_new_amount']=round(x['prod_new_amount'],2);x['prod_closed_amount']=round(x['prod_closed_amount'],2)
+        x['avg_check']=round(x['sales_amount']/x['sales'],2) if x['sales'] else 0
+        x['prod_conversion']=pct(period_closed[k],x['prod_new'])
+        x['avg_prod_days']=round(sum(days_by[k])/len(days_by[k]),1) if days_by[k] else 0
+        rows.append(x)
     return rows

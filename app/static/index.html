@@ -26,7 +26,8 @@
     <button class="tab" data-view="production">Производство</button>
     <button class="tab" data-view="experts">Эксперты</button>
     <button class="tab" data-view="risks">Зависшие / риски</button>
-    <button class="tab" data-view="plans">Планы</button>
+    <button class="tab" data-view="dynamics">Динамика</button>
+    <button class="tab" data-view="plans">Планы / настройки</button>
   </nav>
 
   <main>
@@ -35,6 +36,7 @@
     <section id="production" class="view"></section>
     <section id="experts" class="view"></section>
     <section id="risks" class="view"></section>
+    <section id="dynamics" class="view"></section>
     <section id="plans" class="view"></section>
   </main>
 </div>
@@ -60,6 +62,9 @@
   </div>
 </dialog>
 
+
+<dialog id="commentDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">КОММЕНТАРИЙ</div><h2 id="commentTitle">Комментарий к показателю</h2></div><button class="icon" id="closeComment">×</button></div><textarea id="commentText" rows="6" placeholder="Оставьте пояснение к значению"></textarea><div class="admin-row"><button class="btn primary" id="saveComment">Сохранить</button></div></div></dialog>
+<dialog id="npsDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">NPS</div><h2 id="npsTitle">NPS эксперта</h2></div><button class="icon" id="closeNps">×</button></div><div class="plan-field"><label>NPS, 0–10</label><input id="npsValue" type="number" min="0" max="10" step="0.1"></div><div class="plan-field"><label>Комментарий</label><input id="npsNote"></div><div class="admin-row"><label>ADMIN_KEY<input id="npsAdminKey" type="password"></label><button class="btn primary" id="saveNps">Сохранить</button></div></div></dialog>
 <script src="/static/app.js"></script>
 </body>
 </html>
