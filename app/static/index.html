@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0e12">
+  <title>MAVIS · Операционный дашборд</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand"><div class="eyebrow">MAVIS GROUP · LIVE</div><h1>Операционный дашборд</h1></div>
+    <div class="controls">
+      <label class="compact">Месяц<input id="month" type="month"></label>
+      <label class="compact">Период<select id="period"><option value="month">Месяц</option><option value="this_week">Текущая неделя</option><option value="last_week">Прошедшая неделя</option></select></label>
+      <button id="refreshBtn" class="btn ghost">Обновить</button>
+      <button id="tvBtn" class="btn ghost">TV</button>
+      <div class="live"><span id="liveDot"></span><span id="liveText">Загрузка…</span></div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="overview">Общий экран</button>
+    <button class="tab" data-view="sales">Продажи</button>
+    <button class="tab" data-view="production">Производство</button>
+    <button class="tab" data-view="experts">Эксперты</button>
+    <button class="tab" data-view="risks">Зависшие / риски</button>
+    <button class="tab" data-view="plans">Планы</button>
+  </nav>
+
+  <main>
+    <section id="overview" class="view active"></section>
+    <section id="sales" class="view"></section>
+    <section id="production" class="view"></section>
+    <section id="experts" class="view"></section>
+    <section id="risks" class="view"></section>
+    <section id="plans" class="view"></section>
+  </main>
+</div>
+
+<dialog id="drillDialog" class="drawer-dialog">
+  <div class="drawer">
+    <div class="drawer-head"><div><div class="eyebrow">РАСШИФРОВКА</div><h2 id="drillTitle">Детализация</h2><div id="drillSubtitle" class="muted"></div></div><button class="icon" id="closeDrill">×</button></div>
+    <div class="drawer-tools"><input id="drillSearch" placeholder="Поиск по списку"><span id="drillCount" class="badge"></span></div>
+    <div id="drillBody"></div>
+  </div>
+</dialog>
+
+<dialog id="planDialog">
+  <div class="modal-card">
+    <div class="modal-head"><div><div class="eyebrow">ПЛАНЫ</div><h2>Редактирование плана</h2></div><button class="icon" id="closePlan">×</button></div>
+    <div class="plan-context">
+      <label>Раздел<select id="planScope"><option value="sales">Продажи</option><option value="production">Производство</option></select></label>
+      <label>Уровень<select id="planContextType"><option value="overall">Общий</option><option value="manager">Менеджер</option><option value="source_group">Группа источников</option><option value="source">Точный источник</option><option value="product">Продукт / категория</option><option value="expert">Эксперт</option></select></label>
+      <label>Объект<select id="planContextKey"></select></label>
+    </div>
+    <div id="planForm" class="plan-form"></div>
+    <div class="admin-row"><label>ADMIN_KEY<input id="adminKey" type="password" autocomplete="off"></label><button class="btn primary" id="savePlan">Сохранить</button></div>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
