@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b0e12">
+  <meta name="theme-color" content="#f4f6f8">
   <title>MAVIS · Операционный дашборд</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -13,7 +13,8 @@
     <div class="brand"><div class="eyebrow">MAVIS GROUP · LIVE</div><h1>Операционный дашборд</h1></div>
     <div class="controls">
       <label class="compact">Месяц<select id="month" aria-label="Месяц"></select></label>
-      <label class="compact">Период<select id="period"><option value="month">Месяц</option><option value="this_week">Текущая неделя</option><option value="last_week">Прошедшая неделя</option></select></label>
+      <label class="compact">Период производства<select id="period"><option value="month">Месяц</option><option value="this_week">Текущая неделя</option><option value="last_week">Прошедшая неделя</option><option value="custom">Свой период</option></select></label>
+      <div id="customPeriod" class="custom-period hidden"><label class="compact">С<input id="customStart" type="date"></label><label class="compact">По<input id="customEnd" type="date"></label></div>
       <button id="refreshBtn" class="btn ghost">Обновить</button>
       <button id="tvBtn" class="btn ghost">TV</button>
       <div class="live"><span id="liveDot"></span><span id="liveText">Загрузка…</span></div>
@@ -27,6 +28,7 @@
     <button class="tab" data-view="experts">Эксперты</button>
     <button class="tab" data-view="risks">Зависшие / риски</button>
     <button class="tab" data-view="dynamics">Динамика</button>
+    <button class="tab" data-view="forecast">Прогноз месяца</button>
     <button class="tab" data-view="plans">Планы / настройки</button>
   </nav>
 
@@ -37,6 +39,7 @@
     <section id="experts" class="view"></section>
     <section id="risks" class="view"></section>
     <section id="dynamics" class="view"></section>
+    <section id="forecast" class="view"></section>
     <section id="plans" class="view"></section>
   </main>
 </div>

@@ -15,6 +15,8 @@ class Settings:
     view_password: str = os.getenv("VIEW_PASSWORD","").strip()
     data_dir: Path = Path(os.getenv("DATA_DIR","./data")).expanduser()
     demo_mode: bool = os.getenv("DEMO_MODE","false").lower() in {"1","true","yes","y"}
+    supabase_url: str = os.getenv("SUPABASE_URL","").strip()
+    supabase_key: str = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY","")).strip()
 
 settings=Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)

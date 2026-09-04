@@ -1,136 +1,241 @@
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
+from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 DEFAULT_MANAGERS = ["Ирина Богомольцева", "Роман Авсеенко"]
-DEFAULT_EXPERTS = ["Мария Баженова", "Татьяна Куровская"]
+# Актуальные исполнители, найденные в аудите воронки Производство.
+# Состав можно менять в интерфейсе без правки кода.
+DEFAULT_EXPERTS = ["Екатерина Николаева", "Елизавета Горбатова", "Ольга Панькова"]
+
 
 class Storage:
-    def __init__(self,path:Path):
-        self.path=path
+    """Persistent settings storage.
+
+    If SUPABASE_URL + SUPABASE_KEY are configured, Supabase KV is the source of truth.
+    Otherwise SQLite is used as a local fallback (ephemeral on Render Free).
+    """
+
+    def __init__(self, path: Path, supabase_url: str = "", supabase_key: str = ""):
+        self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._init()
+        self.supabase_url = (supabase_url or "").rstrip("/")
+        self.supabase_key = (supabase_key or "").strip()
+        self.remote_enabled = bool(self.supabase_url and self.supabase_key)
+        self.last_remote_error = ""
+        self.mem = {}
+        self._init_local()
+
+    @property
+    def backend_name(self) -> str:
+        return "Supabase" if self.remote_enabled and not self.last_remote_error else ("Supabase (fallback SQLite)" if self.remote_enabled else "SQLite local")
+
     def connect(self):
-        c=sqlite3.connect(self.path)
-        c.row_factory=sqlite3.Row
+        c = sqlite3.connect(self.path)
+        c.row_factory = sqlite3.Row
         return c
-    def _init(self):
+
+    def _init_local(self):
         with self.connect() as c:
             c.execute("""
-            CREATE TABLE IF NOT EXISTS plans_v2(
-              month TEXT NOT NULL,
-              scope TEXT NOT NULL,
-              context_type TEXT NOT NULL DEFAULT 'overall',
-              context_key TEXT NOT NULL DEFAULT '',
-              metric TEXT NOT NULL,
-              value REAL NOT NULL DEFAULT 0,
-              PRIMARY KEY(month,scope,context_type,context_key,metric)
-            )""")
-            c.execute("""
-            CREATE TABLE IF NOT EXISTS field_mapping(
-              name TEXT PRIMARY KEY,
-              field_code TEXT NOT NULL DEFAULT ''
-            )""")
-            c.execute("""
-            CREATE TABLE IF NOT EXISTS team_members(
-              role TEXT NOT NULL,
-              name TEXT NOT NULL,
-              sort_order INTEGER NOT NULL DEFAULT 100,
-              PRIMARY KEY(role,name)
-            )""")
-            c.execute("""
-            CREATE TABLE IF NOT EXISTS tile_comments(
-              month TEXT NOT NULL,
-              scope TEXT NOT NULL,
-              metric TEXT NOT NULL,
-              comment TEXT NOT NULL DEFAULT '',
-              updated_at TEXT NOT NULL DEFAULT '',
-              PRIMARY KEY(month,scope,metric)
-            )""")
-            c.execute("""
-            CREATE TABLE IF NOT EXISTS manual_nps(
-              month TEXT NOT NULL,
-              expert TEXT NOT NULL,
-              value REAL NOT NULL,
-              note TEXT NOT NULL DEFAULT '',
-              updated_at TEXT NOT NULL DEFAULT '',
-              PRIMARY KEY(month,expert)
-            )""")
-            c.execute("""
-            CREATE TABLE IF NOT EXISTS app_settings(
+            CREATE TABLE IF NOT EXISTS kv_local(
               key TEXT PRIMARY KEY,
-              value TEXT NOT NULL DEFAULT ''
+              value TEXT NOT NULL DEFAULT '{}',
+              updated_at TEXT NOT NULL DEFAULT ''
             )""")
             c.commit()
-        self._seed_team()
-    def _seed_team(self):
+
+    def _headers(self):
+        return {
+            "apikey": self.supabase_key,
+            "Authorization": f"Bearer {self.supabase_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _remote_get(self, key: str):
+        if not self.remote_enabled:
+            return None
+        url = f"{self.supabase_url}/rest/v1/mavis_dashboard_kv"
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                r = client.get(url, params={"select": "value", "key": f"eq.{key}", "limit": "1"}, headers=self._headers())
+                r.raise_for_status()
+                rows = r.json()
+            self.last_remote_error = ""
+            if rows:
+                return rows[0].get("value")
+            return None
+        except Exception as e:
+            self.last_remote_error = str(e)
+            return None
+
+    def _remote_set(self, key: str, value: Any) -> bool:
+        if not self.remote_enabled:
+            return False
+        url = f"{self.supabase_url}/rest/v1/mavis_dashboard_kv"
+        headers = self._headers()
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+        payload = {
+            "key": key,
+            "value": value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                r = client.post(url, params={"on_conflict": "key"}, headers=headers, json=payload)
+                r.raise_for_status()
+            self.last_remote_error = ""
+            return True
+        except Exception as e:
+            self.last_remote_error = str(e)
+            return False
+
+    def _local_get(self, key: str, default=None):
         with self.connect() as c:
-            for i,n in enumerate(DEFAULT_MANAGERS):
-                c.execute("INSERT OR IGNORE INTO team_members(role,name,sort_order) VALUES('manager',?,?)",(n,i))
-            for i,n in enumerate(DEFAULT_EXPERTS):
-                c.execute("INSERT OR IGNORE INTO team_members(role,name,sort_order) VALUES('expert',?,?)",(n,i))
+            row = c.execute("SELECT value FROM kv_local WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row["value"])
+        except Exception:
+            return default
+
+    def _local_set(self, key: str, value: Any):
+        ts = datetime.now(timezone.utc).isoformat()
+        raw = json.dumps(value, ensure_ascii=False)
+        with self.connect() as c:
+            c.execute("""INSERT INTO kv_local(key,value,updated_at) VALUES(?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""", (key, raw, ts))
             c.commit()
-    def get_plans(self,month,scope=None,context_type=None,context_key=None):
-        sql="SELECT * FROM plans_v2 WHERE month=?"; args=[month]
-        if scope is not None: sql+=" AND scope=?"; args.append(scope)
-        if context_type is not None: sql+=" AND context_type=?"; args.append(context_type)
-        if context_key is not None: sql+=" AND context_key=?"; args.append(context_key)
-        with self.connect() as c: return [dict(r) for r in c.execute(sql,args)]
-    def plan_dict(self,month):
-        out={}
-        for r in self.get_plans(month):
-            key=f"{r['scope']}|{r['context_type']}|{r['context_key']}"
-            out.setdefault(key,{})[r['metric']]=float(r['value'] or 0)
+
+    def _get(self, key: str, default):
+        if key in self.mem:
+            return self.mem[key]
+        if self.remote_enabled:
+            value = self._remote_get(key)
+            if value is not None:
+                self._local_set(key, value)  # warm fallback cache
+                self.mem[key] = value
+                return value
+        value = self._local_get(key, default)
+        self.mem[key] = value
+        return value
+
+    def _set(self, key: str, value: Any):
+        # Always keep a local mirror; Supabase remains durable source when configured.
+        self.mem[key] = value
+        self._local_set(key, value)
+        if self.remote_enabled:
+            self._remote_set(key, value)
+
+    # ---------- Plans ----------
+    def plan_dict(self, month: str):
+        value = self._get(f"plans:{month}", {})
+        return value if isinstance(value, dict) else {}
+
+    def get_plans(self, month, scope=None, context_type=None, context_key=None):
+        out = []
+        for ctx, values in self.plan_dict(month).items():
+            parts = (ctx.split("|", 2) + ["", "", ""])[:3]
+            s, ctype, ckey = parts
+            if scope is not None and s != scope:
+                continue
+            if context_type is not None and ctype != context_type:
+                continue
+            if context_key is not None and ckey != context_key:
+                continue
+            for metric, value in (values or {}).items():
+                out.append({"month": month, "scope": s, "context_type": ctype, "context_key": ckey, "metric": metric, "value": value})
         return out
-    def set_plans(self,month,scope,context_type,context_key,values):
-        with self.connect() as c:
-            for metric,value in values.items():
-                try:value=float(value or 0)
-                except:continue
-                c.execute("""INSERT INTO plans_v2(month,scope,context_type,context_key,metric,value)
-                VALUES(?,?,?,?,?,?) ON CONFLICT(month,scope,context_type,context_key,metric)
-                DO UPDATE SET value=excluded.value""",(month,scope,context_type,context_key,metric,value))
-            c.commit()
+
+    def set_plans(self, month, scope, context_type, context_key, values):
+        all_plans = self.plan_dict(month)
+        ctx = f"{scope}|{context_type}|{context_key or ''}"
+        current = dict(all_plans.get(ctx) or {})
+        for metric, value in values.items():
+            try:
+                current[metric] = float(value or 0)
+            except Exception:
+                continue
+        all_plans[ctx] = current
+        self._set(f"plans:{month}", all_plans)
+
+    # ---------- Field mappings ----------
     def get_mappings(self):
-        with self.connect() as c:return {r['name']:r['field_code'] for r in c.execute('SELECT * FROM field_mapping')}
-    def set_mapping(self,name,field_code):
-        with self.connect() as c:
-            c.execute("""INSERT INTO field_mapping(name,field_code) VALUES(?,?)
-            ON CONFLICT(name) DO UPDATE SET field_code=excluded.field_code""",(name,field_code or ''));c.commit()
+        value = self._get("mappings", {})
+        return value if isinstance(value, dict) else {}
+
+    def set_mapping(self, name, field_code):
+        value = self.get_mappings()
+        value[name] = field_code or ""
+        self._set("mappings", value)
+
+    # ---------- Team ----------
     def team(self):
-        out={'managers':[],'experts':[]}
-        with self.connect() as c:
-            rows=list(c.execute('SELECT role,name FROM team_members ORDER BY role,sort_order,name'))
-        for r in rows:
-            if r['role']=='manager':out['managers'].append(r['name'])
-            elif r['role']=='expert':out['experts'].append(r['name'])
-        return out
-    def add_team_member(self,role,name):
-        if role not in {'manager','expert'}:raise ValueError('bad role')
-        with self.connect() as c:
-            m=c.execute('SELECT COALESCE(MAX(sort_order),0)+1 FROM team_members WHERE role=?',(role,)).fetchone()[0]
-            c.execute('INSERT OR IGNORE INTO team_members(role,name,sort_order) VALUES(?,?,?)',(role,name,m));c.commit()
-    def remove_team_member(self,role,name):
-        with self.connect() as c:c.execute('DELETE FROM team_members WHERE role=? AND name=?',(role,name));c.commit()
-    def comments(self,month):
-        with self.connect() as c:rows=list(c.execute('SELECT scope,metric,comment,updated_at FROM tile_comments WHERE month=?',(month,)))
-        return {f"{r['scope']}|{r['metric']}":{'comment':r['comment'],'updated_at':r['updated_at']} for r in rows}
-    def set_comment(self,month,scope,metric,comment):
-        ts=datetime.utcnow().isoformat(timespec='seconds')+'Z'
-        with self.connect() as c:
-            c.execute("""INSERT INTO tile_comments(month,scope,metric,comment,updated_at) VALUES(?,?,?,?,?)
-            ON CONFLICT(month,scope,metric) DO UPDATE SET comment=excluded.comment,updated_at=excluded.updated_at""",(month,scope,metric,comment or '',ts));c.commit()
-    def manual_nps(self,month):
-        with self.connect() as c:rows=list(c.execute('SELECT expert,value,note,updated_at FROM manual_nps WHERE month=?',(month,)))
-        return {r['expert']:{'value':float(r['value']),'note':r['note'],'updated_at':r['updated_at']} for r in rows}
-    def set_manual_nps(self,month,expert,value,note=''):
-        ts=datetime.utcnow().isoformat(timespec='seconds')+'Z'
-        with self.connect() as c:
-            c.execute("""INSERT INTO manual_nps(month,expert,value,note,updated_at) VALUES(?,?,?,?,?)
-            ON CONFLICT(month,expert) DO UPDATE SET value=excluded.value,note=excluded.note,updated_at=excluded.updated_at""",(month,expert,float(value),note or '',ts));c.commit()
-    def get_setting(self,key,default=''):
-        with self.connect() as c:r=c.execute('SELECT value FROM app_settings WHERE key=?',(key,)).fetchone()
-        return r['value'] if r else default
-    def set_setting(self,key,value):
-        with self.connect() as c:
-            c.execute("""INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value""",(key,value or ''));c.commit()
+        default = {"managers": list(DEFAULT_MANAGERS), "experts": list(DEFAULT_EXPERTS)}
+        value = self._get("team", default)
+        if not isinstance(value, dict):
+            value = default
+        return {
+            "managers": list(value.get("managers") or []),
+            "experts": list(value.get("experts") or []),
+        }
+
+    def add_team_member(self, role, name):
+        if role not in {"manager", "expert"}:
+            raise ValueError("bad role")
+        team = self.team()
+        key = "managers" if role == "manager" else "experts"
+        if name and name not in team[key]:
+            team[key].append(name)
+        self._set("team", team)
+
+    def remove_team_member(self, role, name):
+        team = self.team()
+        key = "managers" if role == "manager" else "experts"
+        team[key] = [x for x in team[key] if x != name]
+        self._set("team", team)
+
+    # ---------- Tile comments ----------
+    def comments(self, month):
+        value = self._get(f"comments:{month}", {})
+        return value if isinstance(value, dict) else {}
+
+    def set_comment(self, month, scope, metric, comment):
+        value = self.comments(month)
+        value[f"{scope}|{metric}"] = {
+            "comment": comment or "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._set(f"comments:{month}", value)
+
+    # ---------- Manual NPS ----------
+    def manual_nps(self, month):
+        value = self._get(f"nps:{month}", {})
+        return value if isinstance(value, dict) else {}
+
+    def set_manual_nps(self, month, expert, value, note=""):
+        data = self.manual_nps(month)
+        data[expert] = {
+            "value": float(value),
+            "note": note or "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._set(f"nps:{month}", data)
+
+    # ---------- Generic settings ----------
+    def _settings(self):
+        value = self._get("settings", {})
+        return value if isinstance(value, dict) else {}
+
+    def get_setting(self, key, default=""):
+        return self._settings().get(key, default)
+
+    def set_setting(self, key, value):
+        data = self._settings()
+        data[key] = value
+        self._set("settings", data)

@@ -41,3 +41,15 @@ https://<service>.onrender.com/api/bitrix/event?token=<BITRIX_EVENT_TOKEN>
 Открыть URL в Chrome → TV → полноэкранный режим браузера.
 
 TV скрывает управляющие вкладки/фильтры и увеличивает ключевые цифры. Обычный режим остаётся для руководителя и аналитики.
+
+## v2.3: Supabase для планов / комментариев / NPS
+
+На Render Free локальная файловая система временная. Чтобы ручные данные не удалялись после redeploy, настрой Supabase:
+
+1. Создай проект в Supabase.
+2. Выполни `SUPABASE_SQL.sql` в SQL Editor.
+3. В Render -> Environment добавь `SUPABASE_URL` и `SUPABASE_KEY`.
+4. Redeploy.
+5. Проверь `/health`: поле `storage` должно быть `Supabase`.
+
+Сам факт и аналитика по-прежнему берутся напрямую из Bitrix. Supabase хранит только ручные настройки приложения.

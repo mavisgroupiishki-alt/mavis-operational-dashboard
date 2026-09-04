@@ -16,11 +16,11 @@ const SALES_LABELS={
   paid_amount:["Оплачено","money"],net_revenue:["Чистая выручка","money"]
 };
 const PROD_LABELS={
-  closed_amount:["Закрытые акты","money"],closed_count:["Закрытые продукты","num"],new_count:["Новые от ОП","num"],new_amount:["Сумма новых","money"],
-  period_closed_count:["Закрыто из новых","num"],period_closed_amount:["Сумма закрытых из новых","money"],new_to_success_pct:["Новые → успех","pct"],avg_check:["Средний чек","money"],
-  capacity_count:["Ёмкость, шт","num"],capacity_amount:["Ёмкость, BYN","money"],returns_count:["Возвраты","num"],returns_amount:["Сумма возвратов","money"],
-  avg_production_days:["Срок производства","days"],avg_full_cycle_days:["Полный цикл","days"],avg_deviation_days:["Отклонение от нормы","days"],within_norm_pct:["В нормативе","pct"],base_bonus:["Базовая премия","money"],
-  nps_avg:["NPS","num"],act_share_pct:["С актом","pct"],inactive_count:["Без изменений 7+ дней","num"],dormant_count:["Зависшие","num"],returned_to_production:["Вернулось в производство","num"],dormant_with_reason_pct:["Причина зависания заполнена","pct"]
+  closed_count:["Закрыто продуктов","num"],closed_amount:["Сумма закрытых","money"],avg_check:["Средний чек","money"],
+  new_count:["Пришло за период","num"],new_amount:["Сумма пришедших","money"],period_closed_count:["Закрыто из пришедших","num"],period_closed_amount:["Сумма закрытых из пришедших","money"],new_to_success_pct:["Конверсия периода","pct"],
+  capacity_count:["Ёмкость периода, шт","num"],capacity_amount:["Ёмкость периода, BYN","money"],returns_count:["Возвраты","num"],returns_amount:["Сумма возвратов","money"],
+  avg_production_days:["Срок производства","days"],avg_deviation_days:["Отклонение от нормы","days"],within_norm_pct:["В нормативе","pct"],
+  nps_avg:["NPS вручную","num"],act_share_pct:["С актом","pct"],dormant_count:["Зависшие по ожидаемой дате","num"],returned_to_production:["Вернулось в производство","num"],dormant_with_reason_pct:["Причина заполнена","pct"]
 };
 
 const $=s=>document.querySelector(s);
@@ -34,11 +34,11 @@ const attr=s=>esc(String(s??""));
 function format(v,type){return type==="money"?money(v):type==="pct"?pct(v):type==="days"?days(v):fmt(v)}
 
 function selectedManagers(){return state?.team?.managers||["Ирина Богомольцева","Роман Авсеенко"]}
-function selectedExperts(){return state?.team?.experts||["Мария Баженова","Татьяна Куровская"]}
+function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова"]}
 function managers(){const s=new Set(selectedManagers());return (state?.sales?.managers||[]).filter(x=>s.has(x.name))}
 function experts(){const s=new Set(selectedExperts());return (state?.production?.experts||[]).filter(x=>s.has(x.name))}
-function expertNps(e){const m=state?.manual_nps?.[e.name];return m?Number(m.value):Number(e.nps_avg||0)}
-function overallManualNps(){const vals=experts().map(expertNps).filter(v=>v>0);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:Number(state?.production?.kpi?.nps_avg||0)}
+function expertNps(e){const m=state?.manual_nps?.[e.name];return m?Number(m.value):0}
+function overallManualNps(){const vals=experts().filter(e=>state?.manual_nps?.[e.name]).map(expertNps);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:0}
 function getComment(scope,metric){return state?.comments?.[`${scope}|${metric}`]?.comment||""}
 
 function getPlan(scope,metric,contextType="overall",contextKey=""){
@@ -86,7 +86,7 @@ function renderOverview(){
   </div>
   <div class="grid-3">
     ${panel("Зависшие",`<div class="risk-number">${tdLink(p.dormant_count,"production","dormant_count","num")}</div><div class="muted">${tdLink(p.dormant_amount,"production","dormant_count","money")}</div>`)}
-    ${panel("Без изменений 7+ дней",`<div class="risk-number">${tdLink(p.inactive_count,"production","inactive_count","num")}</div><div class="muted">${money(p.inactive_amount)}</div>`)}
+    ${panel("Конверсия производства",`<div class="risk-number">${pct(p.new_to_success_pct)}</div><div class="muted">из пришедших в выбранном периоде</div>`)}
     ${panel("Вернулось в производство",`<div class="risk-number">${tdLink(p.returned_to_production,"production","returned_to_production","num")}</div><div class="muted">${money(p.returned_to_production_amount)}</div>`)}
   </div>`;
 }
@@ -141,16 +141,21 @@ function prodProductTable(){
   return `<div class="scroll-x"><table><thead><tr><th>Продукт</th><th>Сложность</th><th class="num">Норма</th><th class="num">Новых</th><th class="num">Новых BYN</th><th class="num">Закрыто</th><th class="num">Закрыто BYN</th><th class="num">План</th><th class="num">% плана</th><th class="num">Конв.</th><th class="num">Ср чек</th><th class="num">Срок</th><th class="num">Откл.</th><th class="num">В норме</th><th class="num">Ёмкость</th><th class="num">Ёмкость BYN</th><th class="num">Возвраты</th><th class="num">Возвраты BYN</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function expertTable(compact=false){
-  const rows=experts().map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{expert:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{expert:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{expert:r.name})}</td>${compact?"":`<td class="num">${getPlan("production","closed_amount","expert",r.name)?money(getPlan("production","closed_amount","expert",r.name)):"—"}</td><td class="num">${getPlan("production","closed_amount","expert",r.name)?pct(r.closed_amount/getPlan("production","closed_amount","expert",r.name)*100):"—"}</td><td class="num">${fmt(expertNps(r))} <button class="mini-edit" data-nps-edit="1" data-expert="${attr(r.name)}">изменить</button></td><td class="num">${tdLink(r.active_count,"production","active","num",{expert:r.name})}</td><td class="num">${tdLink(r.inactive_count,"production","inactive_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{expert:r.name})}</td>`}</tr>`).join("");
-  return `<div class="scroll-x"><table><thead><tr><th>Эксперт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>NPS</th><th class='num'>Активно</th><th class='num'>7+ дней</th><th class='num'>Возвраты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const rows=experts().map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{expert:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{expert:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{expert:r.name})}</td>${compact?"":`<td class="num">${getPlan("production","closed_amount","expert",r.name)?money(getPlan("production","closed_amount","expert",r.name)):"—"}</td><td class="num">${getPlan("production","closed_amount","expert",r.name)?pct(r.closed_amount/getPlan("production","closed_amount","expert",r.name)*100):"—"}</td><td class="num">${fmt(expertNps(r))} <button class="mini-edit" data-nps-edit="1" data-expert="${attr(r.name)}">изменить</button></td><td class="num">${tdLink(r.active_count,"production","active","num",{expert:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{expert:r.name})}</td>`}</tr>`).join("");
+  return `<div class="scroll-x"><table><thead><tr><th>Эксперт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>NPS вручную</th><th class='num'>Активно</th><th class='num'>Возвраты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function prodStages(){return `<table><thead><tr><th>Стадия</th><th class="num">Кол-во</th><th class="num">Сумма</th></tr></thead><tbody>${state.production.stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"production","active","num",{stage:r.name})}</td><td class="num">${tdLink(r.amount,"production","active","money",{stage:r.name})}</td></tr>`).join("")}</tbody></table>`}
 function renderProduction(){
   const p={...state.production.kpi,nps_avg:overallManualNps()};
-  $("#production").innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · всё из ТЗ + ежедневной отчётности</div></div><button class="btn ghost" id="openPlanProd">Изменить планы</button></div>
-  <div class="kpi-grid dense">${Object.entries(PROD_LABELS).map(([k,[label,type]])=>card(label,p[k],"production",k,type)).join("")}</div>
-  ${panel("Разбивка по продуктам",prodProductTable(),"каждый показатель раскрывается до сделок")}
-  <div class="grid-2">${panel("Эксперты",expertTable(false),"закрытия + срок + норматив + риски")}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
+  $("#production").innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · показатели разделены по смысловым блокам</div></div><button class="btn ghost" id="openPlanProd">Изменить планы</button></div>
+  <div class="section-title">Результат периода</div>
+  <div class="kpi-grid">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}${card("NPS вручную",p.nps_avg,"production","nps_avg","num",{},"вводит руководитель")}</div>
+  <div class="section-title">Поток выбранного периода</div>
+  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct")}</div>
+  <div class="section-title">Воронка и сроки</div>
+  <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}${card("С актом",p.act_share_pct,"production","act_share_pct","pct")}</div>
+  ${panel("Разбивка по продуктам",prodProductTable(),"поток → закрытие → конверсия → срок → ёмкость")}
+  <div class="grid-2">${panel("Эксперты",expertTable(false),"состав можно менять в Планы / настройки")}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
   $("#openPlanProd")?.addEventListener("click",()=>openPlanDialog("production"));
 }
 
@@ -165,14 +170,14 @@ function overdueTable(){return `<table><thead><tr><th>Просрочка</th><th
 function renderRisks(){
   const p=state.production.kpi;
   const crit=(state.dormant_config?.selected_stages||[]).join(", ")||"все активные стадии";
-  $("#risks").innerHTML=`<div class="criteria-box"><strong>Критерий «Зависшие»:</strong> воронка ID 30, только активные сделки и только выбранные стадии: ${esc(crit)}. Всего активных в воронке: ${fmt(p.dormant_all_count||p.dormant_count)}.</div><div class="kpi-grid">
-    ${card("Зависшие сейчас",p.dormant_count,"production","dormant_count","num",{},money(p.dormant_amount))}
+  $("#risks").innerHTML=`<div class="criteria-box"><strong>Критерий «Зависшие»:</strong> воронка ID 30 + выбранные стадии + <strong>предполагаемая дата закрытия попадает в выбранный период</strong>. Поэтому для сентября считаются только карточки с предполагаемой датой закрытия в сентябре. Стадии: ${esc(crit)}. Всего активных карточек в воронке независимо от даты: ${fmt(p.dormant_all_count||0)}.</div>
+  <div class="kpi-grid">
+    ${card("Зависшие периода",p.dormant_count,"production","dormant_count","num",{},money(p.dormant_amount))}
+    ${card("Причина заполнена",p.dormant_with_reason_pct,"production","dormant_with_reason_pct","pct",{},`${fmt(state.production.dormant.with_reason_count)} из ${fmt(p.dormant_count)} сделок`)}
     ${card("Вернулось в производство",p.returned_to_production,"production","returned_to_production","num",{},money(p.returned_to_production_amount))}
     ${card("Просрочена ожидаемая дата",state.production.overdue.count,"production","overdue","num",{},money(state.production.overdue.amount))}
-    ${card("Без изменений 7+ дней",p.inactive_count,"production","inactive_count","num",{},money(p.inactive_amount))}
   </div>
-  <div class="kpi-grid"><div class="card clickable" ${drillAttrs("production","dormant_expected_count")}><div class="kpi-label">Зависшие с ожидаемой датой в периоде</div><div class="kpi-value">${fmt(p.dormant_expected_count)}</div></div><div class="card clickable" ${drillAttrs("production","dormant_overdue_count")}><div class="kpi-label">Зависшие с просроченной датой</div><div class="kpi-value">${fmt(p.dormant_overdue_count)}</div></div><div class="card"><div class="kpi-label">Причина заполнена</div><div class="kpi-value">${pct(p.dormant_with_reason_pct)}</div><div class="kpi-meta"><span>${fmt(state.production.dormant.with_reason_count)} сделок</span></div></div><div class="card"><div class="kpi-label">Возвраты за период</div><div class="kpi-value">${fmt(p.returns_count)}</div><div class="kpi-meta"><span>${money(p.returns_amount)}</span></div></div></div>
-  <div class="grid-3">${panel("Причины зависания",reasonTable())}${panel("Причины возврата",returnReasonTable())}${panel("Просрочка ожидаемой даты",overdueTable())}</div>`;
+  <div class="grid-3">${panel("Причины зависания",reasonTable(),"% считается от зависших с предполагаемой датой в выбранном периоде")}${panel("Причины возврата",returnReasonTable())}${panel("Просрочка ожидаемой даты",overdueTable())}</div>`;
 }
 
 function contextOptions(scope,type){
@@ -197,9 +202,27 @@ async function removeTeam(role,name){const q=new URLSearchParams({role,name,admi
 async function saveDormant(){const stages=$$('[data-dormant-stage]:checked').map(x=>x.value);const r=await fetch('/api/dormant-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({stages,admin_key:$('#dormantAdminKey')?.value||''})});if(!r.ok){alert(await r.text());return}state=null;load()}
 function renderDynamics(){const el=$('#dynamics');el.innerHTML='<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю динамику</div><div class="muted">Считаю лёгкий агрегат за 6 месяцев без тяжёлой расшифровки</div></div></div>';fetch(`/api/dynamics?month=${encodeURIComponent($('#month').value)}&months=6`).then(r=>r.json()).then(j=>{const rows=j.rows||[];el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ДИНАМИКА</div><div class="muted">Ключевые показатели за 6 месяцев</div></div></div>${panel('Продажи',trendTable(rows,'sales'))}${panel('Производство',trendTable(rows,'production'))}`}).catch(e=>el.innerHTML=`<div class="error">${esc(e.message)}</div>`)}
 function trendTable(rows,scope){const cols=scope==='sales'?[['sales_amount','Выручка','money'],['sales','Продажи','num'],['avg_check','Средний чек','money'],['deals','Сделки','num'],['leads','Лиды','num']]:[['prod_closed_amount','Закрытые акты','money'],['prod_closed','Закрытые продукты','num'],['prod_new','Новые','num'],['prod_conversion','Конверсия','pct'],['avg_prod_days','Срок','days'],['returns','Возвраты','num']];return `<div class="scroll-x"><table><thead><tr><th>Месяц</th>${cols.map(c=>`<th class="num">${c[1]}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.month)}</td>${cols.map(c=>`<td class="num">${format(r[c[0]],c[2])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
+
+function forecastCard(title,fact,plan,type="money"){
+  const pace=state?.pace||{};const share=Number(pace.share||0);const total=Number(pace.business_days_total||0),elapsed=Number(pace.business_days_elapsed||0);const remaining=Math.max(0,total-elapsed);
+  const projected=share>0?fact/share:fact;const need=Math.max(0,plan-fact);const perDay=remaining>0?need/remaining:0;
+  const status=plan?(projected>=plan?"По текущему темпу план выполняется":"По текущему темпу есть риск недовыполнения"):"Заполни план, чтобы увидеть прогноз";
+  return `<div class="forecast-card"><div class="kpi-label">${esc(title)}</div><div class="forecast-main"><span>Факт ${format(fact,type)}</span><span>Прогноз ${format(projected,type)}</span></div><div class="kpi-meta"><span>План ${plan?format(plan,type):"—"}</span><span>${plan?status:""}</span></div>${plan?`<div class="forecast-need">До плана: ${format(need,type)} · нужно в рабочий день: ${format(perDay,type)}</div>`:""}</div>`;
+}
+function qualityCard(title,value,metric,note="") {return `<div class="quality-card clickable" ${drillAttrs("production",metric)}><div class="kpi-label">${esc(title)}</div><div class="quality-value">${fmt(value)}</div><div class="muted">${esc(note)}</div></div>`}
+function renderForecast(){
+  if(!state)return;const el=$("#forecast");const s=state.sales.overall.current.metrics,p=state.production.kpi;
+  const currentMonth=new Date().toISOString().slice(0,7);const isCurrent=$("#month").value===currentMonth && $("#period").value==="month";
+  el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОГНОЗ МЕСЯЦА</div><div class="muted">Прогноз по темпу рабочих дней + контроль качества данных</div></div></div>
+  ${!isCurrent?`<div class="criteria-box">Прогноз темпа корректнее смотреть для текущего месяца в режиме «Месяц». Сейчас показан ориентир на основе выбранного месяца.</div>`:""}
+  <div class="grid-2">${forecastCard("Выручка ОП",s.sales_amount,getPlan("sales","sales_amount"),"money")}${forecastCard("Закрытые акты",p.closed_amount,getPlan("production","closed_amount"),"money")}${forecastCard("Продажи",s.sales,getPlan("sales","sales"),"num")}${forecastCard("Закрытые продукты",p.closed_count,getPlan("production","closed_count"),"num")}</div>
+  <div class="section-title">Контроль качества данных</div>
+  <div class="kpi-grid">${qualityCard("Активные без предполагаемой даты",p.active_missing_expected_count||0,"active_missing_expected_count","не попадают в ёмкость")}${qualityCard("Зависшие без причины",p.dormant_without_reason_count||0,"dormant_count","из ожидаемой даты выбранного периода")}${qualityCard("Закрытые без акта",p.closed_without_act_count||0,"closed_without_act_count")}${qualityCard("Активные без продукта",p.active_missing_service_count||0,"active_missing_service_count")}${qualityCard("Активные без эксперта",p.active_missing_expert_count||0,"active_missing_expert_count")}</div>`;
+}
+
 function renderPlanInline(){
   const statuses=state.metric_status||{};
-  $("#plans").innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПЛАНЫ И КАЧЕСТВО ДАННЫХ</div><div class="muted">Планы редактируются без Excel; можно задавать общий план и планы в разрезах</div></div><button class="btn primary" id="openPlans">Редактировать планы</button></div>
+  $("#plans").innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПЛАНЫ И КАЧЕСТВО ДАННЫХ</div><div class="muted">Планы редактируются без Excel · хранилище: ${esc(state.storage_backend||"локальное")}</div></div><button class="btn primary" id="openPlans">Редактировать планы</button></div>
   <div class="grid-2">${panel("Планы продаж",planSummary("sales"))}${panel("Планы производства",planSummary("production"))}</div>
   <div class="grid-2">${panel("Команда дашборда",teamSettings())}${panel("Критерий зависших",dormantSettings())}</div>
   ${panel("Статус дополнительных метрик",`<div class="mapping-grid">${Object.entries(statuses).map(([k,v])=>`<div class="mapping-item"><div><div class="name">${esc(k)}</div><div class="note">${esc(v.note)}</div></div><span class="badge ${v.connected?"good":"warn"}">${v.connected?"подключено":"нужен mapping"}</span></div>`).join("")}</div>`,"ничего не выдумываем: неподключенные поля отмечены явно")}`;
@@ -214,7 +237,7 @@ function renderPlans(){renderPlanInline()}
 
 function renderAll(){
   if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);return}
-  renderOverview();renderSales();renderProduction();renderExperts();renderRisks();renderPlans();
+  renderOverview();renderSales();renderProduction();renderExperts();renderRisks();renderForecast();renderPlans();
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
 }
 
@@ -223,6 +246,11 @@ function loadingView(month){
   return `<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Синхронизирую ${esc(label)}</div><div class="muted">Интерфейс уже доступен. Первый расчёт Bitrix идёт в фоне; дальше данные будут открываться из кеша сразу.</div></div></div>`;
 }
 
+function customQueryParams(){
+  if($("#period").value!=="custom")return "";
+  const a=$("#customStart").value,b=$("#customEnd").value;
+  return `&custom_start=${encodeURIComponent(a)}&custom_end=${encodeURIComponent(b)}`;
+}
 async function load(){
   const month=$("#month").value,period=$("#period").value;
   if(loadTimer){clearTimeout(loadTimer);loadTimer=null}
@@ -235,7 +263,7 @@ async function load(){
     $("#liveText").textContent="СИНХРОНИЗАЦИЯ В ФОНЕ";
   }
   try{
-    const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}`,{cache:"no-store",signal:loadController.signal});
+    const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}${customQueryParams()}`,{cache:"no-store",signal:loadController.signal});
     if(r.status===401){location.href="/login";return}
     const j=await r.json();
     if(r.status===202 || j.loading){
@@ -261,12 +289,32 @@ function detailHtml(r){
 }
 async function openDrill(el){
   const d=el.dataset;drillOffset=0;drillMeta={...d};const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:'0',limit:'100'});
+  if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value);}
   ["periodType","manager","group","source","product","expert","stage","reason","week"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const label=(d.scope==="sales"?SALES_LABELS[d.metric]?.[0]:PROD_LABELS[d.metric]?.[0])||d.metric;
   $("#drillTitle").textContent=label;$("#drillSubtitle").textContent="Расшифровка из уже загруженного snapshot";$("#drillBody").innerHTML='<div class="loading">Загрузка…</div>';$("#drillDialog").showModal();
   try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(r.status===202||j.loading){$("#drillBody").innerHTML='<div class="loading">Расшифровка ещё готовится. Через несколько секунд нажми снова.</div>';return}if(!r.ok)throw new Error(j.detail||JSON.stringify(j));drillRows=j.rows||[];drillOffset=drillRows.length;$("#drillCount").textContent=`${j.count} записей`;$("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');renderDrillRows();if(j.count>drillRows.length)$("#drillBody").insertAdjacentHTML('beforeend',`<button class="btn ghost load-more" id="drillMore">Показать ещё</button>`)}catch(e){$("#drillBody").innerHTML=`<div class="error">${esc(e.message)}</div>`}
 }
-function renderDrillRows(){const q=normSearch($("#drillSearch").value);const rows=q?drillRows.filter(r=>JSON.stringify(r).toLowerCase().includes(q)):drillRows;$("#drillBody").innerHTML=rows.length?rows.map(detailHtml).join(''):'<div class="empty">Нет записей</div>'}
+function groupRows(rows,keyFn){const m=new Map();rows.forEach(r=>{const k=keyFn(r)||"Не указано";if(!m.has(k))m.set(k,[]);m.get(k).push(r)});return [...m.entries()].sort((a,b)=>b[1].reduce((s,x)=>s+Number(x.amount||0),0)-a[1].reduce((s,x)=>s+Number(x.amount||0),0))}
+function drillGroupKeys(r){
+  if(drillMeta?.scope==="production"){
+    const first=drillMeta.expert? (r.service||r.category||"Прочее") : (r.expert||"Эксперт не указан");
+    const second=drillMeta.product? (r.stage||"Стадия не указана") : (r.service||r.stage||"Прочее");
+    return [first,second];
+  }
+  const first=drillMeta?.manager? (r.group||r.source||"Прочее") : (r.manager||"Менеджер не указан");
+  const second=drillMeta?.source? (r.stage||"Стадия не указана") : (r.source||r.group||"Прочее");
+  return [first,second];
+}
+function renderDrillRows(){
+  const q=normSearch($("#drillSearch").value);const rows=q?drillRows.filter(r=>JSON.stringify(r).toLowerCase().includes(q)):drillRows;
+  if(!rows.length){$("#drillBody").innerHTML='<div class="empty">Нет записей</div>';return}
+  const firstGroups=groupRows(rows,r=>drillGroupKeys(r)[0]);
+  $("#drillBody").innerHTML=firstGroups.map(([g,items])=>{
+    const total=items.reduce((a,r)=>a+Number(r.amount||0),0);const secondGroups=groupRows(items,r=>drillGroupKeys(r)[1]);
+    return `<details class="drill-group" open><summary><span>${esc(g)}</span><span>${fmt(items.length)} · ${money(total)}</span></summary><div class="drill-group-body">${secondGroups.map(([sg,sub])=>`<details class="drill-subgroup"><summary><span>${esc(sg)}</span><span>${fmt(sub.length)} · ${money(sub.reduce((a,r)=>a+Number(r.amount||0),0))}</span></summary><div>${sub.map(detailHtml).join('')}</div></details>`).join('')}</div></details>`;
+  }).join('');
+}
 function normSearch(s){return String(s||'').trim().toLowerCase()}
 
 function openPlanDialog(scope="sales"){$("#planScope").value=scope;updatePlanContextTypes();updatePlanKey();buildPlanForm();$("#planDialog").showModal()}
@@ -294,8 +342,8 @@ function fillMonths(){
 
 function init(){
   fillMonths();
-  $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{state=null;load()});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
-  $("#tabs").addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;$$('.tab').forEach(x=>x.classList.remove('active'));$$('.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active');if(b.dataset.view==='dynamics')renderDynamics()});
+  $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{const custom=$("#period").value==="custom";$("#customPeriod").classList.toggle("hidden",!custom);if(custom){const m=$("#month").value+"-01";if(!$("#customStart").value)$("#customStart").value=m;if(!$("#customEnd").value){const [y,mo]=$("#month").value.split('-').map(Number);$("#customEnd").value=new Date(y,mo,0).toISOString().slice(0,10)}}state=null;load()});$("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
+  $("#tabs").addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;$$('.tab').forEach(x=>x.classList.remove('active'));$$('.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active');if(b.dataset.view==='dynamics')renderDynamics();if(b.dataset.view==='forecast')renderForecast()});
   document.body.addEventListener('click',e=>{
     const cb=e.target.closest('[data-comment-scope]');if(cb){e.stopPropagation();commentTarget={scope:cb.dataset.commentScope,metric:cb.dataset.commentMetric,title:cb.dataset.commentTitle};$('#commentTitle').textContent=commentTarget.title;$('#commentText').value=getComment(commentTarget.scope,commentTarget.metric);$('#commentDialog').showModal();return}
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();npsTarget=np.dataset.expert;$('#npsTitle').textContent=`NPS · ${npsTarget}`;$('#npsValue').value=state.manual_nps?.[npsTarget]?.value??'';$('#npsNote').value=state.manual_nps?.[npsTarget]?.note??'';$('#npsDialog').showModal();return}

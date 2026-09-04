@@ -22,7 +22,7 @@ from .settings import settings
 from .storage import Storage
 
 STATIC = Path(__file__).parent / "static"
-storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3")
+storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
 client = BitrixClient(settings.bitrix_webhook)
 
 cache = {}
@@ -74,42 +74,36 @@ def _apply_runtime(snap, details, month):
     x['team']=storage.team()
     x['comments']=storage.comments(month)
     x['manual_nps']=storage.manual_nps(month)
+    x['storage_backend']=storage.backend_name
     available=x.get('available_dormant_stages') or []
     selected=_dormant_stages(available)
     x['dormant_config']={'selected_stages':selected,'available_stages':available}
     prod_details=(details or {}).get('production') or {}
     all_rows=list(prod_details.get('dormant') or [])
-    rows=[r for r in all_rows if not selected or r.get('stage') in selected]
+    # Управленческий показатель «Зависшие» считается только из карточек,
+    # чья предполагаемая дата закрытия попадает в выбранный период.
+    expected_rows=list(prod_details.get('dormant_expected') or [])
+    rows=[r for r in expected_rows if not selected or r.get('stage') in selected]
     p=x.get('production',{});k=p.get('kpi',{})
     k['dormant_all_count']=len(all_rows);k['dormant_all_amount']=round(sum(float(r.get('amount') or 0) for r in all_rows),2)
     k['dormant_count']=len(rows);k['dormant_amount']=round(sum(float(r.get('amount') or 0) for r in rows),2)
+    k['dormant_expected_count']=len(rows)
     with_reason=[r for r in rows if r.get('stuck_reasons')]
+    without_reason=[r for r in rows if not r.get('stuck_reasons')]
     k['dormant_with_reason_pct']=round(len(with_reason)/len(rows)*100,1) if rows else 0
+    k['dormant_without_reason_count']=len(without_reason)
     p.setdefault('dormant',{})['with_reason_count']=len(with_reason);p['dormant']['with_reason_pct']=k['dormant_with_reason_pct']
     from collections import defaultdict
     acc=defaultdict(int)
     for r in rows:
         for reason in r.get('stuck_reasons') or []:acc[reason]+=1
     p['dormant']['reasons']=[{'name':a,'count':b,'pct':round(b/len(rows)*100,1) if rows else 0} for a,b in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
-    try:
-        from datetime import datetime as _dt
-        start=_dt.fromisoformat(x['month_start'].replace('Z','+00:00'));end=_dt.fromisoformat(x['month_end'].replace('Z','+00:00'));now=_dt.now(start.tzinfo)
-        expected=[];overdue=[]
-        for r in rows:
-            v=r.get('expected_close')
-            if not v:continue
-            try:d=_dt.fromisoformat(v.replace('Z','+00:00'))
-            except:continue
-            if start<=d<end:expected.append(r)
-            if d.date()<now.date():overdue.append(r)
-        k['dormant_expected_count']=len(expected);k['dormant_overdue_count']=len(overdue)
-    except:pass
     return x
 
 
-async def ensure_snapshot(month: str, period: str, force=False):
+async def ensure_snapshot(month: str, period: str, force=False, custom_start: str = "", custom_end: str = ""):
     global last_error
-    key = (month, period)
+    key = (month, period, custom_start or "", custom_end or "")
     ttl = 60 if month == current_month() else 300
     if not force and key in cache and time.monotonic() - cache_time.get(key, 0) < ttl:
         return cache[key]
@@ -122,7 +116,7 @@ async def ensure_snapshot(month: str, period: str, force=False):
                 snap = demo_snapshot(month, period)
                 details = {"sales":{"leads":[],"deals":[]},"production":{}}
             else:
-                snap = await build_snapshot(client, month, period, settings.timezone)
+                snap = await build_snapshot(client, month, period, settings.timezone, custom_start, custom_end)
                 details = snap.pop("_details", {})
             cache[key] = snap
             detail_cache[key] = details
@@ -167,14 +161,14 @@ async def refresh_loop():
             pass
 
 
-def schedule_snapshot(month: str, period: str, force: bool=False):
-    key=(month,period)
+def schedule_snapshot(month: str, period: str, force: bool=False, custom_start: str = "", custom_end: str = ""):
+    key=(month,period,custom_start or "",custom_end or "")
     t=sync_tasks.get(key)
     if t and not t.done():
         return t
     async def runner():
         try:
-            await ensure_snapshot(month,period,force=force)
+            await ensure_snapshot(month,period,force=force,custom_start=custom_start,custom_end=custom_end)
             await broadcast({"type":"refresh","month":month,"period":period})
         except Exception:
             pass
@@ -201,7 +195,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -243,22 +237,28 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.2.0"}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.3.0", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
-async def api_snapshot(month: str = Query(default=""), period: str = Query(default="month", pattern="^(month|this_week|last_week)$")):
+async def api_snapshot(
+    month: str = Query(default=""),
+    period: str = Query(default="month", pattern="^(month|this_week|last_week|custom)$"),
+    custom_start: str = "",
+    custom_end: str = "",
+):
     month = month or current_month()
-    key=(month,period)
-    # Stale-while-revalidate: если хоть один snapshot уже есть, отдаём его мгновенно.
+    key=(month,period,custom_start or "",custom_end or "")
+    if period == "custom" and (not custom_start or not custom_end):
+        return JSONResponse({"detail":"Для своего периода укажи дату начала и дату окончания"},status_code=400)
+    # Stale-while-revalidate: если snapshot есть, отдаём его мгновенно.
     if key in cache:
         ttl=60 if month==current_month() else 600
         stale=time.monotonic()-cache_time.get(key,0)>=ttl
         if stale:
-            schedule_snapshot(month,period,force=True)
+            schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
         return {**_apply_runtime(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
-    # Первый расчёт запускаем в фоне и НЕ держим HTTP-запрос открытым минутами.
-    schedule_snapshot(month,period,force=False)
+    schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
     return JSONResponse({
         "ok": False, "loading": True, "month_key": month, "period": period,
         "message": "Первичная синхронизация Bitrix выполняется в фоне"
@@ -270,11 +270,11 @@ async def drilldown(
     scope: str, metric: str, month: str = "", period: str = "month", period_type: str = "current",
     manager: str | None = None, group: str | None = None, source: str | None = None, product: str | None = None,
     expert: str | None = None, stage: str | None = None, reason: str | None = None, week: int | None = None,
-    offset: int = 0, limit: int = 100,
+    custom_start: str = "", custom_end: str = "", offset: int = 0, limit: int = 100,
 ):
-    month = month or current_month(); key=(month,period)
+    month = month or current_month(); key=(month,period,custom_start or "",custom_end or "")
     if key not in detail_cache:
-        schedule_snapshot(month,period,force=False)
+        schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
         return JSONResponse({"loading":True,"message":"Расшифровка готовится вместе со snapshot"},status_code=202)
     details=detail_cache.get(key,{})
     if scope == "sales":

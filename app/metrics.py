@@ -64,8 +64,8 @@ SALES_METRICS = [
 PROD_METRICS = [
     "closed_amount", "closed_count", "new_count", "new_amount", "period_closed_count", "period_closed_amount",
     "new_to_success_pct", "avg_check", "capacity_count", "capacity_amount", "returns_count", "returns_amount",
-    "avg_production_days", "avg_full_cycle_days", "avg_deviation_days", "within_norm_pct", "base_bonus", "nps_avg", "act_share_pct",
-    "inactive_count", "dormant_count", "returned_to_production", "dormant_with_reason_pct"
+    "avg_production_days", "avg_deviation_days", "within_norm_pct", "nps_avg", "act_share_pct",
+    "dormant_count", "returned_to_production", "dormant_with_reason_pct"
 ]
 
 
@@ -142,10 +142,20 @@ def month_bounds(month_key: str, tz_name: str) -> Tuple[datetime, datetime, date
     return start, end, previous_two_start, now.isoformat()
 
 
-def period_bounds(month_key: str, period: str, tz_name: str) -> Tuple[datetime, datetime, str]:
+def period_bounds(month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = "") -> Tuple[datetime, datetime, str]:
     start, end, _, _ = month_bounds(month_key, tz_name)
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
+    if period == "custom" and custom_start and custom_end:
+        try:
+            a = datetime.strptime(custom_start[:10], "%Y-%m-%d").replace(tzinfo=tz)
+            b_inclusive = datetime.strptime(custom_end[:10], "%Y-%m-%d").replace(tzinfo=tz)
+            if b_inclusive < a:
+                a, b_inclusive = b_inclusive, a
+            b = b_inclusive + timedelta(days=1)
+            return a, b, f"{a.strftime('%d.%m.%Y')}–{b_inclusive.strftime('%d.%m.%Y')}"
+        except Exception:
+            pass
     if period == "last_week":
         anchor = min(now, end - timedelta(seconds=1))
         monday = anchor.date() - timedelta(days=anchor.weekday())
@@ -582,27 +592,24 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
 def aggregate_prod_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     closed = [r for r in rows if r.get("is_closed_success")]
     days = [r["prod_days"] for r in closed if r.get("prod_days") is not None]
-    full = [r["full_cycle_days"] for r in closed if r.get("full_cycle_days") is not None]
     normed = [r for r in closed if r.get("norm_days")]
     deviations = [r["deviation_days"] for r in closed if r.get("deviation_days") is not None]
-    nps = [r["nps"] for r in closed if r.get("nps") > 0]
     acts = [r for r in closed if norm_text(r.get("act")) == "да"]
     return {
         "closed_count": len(closed), "closed_amount": round(sum(r["amount"] for r in closed), 2),
         "avg_check": round(sum(r["amount"] for r in closed) / len(closed), 2) if closed else 0,
         "avg_production_days": round(sum(days) / len(days), 1) if days else 0,
-        "avg_full_cycle_days": round(sum(full) / len(full), 1) if full else 0,
         "avg_deviation_days": round(sum(deviations) / len(deviations), 1) if deviations else 0,
         "within_norm_pct": pct(sum(1 for r in normed if r.get("in_norm")), len(normed)),
-        "base_bonus": round(sum(r.get("base_bonus", 0) for r in closed), 2),
-        "nps_avg": round(sum(nps) / len(nps), 1) if nps else 0,
+        # NPS в приложении только ручной. Bitrix-поле не участвует в расчёте.
+        "nps_avg": 0,
         "act_share_pct": pct(len(acts), len(closed)),
     }
 
 
-async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str):
+async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str, custom_start: str = "", custom_end: str = ""):
     month_start, next_start, _, _ = month_bounds(month_key, tz_name)
-    range_start, range_end, period_label = period_bounds(month_key, period, tz_name)
+    range_start, range_end, period_label = period_bounds(month_key, period, tz_name, custom_start, custom_end)
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
 
@@ -640,9 +647,12 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     period_closed = [r for r in closed if r["id"] in new_ids]
     capacity = [r for r in active if (x := parse_dt(r.get("expected_close"), tz)) and range_start <= x < range_end]
     overdue = [r for r in active if (x := parse_dt(r.get("expected_close"), tz)) and x.date() < now.date()]
-    inactive = [r for r in active if (r.get("inactive_days") or 0) >= 7]
     dormant_expected = [r for r in dormant if (x := parse_dt(r.get("expected_close"), tz)) and range_start <= x < range_end]
     dormant_overdue = [r for r in dormant if (x := parse_dt(r.get("expected_close"), tz)) and x.date() < now.date()]
+    active_missing_expected = [r for r in active if not r.get("expected_close")]
+    active_missing_service = [r for r in active if norm_text(r.get("service")) in {"", "не указано"}]
+    active_missing_expert = [r for r in active if norm_text(r.get("expert")) in {"", "не указан", "не указано"}]
+    closed_without_act = [r for r in closed if norm_text(r.get("act")) != "да"]
 
     closed_stats = aggregate_prod_rows(closed)
     kpi = {
@@ -653,10 +663,13 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "new_to_success_pct": pct(len(period_closed), len(new)),
         "capacity_count": len(capacity), "capacity_amount": round(sum(r["amount"] for r in capacity), 2),
         "returns_count": len(returns), "returns_amount": round(sum(r["amount"] for r in returns), 2),
-        "inactive_count": len(inactive), "inactive_amount": round(sum(r["amount"] for r in inactive), 2),
         "dormant_count": len(dormant), "dormant_amount": round(sum(r["amount"] for r in dormant), 2),
         "returned_to_production": len(returned), "returned_to_production_amount": round(sum(r["amount"] for r in returned), 2),
         "dormant_expected_count": len(dormant_expected), "dormant_overdue_count": len(dormant_overdue),
+        "active_missing_expected_count": len(active_missing_expected),
+        "active_missing_service_count": len(active_missing_service),
+        "active_missing_expert_count": len(active_missing_expert),
+        "closed_without_act_count": len(closed_without_act),
     }
     with_reason = [r for r in dormant if r.get("stuck_reasons")]
     kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
@@ -690,7 +703,6 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         cr = [r for r in closed if r["expert"] == name]
         ar = [r for r in active if r["expert"] == name]
         rr = [r for r in returns if r["expert"] == name]
-        ir = [r for r in inactive if r["expert"] == name]
         s = aggregate_prod_rows(cr)
         pmap = defaultdict(lambda: {"closed_count":0,"closed_amount":0.0,"days":[],"normed":0,"in_norm":0})
         for r in cr:
@@ -704,7 +716,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
                 "within_norm_pct":pct(x["in_norm"],x["normed"])})
         prod_breakdown.sort(key=lambda x:-x["closed_amount"])
         experts.append({
-            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr), "inactive_count": len(ir),
+            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
             **s, "products": prod_breakdown,
         })
     experts.sort(key=lambda x: (-x["closed_amount"], x["name"]))
@@ -741,8 +753,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "return_reasons": return_reasons,
         "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
         "_records": {"new":new,"closed":closed,"period_closed":period_closed,"active":active,"returns":returns,
-                     "capacity":capacity,"inactive":inactive,"dormant":dormant,"returned":returned,"overdue":overdue,
-                     "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue},
+                     "capacity":capacity,"dormant":dormant,"returned":returned,"overdue":overdue,
+                     "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue,
+                     "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
+                     "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
     }
 
 
@@ -757,16 +771,17 @@ def month_pace(month_key: str, tz_name: str):
     return {"business_days_total":len(days),"business_days_elapsed":len(elapsed),"share":round(len(elapsed)/len(days),4) if days else 0}
 
 
-async def build_snapshot(client, month_key: str, period: str, tz_name: str):
+async def build_snapshot(client, month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = ""):
     meta=await client.meta()
     sales_task=load_sales(client,month_key,meta,tz_name)
-    prod_task=load_production(client,month_key,period,meta,tz_name)
+    prod_task=load_production(client,month_key,period,meta,tz_name,custom_start,custom_end)
     sales,production=await asyncio.gather(sales_task,prod_task)
     details={"sales":sales.pop("_records"),"production":production.pop("_records")}
     start,end,_,updated_at=month_bounds(month_key,tz_name)
+    period_start,period_end,_=period_bounds(month_key,period,tz_name,custom_start,custom_end)
     return {
         "ok":True,"updated_at":updated_at,"month_key":month_key,"period":period,
-        "month_start":start.isoformat(),"month_end":end.isoformat(),"pace":month_pace(month_key,tz_name),
+        "month_start":start.isoformat(),"month_end":end.isoformat(),"period_start":period_start.isoformat(),"period_end":period_end.isoformat(),"pace":month_pace(month_key,tz_name),
         "sales":sales,"production":production,"_details":details,
         "available_users": sorted(set((meta.get("users") or {}).values())),
         "available_dormant_stages": sorted(set((meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {}).values())),
@@ -775,8 +790,7 @@ async def build_snapshot(client, month_key: str, period: str, tz_name: str):
             "upsell_bonus": {"connected": False, "note":"Расчет премии за допродажи подключится после mapping поля допродажи."},
             "total_bonus": {"connected": False, "note":"Итоговая премия эксперта будет считаться после подключения допродаж; базовая премия уже считается по справочнику."},
             "expert_rework_pct": {"connected": False, "note":"В Bitrix нет отдельного признака «переделка по вине эксперта»."},
-            "base_bonus": {"connected": True, "note":"Расчет по справочнику премий из ежедневной отчетности."},
-            "inactive_7d": {"connected": True, "note":"Пока считается по DATE_MODIFY ≥7 дней без изменения; можно заменить на дату последнего касания."}
+            "manual_nps": {"connected": True, "note":"NPS не рассчитывается из Bitrix: руководитель вводит его вручную по каждому эксперту."}
         }
     }
 
@@ -810,11 +824,13 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
 
 def filter_prod_details(details, metric, expert=None, product=None, stage=None, reason=None):
     metric_map={
-        "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_full_cycle_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","base_bonus":"closed","nps_avg":"closed","act_share_pct":"closed",
+        "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
         "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
-        "inactive_count":"inactive","dormant_count":"dormant","dormant_with_reason_pct":"dormant","returned_to_production":"returned","overdue":"overdue",
-        "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue"
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","overdue":"overdue",
+        "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
+        "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
+        "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"
     }
     rows=list(details.get(metric_map.get(metric,"active"),[]))
     if expert: rows=[r for r in rows if r.get("expert")==expert]

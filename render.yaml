@@ -20,3 +20,7 @@ services:
         sync: false
       - key: VIEW_PASSWORD
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
