@@ -2,19 +2,16 @@ services:
   - type: web
     name: mavis-operational-dashboard
     runtime: docker
+    plan: free
     region: frankfurt
     healthCheckPath: /health
-    disk:
-      name: mavis-dashboard-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: TIMEZONE
         value: Europe/Minsk
       - key: REFRESH_SECONDS
-        value: "60"
+        value: "300"
       - key: DATA_DIR
-        value: /var/data
+        value: /tmp/mavis-dashboard
       - key: BITRIX_WEBHOOK
         sync: false
       - key: BITRIX_EVENT_TOKEN

@@ -31,6 +31,7 @@ locks = {}
 subscribers = set()
 refresh_trigger = asyncio.Event()
 last_error = None
+sync_tasks = {}
 
 
 def current_month():
@@ -89,20 +90,38 @@ async def broadcast(payload):
 
 
 async def refresh_loop():
+    # Один стартовый snapshot. Недельные периоды грузятся только по запросу пользователя.
+    # Полная страховочная сверка выполняется реже; события Bitrix могут триггерить её раньше.
     while True:
         try:
-            await asyncio.wait_for(refresh_trigger.wait(), timeout=settings.refresh_seconds)
+            await asyncio.wait_for(refresh_trigger.wait(), timeout=max(settings.refresh_seconds, 300))
             refresh_trigger.clear()
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.8)
         except asyncio.TimeoutError:
             pass
-        m = current_month()
-        for p in ["month", "this_week", "last_week"]:
-            try:
-                await ensure_snapshot(m, p, force=True)
-            except Exception:
-                pass
-        await broadcast({"type": "refresh", "month": m})
+        try:
+            await ensure_snapshot(current_month(), "month", force=True)
+            await broadcast({"type": "refresh", "month": current_month()})
+        except Exception:
+            pass
+
+
+def schedule_snapshot(month: str, period: str, force: bool=False):
+    key=(month,period)
+    t=sync_tasks.get(key)
+    if t and not t.done():
+        return t
+    async def runner():
+        try:
+            await ensure_snapshot(month,period,force=force)
+            await broadcast({"type":"refresh","month":month,"period":period})
+        except Exception:
+            pass
+        finally:
+            sync_tasks.pop(key,None)
+    t=asyncio.create_task(runner())
+    sync_tasks[key]=t
+    return t
 
 
 @asynccontextmanager
@@ -121,7 +140,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -163,17 +182,26 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.0.0"}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.1.0"}
 
 
 @app.get("/api/snapshot")
 async def api_snapshot(month: str = Query(default=""), period: str = Query(default="month", pattern="^(month|this_week|last_week)$")):
     month = month or current_month()
-    try:
-        snap = await ensure_snapshot(month, period)
-    except Exception as e:
-        raise HTTPException(503, str(e))
-    return {**snap, "plans": storage.plan_dict(month)}
+    key=(month,period)
+    # Stale-while-revalidate: если хоть один snapshot уже есть, отдаём его мгновенно.
+    if key in cache:
+        ttl=60 if month==current_month() else 600
+        stale=time.monotonic()-cache_time.get(key,0)>=ttl
+        if stale:
+            schedule_snapshot(month,period,force=True)
+        return {**cache[key], "plans": storage.plan_dict(month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+    # Первый расчёт запускаем в фоне и НЕ держим HTTP-запрос открытым минутами.
+    schedule_snapshot(month,period,force=False)
+    return JSONResponse({
+        "ok": False, "loading": True, "month_key": month, "period": period,
+        "message": "Первичная синхронизация Bitrix выполняется в фоне"
+    }, status_code=202)
 
 
 @app.get("/api/drilldown")

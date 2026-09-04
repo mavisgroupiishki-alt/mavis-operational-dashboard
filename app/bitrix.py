@@ -66,10 +66,39 @@ class BitrixClient:
         p=await self.call("crm.deal.productrows.get",{"id":int(deal_id)})
         return p.get("result",[]) or []
     async def product_rows_many(self,deals):
-        async def one(d):
-            try:return str(d["ID"]),await self.product_rows(d["ID"])
-            except:return str(d["ID"]),[]
-        return dict(await asyncio.gather(*(one(d) for d in deals)))
+        """Load product rows in Bitrix batches instead of one HTTP request per deal.
+        Bitrix batch accepts up to 50 commands; 40 leaves a little safety margin.
+        Falls back to individual requests only for failed batches.
+        """
+        ids=[str(d.get("ID")) for d in deals if d.get("ID")]
+        if not ids:return {}
+        out={}
+        chunk_size=40
+        for pos in range(0,len(ids),chunk_size):
+            chunk=ids[pos:pos+chunk_size]
+            cmds={f"d{i}":f"crm.deal.productrows.get?id={did}" for i,did in enumerate(chunk)}
+            try:
+                payload=await self.call("batch",{"halt":0,"cmd":cmds})
+                result=(payload.get("result") or {}).get("result") or {}
+                errors=(payload.get("result") or {}).get("result_error") or {}
+                failed=[]
+                for i,did in enumerate(chunk):
+                    key=f"d{i}"
+                    if key in errors:
+                        failed.append(did)
+                    else:
+                        out[did]=result.get(key) or []
+                if failed:
+                    async def one(did):
+                        try:return did,await self.product_rows(did)
+                        except:return did,[]
+                    out.update(dict(await asyncio.gather(*(one(x) for x in failed))))
+            except Exception:
+                async def one(did):
+                    try:return did,await self.product_rows(did)
+                    except:return did,[]
+                out.update(dict(await asyncio.gather(*(one(x) for x in chunk))))
+        return out
     async def meta(self,force=False):
         if self._meta and not force and time.monotonic()-self._meta_at<600:return self._meta
         users,statuses,df,lf=await asyncio.gather(

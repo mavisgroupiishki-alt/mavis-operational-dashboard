@@ -399,14 +399,17 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     month_start, next_start, prev2_start, _ = month_bounds(month_key, tz_name)
     tz = ZoneInfo(tz_name)
 
-    deals_raw = []
+    # Все категории и лиды читаем параллельно. Раньше категории шли последовательно.
+    deal_tasks=[]
     for cid in SALES_CATEGORY_IDS:
-        created = await client.deal_list({"CATEGORY_ID": cid, ">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, DEAL_SELECT)
-        closed = await client.deal_list({"CATEGORY_ID": cid, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(next_start)}, DEAL_SELECT)
-        deals_raw.extend(created or [])
-        deals_raw.extend(closed or [])
+        deal_tasks.append(client.deal_list({"CATEGORY_ID": cid, ">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, DEAL_SELECT))
+        deal_tasks.append(client.deal_list({"CATEGORY_ID": cid, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(next_start)}, DEAL_SELECT))
+    leads_task=client.lead_list({">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, LEAD_SELECT)
+    results=await asyncio.gather(*deal_tasks,leads_task)
+    leads_raw=results[-1] or []
+    deals_raw=[]
+    for block in results[:-1]: deals_raw.extend(block or [])
     deals_raw = list({str(d.get("ID")): d for d in deals_raw}.values())
-    leads_raw = await client.lead_list({">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, LEAD_SELECT) or []
     rows_by_deal = await client.product_rows_many(deals_raw)
 
     deals = []

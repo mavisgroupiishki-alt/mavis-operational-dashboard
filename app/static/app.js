@@ -1,6 +1,8 @@
 let state=null;
 let selectedPeriodType="current";
 let drillRows=[];
+let loadTimer=null;
+let loadController=null;
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -190,11 +192,39 @@ function renderAll(){
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
 }
 
+function loadingView(month){
+  const label=$("#month").selectedOptions[0]?.textContent||month;
+  return `<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Синхронизирую ${esc(label)}</div><div class="muted">Интерфейс уже доступен. Первый расчёт Bitrix идёт в фоне; дальше данные будут открываться из кеша сразу.</div></div></div>`;
+}
+
 async function load(){
-  const month=$("#month").value||new Date().toISOString().slice(0,7),period=$("#period").value;
-  $$('.view.active').forEach(v=>{if(!v.innerHTML)v.innerHTML='<div class="loading">Загружаю данные Bitrix…</div>'});
-  try{const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}`,{cache:"no-store"});if(r.status===401){location.href="/login";return}if(!r.ok)throw new Error(await r.text());state=await r.json();renderAll()}
-  catch(e){$("#liveDot").className="bad";$("#liveText").textContent="НЕТ СВЯЗИ";$("#overview").innerHTML=`<div class="error">${esc(e.message)}</div>`}
+  const month=$("#month").value,period=$("#period").value;
+  if(loadTimer){clearTimeout(loadTimer);loadTimer=null}
+  if(loadController)loadController.abort();
+  loadController=new AbortController();
+  // При переключении месяца никогда не блокируем контролы.
+  if(!state || state.month_key!==month || state.period!==period){
+    $("#overview").innerHTML=loadingView(month);
+    $("#liveDot").className="";
+    $("#liveText").textContent="СИНХРОНИЗАЦИЯ В ФОНЕ";
+  }
+  try{
+    const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}`,{cache:"no-store",signal:loadController.signal});
+    if(r.status===401){location.href="/login";return}
+    const j=await r.json();
+    if(r.status===202 || j.loading){
+      $("#liveDot").className="";$("#liveText").textContent="BITRIX · ПЕРВИЧНАЯ СИНХРОНИЗАЦИЯ";
+      loadTimer=setTimeout(load,1800);
+      return;
+    }
+    if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
+    state=j;renderAll();
+    if(j.syncing){$("#liveText").textContent="BITRIX ONLINE · обновляю в фоне"}
+  }catch(e){
+    if(e.name==='AbortError')return;
+    $("#liveDot").className="bad";$("#liveText").textContent="НЕТ СВЯЗИ";
+    if(!state)$("#overview").innerHTML=`<div class="error">${esc(e.message)}</div>`;
+  }
 }
 
 function detailHtml(r){
@@ -220,9 +250,26 @@ function updatePlanKey(){const opts=contextOptions($("#planScope").value,$("#pla
 function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",defs=scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
 async function savePlan(){const scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={};$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();state.plans=j.dict;$("#planDialog").close();renderAll()}
 
+function fillMonths(){
+  const sel=$("#month");
+  const now=new Date();
+  const monthNames=["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+  const opts=[];
+  // История с января 2025 + два будущих месяца для планирования.
+  const start=new Date(2025,0,1);
+  const finish=new Date(now.getFullYear(),now.getMonth()+2,1);
+  for(let d=new Date(start);d<=finish;d.setMonth(d.getMonth()+1)){
+    const value=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    opts.push(`<option value="${value}">${monthNames[d.getMonth()]} ${d.getFullYear()}</option>`);
+  }
+  sel.innerHTML=opts.reverse().join('');
+  const cur=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  sel.value=cur;
+}
+
 function init(){
-  $("#month").value=new Date().toISOString().slice(0,7);
-  $("#month").addEventListener('change',load);$("#period").addEventListener('change',load);$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
+  fillMonths();
+  $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{state=null;load()});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
   $("#tabs").addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;$$('.tab').forEach(x=>x.classList.remove('active'));$$('.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active')});
   document.body.addEventListener('click',e=>{const x=e.target.closest('[data-drill="1"]');if(x)openDrill(x)});
   $("#closeDrill").addEventListener('click',()=>$("#drillDialog").close());$("#drillSearch").addEventListener('input',renderDrillRows);

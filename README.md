@@ -191,3 +191,16 @@ Health check:
 ```text
 GET /health
 ```
+
+## Render Free
+
+Эта сборка специально настроена на Render Free:
+
+- `plan: free`;
+- persistent disk не используется;
+- `DATA_DIR=/tmp/mavis-dashboard`;
+- для предотвращения spin-down используйте UptimeRobot HTTP monitor на `/health` каждые 5 минут.
+
+Важно: SQLite на Free Render является временным. После restart/redeploy сохранённые через интерфейс планы могут сброситься.
+Факт из Bitrix при этом всегда загрузится заново. Для постоянного редактируемого хранения планов потребуется
+вынести только таблицу планов во внешнее бесплатное хранилище либо Bitrix.
