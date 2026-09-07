@@ -81,6 +81,13 @@ def _apply_runtime(snap, details, month):
     x['comments']=storage.comments(month)
     x['manual_nps']=storage.manual_nps(month)
     x['storage_backend']=storage.backend_name
+    traffic_assignments=storage.get_setting('sales_source_overrides',{})
+    if not isinstance(traffic_assignments,dict): traffic_assignments={}
+    x['traffic_config']={
+        'assignments':traffic_assignments,
+        'groups':['Холодные продажи','Входящий трафик продажи','Повторные продажи по базе','Прочее'],
+        'available_sources':(x.get('sales') or {}).get('available_sources') or []
+    }
     available=x.get('available_dormant_stages') or []
     selected=_dormant_stages(available)
     x['dormant_config']={'selected_stages':selected,'available_stages':available}
@@ -122,7 +129,9 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
                 snap = demo_snapshot(month, period)
                 details = {"sales":{"leads":[],"deals":[]},"production":{}}
             else:
-                snap = await build_snapshot(client, month, period, settings.timezone, custom_start, custom_end)
+                source_overrides=storage.get_setting('sales_source_overrides',{})
+                if not isinstance(source_overrides,dict): source_overrides={}
+                snap = await build_snapshot(client, month, period, settings.timezone, custom_start, custom_end, source_overrides=source_overrides)
                 details = snap.pop("_details", {})
             cache[key] = snap
             detail_cache[key] = details
@@ -201,7 +210,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.6", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.7", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -243,7 +252,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.6", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.8", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
@@ -275,7 +284,7 @@ async def api_snapshot(
 async def drilldown(
     scope: str, metric: str, month: str = "", period: str = "month", period_type: str = "current",
     manager: str | None = None, group: str | None = None, source: str | None = None, product: str | None = None,
-    expert: str | None = None, stage: str | None = None, reason: str | None = None, week: int | None = None,
+    expert: str | None = None, stage: str | None = None, reason: str | None = None, week: int | None = None, day: int | None = None,
     custom_start: str = "", custom_end: str = "", offset: int = 0, limit: int = 500,
 ):
     month = month or current_month(); key=(month,period,custom_start or "",custom_end or "")
@@ -284,7 +293,7 @@ async def drilldown(
         return JSONResponse({"loading":True,"message":"Расшифровка готовится вместе со snapshot"},status_code=202)
     details=detail_cache.get(key,{})
     if scope == "sales":
-        rows=filter_sales_details(details.get("sales",{}), metric, period_type, manager, group, source, product, week, stage)
+        rows=filter_sales_details(details.get("sales",{}), metric, period_type, manager, group, source, product, week, stage, day)
     elif scope == "production":
         rows=filter_prod_details(details.get("production",{}), metric, expert, product, stage, reason)
         if metric.startswith('dormant') or metric=='dormant_count':
@@ -353,6 +362,38 @@ async def delete_nps(month:str, entry_id:str, admin_key:str=''):
 async def save_dormant_config(body: DormantConfigBody):
     if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
     storage.set_setting('dormant_stages',json.dumps(body.stages,ensure_ascii=False));return {'ok':True,'stages':body.stages}
+
+
+class TrafficConfigBody(BaseModel):
+    assignments: dict[str, str]
+    admin_key: str = ""
+
+@app.get('/api/traffic-config')
+async def get_traffic_config():
+    value=storage.get_setting('sales_source_overrides',{})
+    if not isinstance(value,dict): value={}
+    return {'ok':True,'assignments':value}
+
+@app.put('/api/traffic-config')
+async def save_traffic_config(body: TrafficConfigBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):
+        raise HTTPException(403,'Неверный ADMIN_KEY')
+    allowed={'Холодные продажи','Входящий трафик продажи','Повторные продажи по базе','Прочее','__ignore__'}
+    cleaned={}
+    for source,group in (body.assignments or {}).items():
+        source=str(source or '').strip()
+        group=str(group or '').strip()
+        if not source or not group:
+            continue
+        if group not in allowed:
+            raise HTTPException(400,f'Некорректная группа для источника {source}')
+        cleaned[source]=group
+    storage.set_setting('sales_source_overrides',cleaned)
+    for k in list(cache_time):
+        cache_time[k]=0
+    schedule_snapshot(current_month(),'month',force=True)
+    await broadcast({'type':'traffic-config'})
+    return {'ok':True,'assignments':cleaned}
 
 @app.get('/api/dynamics')
 async def dynamics(month:str='',months:int=6):

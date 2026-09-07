@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import json
 import math
 import re
@@ -208,16 +209,33 @@ def norm_text(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower().replace("ё", "е"))
 
 
-def sales_block(client_type: Any, source: str) -> str:
+def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[str, str]] = None) -> str:
     """Business split used in OP operational / plan-fact tables.
 
-    1) Existing client -> Repeat sales by base.
-    2) New client + Cold call -> Cold sales.
-    3) New client + any other source -> Incoming traffic sales.
+    Default (AUTO) rule:
+      1) Existing client -> Repeat sales by base.
+      2) Reanimation / repeat-base source -> Repeat sales by base.
+      3) New client + Cold call -> Cold sales.
+      4) New client + other source -> Incoming traffic.
 
-    For legacy rows where client type is empty, use explicit repeat-source names
-    as a safe fallback before classifying by source.
+    A dashboard admin may explicitly override an exact Bitrix source into:
+      Cold / Incoming / Repeat / Other / Ignore in breakdown.
+    Overall department totals are never lost; "Ignore" only removes the source
+    from traffic/source matrices.
     """
+    source_overrides = source_overrides or {}
+    explicit = source_overrides.get(str(source or ""))
+    if explicit:
+        if explicit == "__ignore__":
+            return "Не учитывать"
+        if explicit in {
+            "Холодные продажи",
+            "Входящий трафик продажи",
+            "Повторные продажи по базе",
+            "Прочее",
+        }:
+            return explicit
+
     ct = norm_text(client_type)
     src = norm_text(source)
     if "действующ" in ct:
@@ -488,10 +506,72 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     weeks["average_product_check"] = [round(weeks["sold_product_amount"][i] / weeks["sold_products"][i], 2) if weeks["sold_products"][i] else 0 for i in range(5)]
     weeks["product_sale_rate"] = [pct(weeks["sold_products"][i], weeks["products"][i]) for i in range(5)]
 
-    return {"metrics": m, "weeks": weeks}
+    # Daily dynamics for the selected month. This powers expandable
+    # report-period/source/week views in the dashboard.
+    day_count = calendar.monthrange(month_start.year, month_start.month)[1] if month_start else 31
+    days_map = {k: [0 for _ in range(day_count)] for k in [
+        "leads", "qualified", "deals", "deal_amount", "sales", "sales_amount",
+        "products", "product_amount", "sold_products", "sold_product_amount"
+    ]}
+
+    def _day_idx(v):
+        d = parse_dt(v, month_start.tzinfo if month_start else None)
+        if not d or not month_start or d.year != month_start.year or d.month != month_start.month:
+            return -1
+        return d.day - 1
+
+    for r in lead_rows:
+        di = _day_idx(r.get("created"))
+        if di >= 0:
+            days_map["leads"][di] += 1
+            if r.get("is_qualified"):
+                days_map["qualified"][di] += 1
+
+    for r in deal_rows:
+        di = _day_idx(r.get("created"))
+        if di >= 0:
+            days_map["deals"][di] += 1
+            days_map["deal_amount"][di] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                days_map["products"][di] += pr["quantity"]
+                days_map["product_amount"][di] += pr["amount"]
+
+    for r in sales_rows:
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["sales"][di] += 1
+            days_map["sales_amount"][di] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                days_map["sold_products"][di] += pr["quantity"]
+                days_map["sold_product_amount"][di] += pr["amount"]
+
+    days_map["qualified_rate"] = [pct(days_map["qualified"][i], days_map["leads"][i]) for i in range(day_count)]
+    days_map["lead_to_deal_rate"] = [pct(days_map["deals"][i], days_map["qualified"][i]) for i in range(day_count)]
+    days_map["deal_to_sale_rate"] = [pct(days_map["sales"][i], days_map["deals"][i]) for i in range(day_count)]
+    days_map["products_per_deal"] = [
+        round(days_map["products"][i] / days_map["deals"][i], 2) if days_map["deals"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["average_check"] = [
+        round(days_map["sales_amount"][i] / days_map["sales"][i], 2) if days_map["sales"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["average_product_check"] = [
+        round(days_map["sold_product_amount"][i] / days_map["sold_products"][i], 2) if days_map["sold_products"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["product_sale_rate"] = [
+        pct(days_map["sold_products"][i], days_map["products"][i]) for i in range(day_count)
+    ]
+
+    return {"metrics": m, "weeks": weeks, "days": days_map}
 
 
-async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str):
+async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str, source_overrides: Optional[Dict[str, str]] = None):
     month_start, next_start, prev2_start, _ = month_bounds(month_key, tz_name)
     tz = ZoneInfo(tz_name)
 
@@ -572,7 +652,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
             ptype = "older"
         src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
         client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
-        block = sales_block(client_type, src)
+        block = sales_block(client_type, src, source_overrides)
         deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
         is_won = cid == 0 and str(d.get("STAGE_ID")) in success_stage_ids
         product_rows = []
@@ -603,7 +683,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         status = stage_name(meta, l.get("STATUS_ID"), "STATUS")
         src = source_name(meta, l)
         client_type = enum_label(meta, F_LEAD_CLIENT_TYPE, l.get(F_LEAD_CLIENT_TYPE)) or "Не указан"
-        block = sales_block(client_type, src)
+        block = sales_block(client_type, src, source_overrides)
         leads.append({
             "kind": "lead", "id": str(l.get("ID")), "title": l.get("TITLE") or f"Лид {l.get('ID')}",
             "manager": user_name(meta, l.get("ASSIGNED_BY_ID")), "source": src, "client_type": client_type, "group": block,
@@ -617,6 +697,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
 
     groups = []
     sales_blocks = ["Холодные продажи", "Входящий трафик продажи", "Повторные продажи по базе"]
+    if any(r.get("group") == "Прочее" for r in leads + deals):
+        sales_blocks.append("Прочее")
     for g in sales_blocks:
         row = {"name": g}
         for p in ["total", "current", "previous"]:
@@ -654,11 +736,22 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         for p in ["total", "current", "previous"]:
             row[p] = aggregate_sales(records, p, manager=m, month_start=month_start)
         row["groups"] = []
+        row["sources"] = []
         for g in sales_blocks:
             grow = {"name": g}
             for p in ["total", "current", "previous"]:
                 grow[p] = aggregate_sales(records, p, manager=m, group=g, month_start=month_start)
             row["groups"].append(grow)
+
+            manager_sources = sorted({
+                r.get("source") for r in leads + deals
+                if r.get("manager") == m and r.get("group") == g and r.get("source")
+            })
+            for src_name in manager_sources:
+                srow = {"name": src_name, "group": g}
+                for p in ["total", "current", "previous"]:
+                    srow[p] = aggregate_sales(records, p, manager=m, group=g, source=src_name, month_start=month_start)
+                row["sources"].append(srow)
         managers.append(row)
 
     product_categories = []
@@ -702,6 +795,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
 
     return {
         "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "managers": managers,
+        "available_sources": sorted({r.get("source") for r in leads + deals if r.get("source")}),
         "product_categories": product_categories, "product_managers": product_managers,
         "stages": stage_rows, "active_deals_count": len(active),
         "sale_filter": {
@@ -966,9 +1060,9 @@ def month_pace(month_key: str, tz_name: str):
     return {"business_days_total":len(days),"business_days_elapsed":len(elapsed),"share":round(len(elapsed)/len(days),4) if days else 0}
 
 
-async def build_snapshot(client, month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = ""):
+async def build_snapshot(client, month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = "", source_overrides: Optional[Dict[str, str]] = None):
     meta=await client.meta()
-    sales_task=load_sales(client,month_key,meta,tz_name)
+    sales_task=load_sales(client,month_key,meta,tz_name,source_overrides=source_overrides)
     prod_task=load_production(client,month_key,period,meta,tz_name,custom_start,custom_end)
     sales,production=await asyncio.gather(sales_task,prod_task)
     details={"sales":sales.pop("_records"),"production":production.pop("_records")}
@@ -990,7 +1084,7 @@ async def build_snapshot(client, month_key: str, period: str, tz_name: str, cust
     }
 
 
-def filter_sales_details(details, metric, period_type="current", manager=None, group=None, source=None, product=None, week=None, stage=None):
+def filter_sales_details(details, metric, period_type="current", manager=None, group=None, source=None, product=None, week=None, stage=None, day=None):
     leads=details.get("leads",[]); deals=details.get("deals",[]); active=details.get("active",[])
     def common(r):
         if manager and r.get("manager")!=manager:return False
@@ -1015,13 +1109,19 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
     if metric in {"leads","qualified","qualified_rate","lead_to_deal_rate"}:
         rows=lead_rows if metric=="leads" else [r for r in lead_rows if r.get("is_qualified")]
         if week is not None: rows=[r for r in rows if r.get("week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
         return rows
     if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue"}:
         rows=[r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
         return rows
     rows=deal_rows
     if week is not None: rows=[r for r in rows if r.get("creation_week")==int(week)]
+    if day is not None:
+        rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
     return rows
 
 
@@ -1061,7 +1161,7 @@ async def build_trends_light(client, end_month: str, months: int, tz_name: str):
     async def _load_success():
         rows=[]
         for sid in success_stage_ids:
-            rows.extend(await client.deal_list({"CATEGORY_ID":0,"STAGE_ID":sid,">=MOVED_TIME":iso(start),"<MOVED_TIME":iso(end)},DEAL_SELECT) or [])
+            rows.extend(await client.deal_list({"CATEGORY_ID":0,"STAGE_ID":sid,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT) or [])
         return list({str(d.get("ID")):d for d in rows}.values())
     sales_won_task=_load_success()
     leads_task=client.lead_list({">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},LEAD_SELECT)
@@ -1078,7 +1178,7 @@ async def build_trends_light(client, end_month: str, months: int, tz_name: str):
         k=key_of(d.get('DATE_CREATE')); 
         if k in out: out[k]['deals']+=1
     for d in sw or []:
-        k=key_of(d.get('MOVED_TIME'))
+        k=key_of(d.get('CLOSEDATE'))
         if k in out: out[k]['sales']+=1; out[k]['sales_amount']+=money(d)
     qneedle='качественный лид'
     for l in leads or []:

@@ -128,62 +128,75 @@ function salesProductTable(){
   const rows=state.sales.product_categories.map(r=>{const x=r[selectedPeriodType].metrics;const extra={period_type:selectedPeriodType,product:r.name};return `<tr><td>${esc(r.name)}</td><td class="num">${tdLink(x.products,"sales","products","num",extra)}</td><td class="num">${tdLink(x.product_amount,"sales","product_amount","money",extra)}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",extra)}</td><td class="num">${tdLink(x.sold_product_amount,"sales","sold_product_amount","money",extra)}</td><td class="num">${tdLink(x.average_product_check,"sales","average_product_check","money",extra)}</td><td class="num">${tdLink(x.product_sale_rate,"sales","product_sale_rate","pct",extra)}</td></tr>`}).join("");
   return `<div class="scroll-x"><table><thead><tr><th>Категория</th><th class="num">В сделках</th><th class="num">Сумма</th><th class="num">Продано</th><th class="num">Сумма продаж</th><th class="num">Ср чек</th><th class="num">Конв.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+
+function dailyMetricTable(daysMap, defs, startDay=1, endDay=null, extra={}){
+  const first=daysMap?.[defs[0]?.[0]]||[];
+  const n=first.length||31;
+  const last=Math.min(endDay||n,n);
+  const rows=[];
+  for(let day=startDay;day<=last;day++){
+    const hasActivity=defs.some(([k])=>Number(daysMap?.[k]?.[day-1]||0)!==0);
+    rows.push(`<tr class="${hasActivity?'':'zero-day'}"><td>${day}</td>${defs.map(([k,label,type])=>`<td class="num">${tdLink(daysMap?.[k]?.[day-1]||0,'sales',k,type,{...extra,day})}</td>`).join('')}</tr>`);
+  }
+  return `<div class="scroll-x"><table class="daily-table"><thead><tr><th>День</th>${defs.map(d=>`<th class="num">${esc(d[1])}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+
+function compactWeekMatrix(defs){
+  const w=state.sales.overall.total.weeks||{};
+  return `<div class="compact-week-matrix"><div class="compact-week-head"><span>Показатель</span>${[1,2,3,4,5].map(i=>`<span>${i} нед.</span>`).join('')}</div>${defs.map(([k,label,type])=>`<div class="compact-week-row"><strong>${esc(label)}</strong>${[0,1,2,3,4].map(i=>`<span>${format(w[k]?.[i]||0,type)}</span>`).join('')}</div>`).join('')}</div>`;
+}
+
+function weekDayBreakdowns(defs){
+  const days=state.sales.overall.total.days||{};
+  const ranges=[[1,7],[8,14],[15,21],[22,28],[29,(days?.[defs[0]?.[0]]||[]).length||31]];
+  return `<div class="week-day-details">${ranges.map(([a,b],i)=>`<details class="day-breakdown"><summary><span>${i+1} неделя · ${a}–${b}</span><span class="muted">раскрыть по дням</span></summary>${dailyMetricTable(days,defs,a,b,{period_type:'total',week:i})}</details>`).join('')}</div>`;
+}
+
 function weeklyGrid(){
   const w=state.sales.overall.total.weeks;
   const defs=[["leads","Лиды","num"],["qualified","Квал. лиды","num"],["qualified_rate","% в квал.","pct"],["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма сделок","money"],["sales","Продажи","num"],["sales_amount","Выручка","money"],["products","Продукты","num"],["product_amount","Сумма продуктов","money"],["sold_products","Продано продуктов","num"],["sold_product_amount","Сумма прод. продуктов","money"]];
   let cells=`<div class="head">Показатель</div>${[1,2,3,4,5].map(i=>`<div class="head">${i} нед.</div>`).join("")}`;
   defs.forEach(([k,label,type])=>{cells+=`<div class="metric">${esc(label)}</div>`;for(let i=0;i<5;i++)cells+=`<div class="value" ${drillAttrs("sales",k,{period_type:"total",week:i})}>${format(w[k]?.[i]||0,type)}</div>`});
-  return `<div class="week-grid">${cells}</div>`;
+  return `<div class="week-grid">${cells}</div>${weekDayBreakdowns(defs)}`;
+}
+
+function periodDailyBlock(agg, periodType, extra={}){
+  const m=agg?.metrics||{},d=agg?.days||{};
+  if(periodType==='previous'){
+    return `<details class="period-row"><summary><span>Предыдущий период · хвост</span><span><b>${fmt(m.deals)} шт</b> · ${money(m.deal_amount)} · продано ${fmt(m.sales)} · ${money(m.sales_amount)}</span></summary><div class="period-body"><div class="opening-balance">Хвост на начало: <strong>${fmt(m.deals)} шт · ${money(m.deal_amount)}</strong></div>${dailyMetricTable(d,[['sales','Продажи','num'],['sales_amount','Выручка','money']],1,null,{...extra,period_type:'previous'})}</div></details>`;
+  }
+  return `<details class="period-row"><summary><span>Отчётный период</span><span>сделки <b>${fmt(m.deals)}</b> · ${money(m.deal_amount)} · продажи ${fmt(m.sales)} · ${money(m.sales_amount)}</span></summary><div class="period-body">${dailyMetricTable(d,[['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']],1,null,{...extra,period_type:'current'})}</div></details>`;
+}
+
+function salesStructuredSection(title,subtitle,keys,weekDefs,kind){
+  const x=state.sales.overall.total.metrics;
+  return `<div class="sales-structured ${kind}"><div class="sales-structured-head"><div><div class="eyebrow">${esc(title)}</div><h3>${esc(subtitle)}</h3></div></div><div class="kpi-grid structured-grid">${keys.map(k=>{const [label,type]=SALES_LABELS[k];return card(label,x[k],'sales',k,type,{period_type:'total'})}).join('')}</div>${compactWeekMatrix(weekDefs)}</div>`;
 }
 function salesStages(){
   const rows=state.sales.stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"sales","deals","num",{period_type:"total",stage:r.name})}</td><td class="num">${tdLink(r.amount,"sales","deal_amount","money",{period_type:"total",stage:r.name})}</td></tr>`).join("");
   return `<table><thead><tr><th>Стадия</th><th class="num">Сделок</th><th class="num">Сумма</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-function salesTypeMatrix(){
-  const rows=(state.sales.groups||[]).map(g=>{
-    const c=g.current.metrics,p=g.previous.metrics,t=g.total.metrics;
-    const ec={period_type:'current',group:g.name},ep={period_type:'previous',group:g.name},et={period_type:'total',group:g.name};
-    return `<tr>
-      <td><strong>${esc(g.name)}</strong></td>
-      <td class="num">${tdLink(c.leads,'sales','leads','num',ec)}</td><td class="num">${tdLink(c.qualified,'sales','qualified','num',ec)}</td>
-      <td class="num">${tdLink(c.deals,'sales','deals','num',ec)}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',ec)}</td>
-      <td class="num">${tdLink(c.sales,'sales','sales','num',ec)}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',ec)}</td>
-      <td class="num">${tdLink(p.deals,'sales','deals','num',ep)}</td><td class="num">${tdLink(p.deal_amount,'sales','deal_amount','money',ep)}</td>
-      <td class="num">${tdLink(p.sales,'sales','sales','num',ep)}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',ep)}</td>
-      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',et)}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',et)}</td>
-      <td class="num">${getPlan('sales','sales_amount','source_group',g.name)?money(getPlan('sales','sales_amount','source_group',g.name)):'—'}</td>
-      <td class="num">${getPlan('sales','sales_amount','source_group',g.name)?pct(t.sales_amount/getPlan('sales','sales_amount','source_group',g.name)*100):'—'}</td>
-    </tr>`;
-  }).join('');
-  return `<div class="scroll-x"><table class="type-matrix"><thead>
-    <tr><th rowspan="2">Тип продаж</th><th colspan="6" class="period-band current-band">Отчётный период · создано в месяце</th><th colspan="4" class="period-band previous-band">Предыдущий период · хвост</th><th colspan="4" class="period-band total-band">Продажи месяца</th></tr>
-    <tr><th>Лиды</th><th>Квал.</th><th>Сделки</th><th>Сумма сделок</th><th>Продажи</th><th>Выручка</th><th>Хвост, шт</th><th>Сумма хвоста</th><th>Продажи</th><th>Выручка</th><th>Продажи</th><th>Выручка</th><th>План</th><th>% плана</th></tr>
-  </thead><tbody>${rows}</tbody></table></div>`;
+
+function sourceRowsByGroup(group){
+  return (state.sales.source_blocks||[]).filter(r=>r.group===group);
 }
-function sourcePeriodMatrix(){
-  const grouped=new Map();
-  (state.sales.source_blocks||[]).forEach(r=>{if(!grouped.has(r.group))grouped.set(r.group,[]);grouped.get(r.group).push(r)});
-  return [...grouped.entries()].map(([group,items])=>{
-    const rows=items.map(r=>{const c=r.current.metrics,p=r.previous.metrics,t=r.total.metrics;return `<tr>
-      <td>${esc(r.name)}</td><td class="num">${tdLink(c.deals,'sales','deals','num',{period_type:'current',group,source:r.name})}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',{period_type:'current',group,source:r.name})}</td>
-      <td class="num">${tdLink(c.sales,'sales','sales','num',{period_type:'current',group,source:r.name})}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',{period_type:'current',group,source:r.name})}</td>
-      <td class="num">${tdLink(p.sales,'sales','sales','num',{period_type:'previous',group,source:r.name})}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',{period_type:'previous',group,source:r.name})}</td>
-      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',{period_type:'total',group,source:r.name})}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',{period_type:'total',group,source:r.name})}</td></tr>`}).join('');
-    return `<details class="manager-breakdown source-breakdown"><summary><span>${esc(group)}</span><span class="muted">${items.length} источн.</span></summary><div class="manager-breakdown-body single"><div class="scroll-x"><table><thead><tr><th>Источник Bitrix</th><th>Сделки отч.</th><th>Сумма сделок</th><th>Продажи отч.</th><th>Выручка отч.</th><th>Продажи хвоста</th><th>Выручка хвоста</th><th>Продажи всего</th><th>Выручка всего</th></tr></thead><tbody>${rows}</tbody></table></div></div></details>`;
-  }).join('');
-}
-function managerTypeMatrix(){
-  return managers().map(m=>{
-    const rows=(m.groups||[]).map(g=>{const c=g.current.metrics,p=g.previous.metrics,t=g.total.metrics;return `<tr>
-      <td><strong>${esc(g.name)}</strong></td><td class="num">${tdLink(c.deals,'sales','deals','num',{period_type:'current',manager:m.name,group:g.name})}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',{period_type:'current',manager:m.name,group:g.name})}</td>
-      <td class="num">${tdLink(c.sales,'sales','sales','num',{period_type:'current',manager:m.name,group:g.name})}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',{period_type:'current',manager:m.name,group:g.name})}</td>
-      <td class="num">${tdLink(p.sales,'sales','sales','num',{period_type:'previous',manager:m.name,group:g.name})}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',{period_type:'previous',manager:m.name,group:g.name})}</td>
-      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',{period_type:'total',manager:m.name,group:g.name})}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',{period_type:'total',manager:m.name,group:g.name})}</td></tr>`}).join('');
-    return `<details class="manager-breakdown"><summary><span>${esc(m.name)}</span><span class="muted">холодные · входящие · повторные</span></summary><div class="manager-breakdown-body single"><div class="scroll-x"><table><thead><tr><th>Тип</th><th>Сделки отч.</th><th>Сумма сделок</th><th>Продажи отч.</th><th>Выручка отч.</th><th>Продажи хвоста</th><th>Выручка хвоста</th><th>Продажи всего</th><th>Выручка всего</th></tr></thead><tbody>${rows}</tbody></table></div></div></details>`;
+function trafficDistributionTree(){
+  return (state.sales.groups||[]).map(g=>{
+    const t=g.total.metrics;
+    const sources=sourceRowsByGroup(g.name);
+    return `<details class="traffic-group" open><summary><div><strong>${esc(g.name)}</strong><span class="muted">${sources.length} источн.</span></div><div class="traffic-summary"><span>${fmt(t.sales)} продаж</span><b>${money(t.sales_amount)}</b></div></summary><div class="traffic-group-body">${sources.length?sources.map(r=>`<details class="traffic-source"><summary><span>${esc(r.name)}</span><span>${fmt(r.total.metrics.sales)} продаж · ${money(r.total.metrics.sales_amount)}</span></summary><div class="traffic-source-body">${periodDailyBlock(r.current,'current',{group:g.name,source:r.name})}${periodDailyBlock(r.previous,'previous',{group:g.name,source:r.name})}</div></details>`).join(''):'<div class="empty-inline">Нет источников</div>'}</div></details>`;
   }).join('');
 }
 
+function managerSourceTree(){
+  return managers().map(m=>{
+    const sources=m.sources||[];
+    const byGroup=new Map();
+    sources.forEach(s=>{if(!byGroup.has(s.group))byGroup.set(s.group,[]);byGroup.get(s.group).push(s)});
+    return `<details class="manager-breakdown" open><summary><span>${esc(m.name)}</span><span class="muted">${sources.length} источн. · ${fmt(m.total.metrics.sales)} продаж · ${money(m.total.metrics.sales_amount)}</span></summary><div class="manager-source-tree">${[...byGroup.entries()].map(([group,items])=>`<details class="traffic-group manager-traffic"><summary><strong>${esc(group)}</strong><span>${items.length} источн.</span></summary><div class="traffic-group-body">${items.map(r=>`<details class="traffic-source"><summary><span>${esc(r.name)}</span><span>${fmt(r.total.metrics.sales)} продаж · ${money(r.total.metrics.sales_amount)}</span></summary><div class="traffic-source-body">${periodDailyBlock(r.current,'current',{manager:m.name,group,source:r.name})}${periodDailyBlock(r.previous,'previous',{manager:m.name,group,source:r.name})}</div></details>`).join('')}</div></details>`).join('')}</div></details>`;
+  }).join('');
+}
 function salesManagerBreakdowns(){
   const productMap=new Map((state.sales.product_managers||[]).map(x=>[x.name,x.categories||[]]));
   return managers().map(m=>{
@@ -192,34 +205,73 @@ function salesManagerBreakdowns(){
     return `<details class="manager-breakdown"><summary><span>${esc(m.name)}</span><span class="muted">типы продаж + продукты</span></summary><div class="manager-breakdown-body"><div><div class="subhead">По типам продаж</div><div class="scroll-x"><table><thead><tr><th>Тип продаж</th><th class="num">Лиды</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${groups}</tbody></table></div></div><div><div class="subhead">По продуктовым категориям</div><div class="scroll-x"><table><thead><tr><th>Категория</th><th class="num">В сделках</th><th class="num">Сумма</th><th class="num">Продано</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${products}</tbody></table></div></div></div></details>`;
   }).join("");
 }
+
 function renderSales(){
-  const x=state.sales.overall[selectedPeriodType].metrics;
+  const x=state.sales.overall.total.metrics;
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Предоплата + успешная продажа';
-  $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Сделки — созданные в выбранном месяце. Продажи — закрытые в выбранном месяце, включая хвост. Детальная матрица по менеджерам, источникам и продуктам</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
-  <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный период + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки в Bitrix.</div>
+  $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Структура как в операционной таблице: лиды → сделки/продажи → продукты → источники и менеджеры → неделя → дни</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
+  <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный месяц + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки Bitrix.</div>
   <div class="department-page-head sales-page-head">
-    ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:'ВЫБРАННЫЙ МЕСЯЦ' ,value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:selectedPeriodType},substats:[{label:'Продажи',value:x.sales},{label:'Сделки',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
+    ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:'ВЫБРАННЫЙ МЕСЯЦ',value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'total'},substats:[{label:'Продажи',value:x.sales},{label:'Сделки периода',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
     <div class="overview-signals compact-signals">
-      ${signalCard('blue','Предоплата + успешная продажа',x.sales_amount,'money','sales','sales_amount','дата завершения',{period_type:selectedPeriodType})}
-      ${signalCard('green','Конверсия сделок периода → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','',{period_type:selectedPeriodType})}
+      ${signalCard('blue','Сумма продаж',x.sales_amount,'money','sales','sales_amount','включая хвост',{period_type:'total'})}
+      ${signalCard('green','Конверсия сделок периода → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','когортная',{period_type:'total'})}
     </div>
   </div>
-  <div class="section-title">Ключевые показатели</div>
-  <div class="kpi-grid dense">${Object.entries(SALES_LABELS).map(([k,[label,type]])=>card(label,x[k],"sales",k,type,{period_type:selectedPeriodType})).join("")}</div>
-  ${panel("Распределение по типам продаж",salesTypeMatrix(),"как в операционной таблице: холодные · входящие · повторные; отчётный период и хвост внутри разбивки")}
-  <div class="grid-2">${panel("Менеджеры",salesManagerTable(false),"общий результат выбранного месяца")}${panel("Продуктовые категории",salesProductTable(),"разбивка по продуктам")}</div>
-  ${panel("По менеджерам · тип продаж × период",managerTypeMatrix(),"Ирина / Роман → холодные, входящие, повторные → отчётный период и хвост")}
-  ${panel("По источникам Bitrix · тип × период",sourcePeriodMatrix(),"раскрой тип → точный источник → отчётный период / хвост → конкретные сделки")}
-  ${panel("Менеджеры · продукты",salesManagerBreakdowns(),"каждый МОП → типы продаж + продуктовые категории")}
-  ${panel("Недельная динамика · выбранный месяц",weeklyGrid(),"1–7 · 8–14 · 15–21 · 22–28 · 29–конец")}
+
+  ${salesStructuredSection('БЛОК 1','Лиды и квалификация',['leads','qualified','qualified_rate','lead_to_deal_rate'],[['leads','Лиды','num'],['qualified','Квал.','num'],['qualified_rate','% в квал.','pct']],'lead-block')}
+  ${salesStructuredSection('БЛОК 2','Сделки и продажи',['deals','deal_amount','sales','sales_amount','average_check','deal_to_sale_rate'],[['deals','Сделки','num'],['sales','Продажи','num'],['sales_amount','Выручка','money']],'sales-block')}
+  ${salesStructuredSection('БЛОК 3','Продукты',['products_per_deal','products','product_amount','sold_products','sold_product_amount','average_product_check','product_sale_rate'],[['products','Продукты','num'],['sold_products','Продано','num'],['sold_product_amount','Выручка продуктов','money']],'product-block')}
+
+  ${panel("Распределение по типам и источникам",trafficDistributionTree(),"раскрой тип → источник → отчётный период / хвост → дни")}
+  ${panel("По менеджерам → источники → период → дни",managerSourceTree(),"структура повторяет операционную таблицу для каждого менеджера")}
+  <div class="grid-2">${panel("Менеджеры · итог месяца",salesManagerTable(false),"общий результат выбранного месяца")}${panel("Продуктовые категории",salesProductTable(),"разбивка по продуктам")}</div>
+  ${panel("Менеджеры · продукты",salesManagerBreakdowns(),"каждый МОП → продукты и результат")}
+  ${panel("Недельная динамика · выбранный месяц",weeklyGrid(),"каждую неделю можно раскрыть до конкретных дней")}
   ${panel("Текущая воронка продаж",salesStages(),`${fmt(state.sales.active_deals_count)} активных сделок`)}`;
   $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
 }
-
 function prodProductTable(){
-  const rows=state.production.products.map(r=>{const plan=getPlan("production","closed_amount","product",r.name);return `<tr><td>${esc(r.name)}</td><td>${esc(r.complexity||r.category)}</td><td class="num">${r.norm_days?days(r.norm_days):"—"}</td><td class="num">${tdLink(r.new_count,"production","new_count","num",{product:r.name})}</td><td class="num">${tdLink(r.new_amount,"production","new_amount","money",{product:r.name})}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{product:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{product:r.name})}</td><td class="num">${plan?money(plan):"—"}</td><td class="num">${plan?pct(r.closed_amount/plan*100):"—"}</td><td class="num">${tdLink(r.conversion_pct,"production","new_to_success_pct","pct",{product:r.name})}</td><td class="num">${tdLink(r.avg_check,"production","avg_check","money",{product:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{product:r.name})}</td><td class="num">${tdLink(r.avg_deviation_days,"production","avg_deviation_days","days",{product:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{product:r.name})}</td><td class="num">${tdLink(r.capacity_count,"production","capacity_count","num",{product:r.name})}</td><td class="num">${tdLink(r.capacity_amount,"production","capacity_amount","money",{product:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{product:r.name})}</td><td class="num">${tdLink(r.returns_amount,"production","returns_amount","money",{product:r.name})}</td></tr>`}).join("");
-  return `<div class="scroll-x"><table><thead><tr><th>Продукт</th><th>Сложность</th><th class="num">Норма</th><th class="num">Новых</th><th class="num">Новых BYN</th><th class="num">Закрыто</th><th class="num">Закрыто BYN</th><th class="num">План</th><th class="num">% плана</th><th class="num">Конв.</th><th class="num">Ср чек</th><th class="num">Срок</th><th class="num">Откл.</th><th class="num">В норме</th><th class="num">Ёмкость</th><th class="num">Ёмкость BYN</th><th class="num">Возвраты</th><th class="num">Возвраты BYN</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const rows=state.production.products.map(r=>{
+    const planCount=getPlan("production","closed_count","product",r.name);
+    const planAmount=getPlan("production","closed_amount","product",r.name);
+    return `<tr>
+      <td>${esc(r.name)}</td>
+      <td>${esc(r.complexity||r.category)}</td>
+      <td class="num">${r.norm_days?days(r.norm_days):"—"}</td>
+      <td class="num">${tdLink(r.new_count,"production","new_count","num",{product:r.name})}</td>
+      <td class="num">${tdLink(r.new_amount,"production","new_amount","money",{product:r.name})}</td>
+      <td class="num">${tdLink(r.period_closed_count,"production","period_closed_count","num",{product:r.name})}</td>
+      <td class="num">${tdLink(r.conversion_pct,"production","new_to_success_pct","pct",{product:r.name})}</td>
+      <td class="num">${tdLink(r.closed_count,"production","closed_count","num",{product:r.name})}</td>
+      <td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{product:r.name})}</td>
+      <td class="num">${planCount?fmt(planCount)+" шт":"—"}</td>
+      <td class="num">${planCount?pct(r.closed_count/planCount*100):"—"}</td>
+      <td class="num">${planAmount?money(planAmount):"—"}</td>
+      <td class="num">${planAmount?pct(r.closed_amount/planAmount*100):"—"}</td>
+      <td class="num">${tdLink(r.avg_check,"production","avg_check","money",{product:r.name})}</td>
+      <td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{product:r.name})}</td>
+      <td class="num">${tdLink(r.avg_deviation_days,"production","avg_deviation_days","days",{product:r.name})}</td>
+      <td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{product:r.name})}</td>
+      <td class="num">${tdLink(r.capacity_count,"production","capacity_count","num",{product:r.name})}</td>
+      <td class="num">${tdLink(r.capacity_amount,"production","capacity_amount","money",{product:r.name})}</td>
+      <td class="num">${tdLink(r.returns_count,"production","returns_count","num",{product:r.name})}</td>
+      <td class="num">${tdLink(r.returns_amount,"production","returns_amount","money",{product:r.name})}</td>
+      <td class="num"><button class="mini-edit" data-edit-product-plan="${attr(r.name)}">Изменить</button></td>
+    </tr>`}).join("");
+  return `<div class="criteria-box compact-criteria"><strong>Конверсия по продукту</strong> = «Закрыто из новых» / «Новых». Колонка «Закрыто всего» может включать старый хвост и поэтому не участвует в этой конверсии.</div>
+  <div class="scroll-x"><table><thead><tr>
+    <th>Продукт</th><th>Сложность</th><th class="num">Норма</th>
+    <th class="num">Новых</th><th class="num">Новых BYN</th>
+    <th class="num">Закрыто из новых</th><th class="num">Конв.</th>
+    <th class="num">Закрыто всего</th><th class="num">Закрыто BYN</th>
+    <th class="num">План, шт</th><th class="num">% шт</th>
+    <th class="num">План, BYN</th><th class="num">% BYN</th>
+    <th class="num">Ср чек</th><th class="num">Срок</th><th class="num">Откл.</th><th class="num">В норме</th>
+    <th class="num">Ёмкость</th><th class="num">Ёмкость BYN</th><th class="num">Возвраты</th><th class="num">Возвраты BYN</th>
+    <th></th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function expertTable(compact=false){
   const rows=experts().map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{expert:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{expert:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{expert:r.name})}</td>${compact?"":`<td class="num">${getPlan("production","closed_amount","expert",r.name)?money(getPlan("production","closed_amount","expert",r.name)):"—"}</td><td class="num">${getPlan("production","closed_amount","expert",r.name)?pct(r.closed_amount/getPlan("production","closed_amount","expert",r.name)*100):"—"}</td><td class="num">${npsText(expertNps(r))}${expertNpsMeta(r).count?` · ${fmt(expertNpsMeta(r).count)} оц.`:''} <button class="mini-edit" data-nps-edit="1" data-expert="${attr(r.name)}">+ добавить</button></td><td class="num">${tdLink(r.active_count,"production","active","num",{expert:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{expert:r.name})}</td>`}</tr>`).join("");
@@ -280,6 +332,27 @@ function teamSettings(){
   return block('manager','Менеджеры',selectedManagers())+block('expert','Эксперты',selectedExperts())+`<div class="admin-inline"><input id="teamAdminKey" type="password" placeholder="ADMIN_KEY"></div>`;
 }
 function dormantSettings(){const all=state.dormant_config?.available_stages||[],sel=new Set(state.dormant_config?.selected_stages||[]);return `<div class="dormant-stage-list">${all.map(s=>`<label><input type="checkbox" data-dormant-stage="1" value="${attr(s)}" ${sel.has(s)?'checked':''}> ${esc(s)}</label>`).join('')}</div><div class="admin-inline"><input id="dormantAdminKey" type="password" placeholder="ADMIN_KEY"><button class="btn ghost" id="saveDormant">Сохранить критерий</button></div>`}
+
+function trafficSettings(){
+  const cfg=state.traffic_config||{},assign=cfg.assignments||{};
+  const sources=cfg.available_sources||state.sales.available_sources||[];
+  const groups=[
+    ["","Авто · по типу клиента и источнику"],
+    ["Холодные продажи","Холодные продажи"],
+    ["Входящий трафик продажи","Входящий трафик"],
+    ["Повторные продажи по базе","Повторные продажи"],
+    ["Прочее","Прочее"],
+    ["__ignore__","Не учитывать в этой разбивке"]
+  ];
+  return `<div class="traffic-config-note">По умолчанию работает согласованная автоматическая логика. Ручная привязка имеет приоритет только для выбранного источника.</div><div class="traffic-config-list">${sources.map(src=>`<div class="traffic-config-row"><span>${esc(src)}</span><select data-traffic-source="${attr(src)}">${groups.map(([v,l])=>`<option value="${attr(v)}" ${(assign[src]||'')===v?'selected':''}>${esc(l)}</option>`).join('')}</select><button class="mini-edit" data-clear-traffic="${attr(src)}">Сбросить</button></div>`).join('')}</div><div class="admin-inline"><input id="trafficAdminKey" type="password" placeholder="ADMIN_KEY"><button class="btn primary-light" id="saveTrafficConfig">Сохранить распределение</button></div>`;
+}
+async function saveTrafficConfig(){
+  const assignments={};
+  $$('[data-traffic-source]').forEach(sel=>{if(sel.value)assignments[sel.dataset.trafficSource]=sel.value});
+  const r=await fetch('/api/traffic-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignments,admin_key:$('#trafficAdminKey')?.value||''})});
+  if(!r.ok){alert(await r.text());return}
+  state=null;load();
+}
 async function addTeam(role){const sel=document.querySelector(`[data-team-select="${role}"]`);if(!sel)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name:sel.value,admin_key:$('#teamAdminKey')?.value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;renderAll()}
 async function removeTeam(role,name){const q=new URLSearchParams({role,name,admin_key:$('#teamAdminKey')?.value||''});const r=await fetch('/api/team?'+q,{method:'DELETE'});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;renderAll()}
 async function saveDormant(){const stages=$$('[data-dormant-stage]:checked').map(x=>x.value);const r=await fetch('/api/dormant-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({stages,admin_key:$('#dormantAdminKey')?.value||''})});if(!r.ok){alert(await r.text());return}state=null;load()}
@@ -303,13 +376,38 @@ function renderForecast(){
   <div class="kpi-grid">${qualityCard("Активные без предполагаемой даты",p.active_missing_expected_count||0,"active_missing_expected_count","не попадают в ёмкость")}${qualityCard("Зависшие без причины",p.dormant_without_reason_count||0,"dormant_count","из ожидаемой даты выбранного периода")}${qualityCard("Активные без продукта",p.active_missing_service_count||0,"active_missing_service_count")}${qualityCard("Активные без эксперта",p.active_missing_expert_count||0,"active_missing_expert_count")}</div>`;
 }
 
+function productionProductPlanTable(){
+  const rows=(state.production?.products||[]).map(r=>{
+    const pc=getPlan("production","closed_count","product",r.name);
+    const pa=getPlan("production","closed_amount","product",r.name);
+    return `<tr>
+      <td>${esc(r.name)}</td>
+      <td class="num">${fmt(r.closed_count)} шт</td>
+      <td class="num">${pc?fmt(pc)+" шт":"—"}</td>
+      <td class="num">${pc?pct(r.closed_count/pc*100):"—"}</td>
+      <td class="num">${money(r.closed_amount)}</td>
+      <td class="num">${pa?money(pa):"—"}</td>
+      <td class="num">${pa?pct(r.closed_amount/pa*100):"—"}</td>
+      <td class="num"><button class="mini-edit" data-edit-product-plan="${attr(r.name)}">Изменить план</button></td>
+    </tr>`;
+  }).join("");
+  return `<div class="scroll-x"><table><thead><tr>
+    <th>Продукт</th><th class="num">Факт, шт</th><th class="num">План, шт</th><th class="num">% шт</th>
+    <th class="num">Факт, BYN</th><th class="num">План, BYN</th><th class="num">% BYN</th><th></th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function renderPlanInline(){
   const statuses=state.metric_status||{};
   $("#plans").innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПЛАНЫ И КАЧЕСТВО ДАННЫХ</div><div class="muted">Планы редактируются без Excel · хранилище: ${esc(state.storage_backend||"локальное")}</div></div><button class="btn primary" id="openPlans">Редактировать планы</button></div>
   <div class="grid-2">${panel("Планы продаж",planSummary("sales"))}${panel("Планы производства",planSummary("production"))}</div>
+  ${panel("Планы производства по продуктам",productionProductPlanTable(),"план по каждому продукту: количество и сумма; кнопка открывает все плановые показатели выбранного продукта")}
   <div class="grid-2">${panel("Команда дашборда",teamSettings())}${panel("Критерий зависших",dormantSettings())}</div>
+  ${panel("Распределение источников продаж",trafficSettings(),"можно вручную менять, что относится к холодным / входящим / повторным / прочему")}
   ${panel("Статус дополнительных метрик",`<div class="mapping-grid">${Object.entries(statuses).map(([k,v])=>`<div class="mapping-item"><div><div class="name">${esc(k)}</div><div class="note">${esc(v.note)}</div></div><span class="badge ${v.connected?"good":"warn"}">${v.connected?"подключено":"нужен mapping"}</span></div>`).join("")}</div>`,"ничего не выдумываем: неподключенные поля отмечены явно")}`;
   $("#openPlans")?.addEventListener("click",()=>openPlanDialog("sales"));
+  $("#saveTrafficConfig")?.addEventListener("click",saveTrafficConfig);
+  $$("[data-clear-traffic]").forEach(btn=>btn.addEventListener("click",()=>{const sel=document.querySelector(`[data-traffic-source="${CSS.escape(btn.dataset.clearTraffic)}"]`);if(sel)sel.value=""}));
 }
 function planSummary(scope){
   const defs=scope==="sales"?SALES_LABELS:PROD_LABELS;
@@ -375,7 +473,7 @@ async function openDrill(el){
   $("#drillSearch").value="";
   const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:'0',limit:'500'});
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value);}
-  ["periodType","manager","group","source","product","expert","stage","reason","week"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
+  ["periodType","manager","group","source","product","expert","stage","reason","week","day"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const label=(d.scope==="sales"?SALES_LABELS[d.metric]?.[0]:PROD_LABELS[d.metric]?.[0])||d.metric;
   $("#drillTitle").textContent=label;$("#drillSubtitle").textContent="Расшифровка из уже загруженного snapshot";$("#drillBody").innerHTML='<div class="loading">Загрузка…</div>';$("#drillDialog").showModal();
   try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(r.status===202||j.loading){$("#drillBody").innerHTML='<div class="loading">Расшифровка ещё готовится. Через несколько секунд нажми снова.</div>';return}if(!r.ok)throw new Error(j.detail||JSON.stringify(j));drillRows=j.rows||[];drillOffset=drillRows.length;drillTotal=Number(j.count||drillRows.length);$("#drillCount").textContent=`${drillTotal} записей · показано ${drillRows.length}`;$("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');renderDrillRows()}catch(e){$("#drillBody").innerHTML=`<div class="error">${esc(e.message)}</div>`}
@@ -411,7 +509,7 @@ async function loadMoreDrill(){
   if(!drillMeta||drillOffset>=drillTotal)return;
   const d=drillMeta;const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:String(drillOffset),limit:'500'});
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value)}
-  ["periodType","manager","group","source","product","expert","stage","reason","week"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
+  ["periodType","manager","group","source","product","expert","stage","reason","week","day"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const btn=$("#drillMore");if(btn){btn.disabled=true;btn.textContent='Загружаю…'}
   try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(!r.ok)throw new Error(j.detail||JSON.stringify(j));const add=j.rows||[];drillRows=drillRows.concat(add);drillOffset+=add.length;drillTotal=Number(j.count||drillTotal);renderDrillRows()}catch(e){if(btn){btn.disabled=false;btn.textContent='Повторить загрузку'}}
 }
@@ -431,7 +529,18 @@ function openNpsDialog(expert=""){
 function openTeamDialog(role="expert"){
   teamTargetRole=role;$("#teamRole").value=role;const users=state?.available_users||[];$("#teamUser").innerHTML=users.map(u=>`<option value="${attr(u)}">${esc(u)}</option>`).join('');$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
 }
-function openPlanDialog(scope="sales"){$("#planScope").value=scope;updatePlanContextTypes();updatePlanKey();buildPlanForm();$("#planDialog").showModal()}
+function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
+  $("#planScope").value=scope;
+  updatePlanContextTypes();
+  const typeSel=$("#planContextType");
+  const wanted=[...typeSel.options].find(o=>o.value===contextType && !o.disabled);
+  typeSel.value=wanted?contextType:"overall";
+  const opts=contextOptions(scope,typeSel.value);
+  $("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');
+  if(opts.some(o=>o.value===contextKey))$("#planContextKey").value=contextKey;
+  buildPlanForm();
+  $("#planDialog").showModal();
+}
 function updatePlanContextTypes(){const scope=$("#planScope").value;const sel=$("#planContextType");[...sel.options].forEach(o=>o.disabled=(scope==="sales"&&o.value==="expert")||(scope==="production"&&["manager","source_group","source"].includes(o.value)));if(sel.selectedOptions[0]?.disabled)sel.value="overall"}
 function updatePlanKey(){const opts=contextOptions($("#planScope").value,$("#planContextType").value);$("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');buildPlanForm()}
 function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",defs=scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
@@ -463,6 +572,7 @@ function init(){
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
+    const productPlan=e.target.closest('[data-edit-product-plan]');if(productPlan){e.stopPropagation();openPlanDialog("production","product",productPlan.dataset.editProductPlan||"");return}
     const delNps=e.target.closest('[data-delete-nps]');if(delNps){e.stopPropagation();const q=new URLSearchParams({month:$('#month').value,entry_id:delNps.dataset.deleteNps,admin_key:$('#npsAdminKey').value||''});fetch('/api/nps?'+q.toString(),{method:'DELETE'}).then(async r=>{if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;renderNpsHistory();renderAll()});return}
     if(e.target.closest('#drillMore')){e.stopPropagation();loadMoreDrill();return}
     if(e.target.closest('#saveDormant')){saveDormant();return}
