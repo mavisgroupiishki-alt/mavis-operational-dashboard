@@ -293,33 +293,120 @@ function salesManagerBreakdowns(){
   }).join("");
 }
 
+
+function salesSummaryBlock(kind,title,items){
+  const x=state.sales.overall.total.metrics;
+  return `<section class="sales-summary-block ${kind}"><div class="sales-summary-head"><div><div class="eyebrow">${esc(title)}</div></div></div><div class="sales-summary-items">${items.map(([key,label,type])=>{const plan=getPlan('sales',key);const fact=x[key]||0;return `<div class="sales-summary-item clickable" ${drillAttrs('sales',key,{period_type:'total'})}><span>${esc(label)}</span><strong>${format(fact,type)}</strong><small>${plan?`План ${format(plan,type)} · ${pct(fact/plan*100)}`:'План —'}</small></div>`}).join('')}</div></section>`;
+}
+
+function monthDateLabel(day){
+  const mk=state?.month_key||$('#month')?.value||'';
+  const parts=mk.split('-');
+  const mm=parts[1]||'';
+  return `${String(day).padStart(2,'0')}.${mm}`;
+}
+
+function periodDayTable(agg,periodType,extra={}){
+  const d=agg?.days||{};
+  const n=(d.sales||d.deals||d.leads||[]).length||31;
+  const current=periodType==='current';
+  const defs=current
+    ? [['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']]
+    : [['sales','Продажи','num'],['sales_amount','Выручка','money']];
+  const rows=[];
+  for(let day=1;day<=n;day++){
+    const active=defs.some(([k])=>Number(d?.[k]?.[day-1]||0)!==0);
+    if(!active)continue;
+    rows.push(`<tr><td class="date-cell">${monthDateLabel(day)}</td>${defs.map(([k,l,t])=>`<td class="num">${tdLink(d?.[k]?.[day-1]||0,'sales',k,t,{...extra,period_type:periodType,day})}</td>`).join('')}</tr>`);
+  }
+  return `<div class="inline-days"><div class="scroll-x"><table><thead><tr><th>Дата</th>${defs.map(x=>`<th class="num">${esc(x[1])}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${defs.length+1}" class="empty-day">Нет движения по дням</td></tr>`}</tbody></table></div></div>`;
+}
+
+function sourcePeriodRows(src,manager,group){
+  const c=src.current?.metrics||{},p=src.previous?.metrics||{};
+  const currentExtra={manager,group,source:src.name,period_type:'current'};
+  const prevExtra={manager,group,source:src.name,period_type:'previous'};
+  return `<div class="source-period-table">
+    <details class="source-period-row current-period-row">
+      <summary><span class="period-name">Отчётный период</span><span>${fmt(c.deals)} сделок · ${money(c.deal_amount)}</span><span>${fmt(c.sales)} продаж · <b>${money(c.sales_amount)}</b></span><span class="open-days">по дням ›</span></summary>
+      ${periodDayTable(src.current,'current',currentExtra)}
+    </details>
+    <details class="source-period-row previous-period-row">
+      <summary><span class="period-name">Предыдущий период</span><span>хвост ${fmt(p.deals)} шт · ${money(p.deal_amount)}</span><span>${fmt(p.sales)} продаж · <b>${money(p.sales_amount)}</b></span><span class="open-days">по дням ›</span></summary>
+      ${periodDayTable(src.previous,'previous',prevExtra)}
+    </details>
+  </div>`;
+}
+
+function managerOperationalMatrix(){
+  return managers().map(m=>{
+    const mt=m.total.metrics;
+    const byGroup=new Map();
+    (m.sources||[]).forEach(s=>{if(!byGroup.has(s.group))byGroup.set(s.group,[]);byGroup.get(s.group).push(s)});
+    const preferred=['Холодные продажи','Входящий трафик продажи','Повторные продажи по базе','Прочее'];
+    const groups=preferred.filter(g=>byGroup.has(g)).concat([...byGroup.keys()].filter(g=>!preferred.includes(g)));
+    return `<details class="op-manager" open><summary><div class="op-manager-name"><strong>${esc(m.name)}</strong><span>месяц</span></div><div class="op-manager-summary"><span>Сделки <b>${fmt(mt.deals)}</b></span><span>Продажи <b>${fmt(mt.sales)}</b></span><span>Выручка <b>${money(mt.sales_amount)}</b></span></div></summary><div class="op-manager-body">${groups.map(group=>{
+      const items=(byGroup.get(group)||[]).sort((a,b)=>(b.total?.metrics?.sales_amount||0)-(a.total?.metrics?.sales_amount||0));
+      const gm=(m.groups||[]).find(g=>g.name===group)?.total?.metrics||{};
+      return `<details class="op-traffic-group"><summary><div><strong>${esc(trafficGroupLabel(group))}</strong><span class="muted">${items.length} источн.</span></div><div class="op-group-summary"><span>${fmt(gm.sales||0)} продаж</span><b>${money(gm.sales_amount||0)}</b></div></summary><div class="op-source-list">${items.map(src=>`<details class="op-source"><summary><span>${esc(src.name)}</span><span>${fmt(src.total.metrics.sales)} продаж · ${money(src.total.metrics.sales_amount)}</span></summary>${sourcePeriodRows(src,m.name,group)}</details>`).join('')}</div></details>`;
+    }).join('')}</div></details>`;
+  }).join('');
+}
+
+function compactTrafficStrip(){
+  return `<div class="traffic-strip">${(state.sales.groups||[]).map(g=>{const x=g.total.metrics;return `<div class="traffic-strip-card"><div><strong>${esc(trafficGroupLabel(g.name))}</strong><span>${fmt(x.sales)} продаж · ${money(x.sales_amount)}</span></div><button type="button" data-edit-traffic-group="${attr(g.name)}">Изменить</button></div>`}).join('')}</div>`;
+}
+
+function departmentDailyDynamics(){
+  const d=state.sales.overall.total.days||{};
+  const defs=[['leads','Лиды','num'],['deals','Сделки','num'],['sales','Продажи','num'],['sales_amount','Выручка','money']];
+  const n=(d.leads||[]).length||31;
+  const rows=[];
+  for(let day=1;day<=n;day++){
+    if(!defs.some(([k])=>Number(d?.[k]?.[day-1]||0)!==0))continue;
+    rows.push(`<tr><td>${monthDateLabel(day)}</td>${defs.map(([k,l,t])=>`<td class="num">${tdLink(d?.[k]?.[day-1]||0,'sales',k,t,{period_type:'total',day})}</td>`).join('')}</tr>`);
+  }
+  return `<details class="department-dynamics"><summary><strong>Динамика отдела по дням</strong><span class="muted">открыть только когда нужна</span></summary><div class="scroll-x"><table><thead><tr><th>Дата</th>${defs.map(x=>`<th class="num">${esc(x[1])}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div></details>`;
+}
+
+function compactProductBreakdown(){
+  const x=state.sales.overall.total.metrics;
+  return `<details class="compact-product-details"><summary><strong>Продукты · детализация</strong><span>${fmt(x.products)} в сделках · ${fmt(x.sold_products)} продано · ${money(x.sold_product_amount)}</span></summary>${salesProductTable()}<div class="product-definition-note"><strong>Сумма продуктов в сделках</strong> = сумма товарных строк Bitrix (цена × количество) в сделках, созданных в выбранном месяце.</div></details>`;
+}
+
 function renderSales(){
   const x=state.sales.overall.total.metrics;
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Предоплата + успешная продажа';
-  $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Структура как в операционной таблице: лиды → сделки/продажи → продукты → источники и менеджеры → неделя → дни</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
-  <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный месяц + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки Bitrix.</div>
-  <div class="department-page-head sales-page-head">
-    ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:'ВЫБРАННЫЙ МЕСЯЦ',value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'total'},substats:[{label:'Продажи',value:x.sales},{label:'Сделки периода',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
-    <div class="overview-signals compact-signals">
-      ${signalCard('blue','Сумма продаж',x.sales_amount,'money','sales','sales_amount','включая хвост',{period_type:'total'})}
-      ${signalCard('green','Конверсия сделок периода → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','когортная',{period_type:'total'})}
+  $('#sales').innerHTML=`
+    <div class="toolbar dept-toolbar compact-sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Один экран: ключевые цифры → менеджер → тип трафика → источник → период → даты</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Планы</button></div></div>
+
+    <div class="sales-compact-top">
+      <div class="sales-month-result"><div class="eyebrow">РЕЗУЛЬТАТ МЕСЯЦА</div><strong>${money(x.sales_amount)}</strong><span>${fmt(x.sales)} продаж · средний чек ${money(x.average_check)}</span></div>
+      <div class="sales-month-facts"><div><span>Сделки периода</span><b>${fmt(x.deals)}</b><small>${money(x.deal_amount)}</small></div><div><span>Продажи месяца</span><b>${fmt(x.sales)}</b><small>включая хвост</small></div><div><span>Конверсия когорты</span><b>${pct(x.deal_to_sale_rate)}</b><small>сделки месяца → продажи</small></div></div>
     </div>
-  </div>
 
-  ${salesStructuredSection('БЛОК 1','Лиды и квалификация',['leads','qualified','qualified_rate','lead_to_deal_rate'],[['leads','Лиды','num'],['qualified','Квал.','num'],['qualified_rate','% в квал.','pct']],'lead-block')}
-  ${salesStructuredSection('БЛОК 2','Сделки и продажи',['deals','deal_amount','sales','sales_amount','average_check','deal_to_sale_rate'],[['deals','Сделки','num'],['sales','Продажи','num'],['sales_amount','Выручка','money']],'sales-block')}
-  ${salesStructuredSection('БЛОК 3','Продукты',['products_per_deal','products','product_amount','sold_products','sold_product_amount','average_product_check','product_sale_rate'],[['products','Продукты','num'],['sold_products','Продано','num'],['sold_product_amount','Выручка продуктов','money']],'product-block')}
-  <div class="product-definition-note"><strong>Сумма продуктов</strong> = сумма товарных строк Bitrix (цена × количество) в сделках, созданных в выбранном месяце. Это отдельный показатель и он может отличаться от «Суммы сделок».</div>
+    <div class="sales-three-blocks">
+      ${salesSummaryBlock('lead-mini','ЛИДЫ',[['leads','Лиды','num'],['qualified','Квал. лиды','num'],['qualified_rate','% в квал.','pct']])}
+      ${salesSummaryBlock('deal-mini','СДЕЛКИ И ПРОДАЖИ',[['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']])}
+      ${salesSummaryBlock('product-mini','ПРОДУКТЫ',[['products','В сделках','num'],['sold_products','Продано','num'],['sold_product_amount','Сумма проданных','money']])}
+    </div>
 
-  ${panel("Распределение по типам и источникам",trafficDistributionTree(),"раскрой тип → источник → отчётный период / хвост → дни")}
-  ${panel("По менеджерам → источники → период → дни",managerSourceTree(),"структура повторяет операционную таблицу для каждого менеджера")}
-  <div class="grid-2">${panel("Менеджеры · итог месяца",salesManagerTable(false),"общий результат выбранного месяца")}${panel("Продуктовые категории",salesProductTable(),"разбивка по продуктам")}</div>
-  ${panel("Менеджеры · продукты",salesManagerBreakdowns(),"каждый МОП → продукты и результат")}
-  ${panel("Недельная динамика · выбранный месяц",weeklyGrid(),"каждую неделю можно раскрыть до конкретных дней")}
-  ${panel("Текущая воронка продаж",salesStages(),`${fmt(state.sales.active_deals_count)} активных сделок`)}`;
-  $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
+    <div class="criteria-box compact-sales-filter"><strong>Продажи месяца:</strong> дата завершения в выбранном месяце + стадия ${esc(stageText)}. Хвост включается автоматически только в продажи/выручку.</div>
+
+    <section class="sales-main-section">
+      <div class="sales-main-head"><div><div class="eyebrow">ОСНОВНАЯ РАБОЧАЯ ТАБЛИЦА</div><h2>Менеджеры и источники</h2><p>Внутри каждого источника: отчётный период и предыдущий период. Строку периода можно раскрыть до конкретных дат.</p></div></div>
+      ${managerOperationalMatrix()}
+    </section>
+
+    <section class="traffic-edit-section"><div class="sales-main-head"><div><div class="eyebrow">НАСТРОЙКА ТРАФИКА</div><h3>Типы продаж</h3></div></div>${compactTrafficStrip()}</section>
+
+    ${departmentDailyDynamics()}
+    ${compactProductBreakdown()}
+  `;
+  $('#openPlanSales')?.addEventListener('click',()=>openPlanDialog('sales'));
 }
+
 function prodProductTable(){
   const rows=state.production.products.map(r=>{
     const planCount=getPlan("production","closed_count","product",r.name);
@@ -698,7 +785,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.7.1";
+    b.textContent="v2.8.0";
     top.appendChild(b);
   }
 });

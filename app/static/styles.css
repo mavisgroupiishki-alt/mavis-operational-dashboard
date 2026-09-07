@@ -406,3 +406,46 @@ td{padding:11px 9px}
   margin:-6px 0 18px;padding:11px 14px;border:1px solid #ddd3f4;border-radius:12px;
   background:#faf7ff;color:#617086;font-size:13px;line-height:1.45
 }
+
+
+/* v2.8.0 — compact operational sales dashboard */
+.compact-sales-toolbar{margin-bottom:12px}
+.sales-compact-top{display:grid;grid-template-columns:1.15fr 1fr;gap:12px;margin-bottom:12px}
+.sales-month-result{border:1px solid #c7d9e5;border-radius:18px;padding:18px 20px;background:linear-gradient(135deg,#eef8ff,#e2f1fb)}
+.sales-month-result strong{display:block;font-size:38px;line-height:1.05;margin:7px 0;color:#142335}
+.sales-month-result>span{color:#61768a;font-size:14px}
+.sales-month-facts{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #d2dee7;border-radius:18px;background:#fff;overflow:hidden}
+.sales-month-facts>div{padding:17px;border-right:1px solid #dbe4eb}.sales-month-facts>div:last-child{border-right:0}
+.sales-month-facts span,.sales-month-facts small{display:block;color:#748697;font-size:12px}.sales-month-facts b{display:block;font-size:22px;margin:7px 0;color:#182738}
+.sales-three-blocks{display:grid;grid-template-columns:.8fr 1.25fr .95fr;gap:12px;margin-bottom:12px}
+.sales-summary-block{border:1px solid #d0dce6;border-radius:17px;padding:15px;background:#fff}
+.sales-summary-block.lead-mini{background:linear-gradient(135deg,#f7fbff,#eaf5ff)}
+.sales-summary-block.deal-mini{background:linear-gradient(135deg,#fbfffc,#ebf9f0)}
+.sales-summary-block.product-mini{background:linear-gradient(135deg,#fdfbff,#f5efff)}
+.sales-summary-head{margin-bottom:10px}
+.sales-summary-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.lead-mini .sales-summary-items{grid-template-columns:repeat(3,minmax(0,1fr))}
+.product-mini .sales-summary-items{grid-template-columns:1fr}
+.sales-summary-item{background:rgba(255,255,255,.78);border:1px solid #d9e3ea;border-radius:11px;padding:10px}
+.sales-summary-item span,.sales-summary-item small{display:block;color:#738698;font-size:11px}.sales-summary-item strong{display:block;font-size:20px;color:#172638;margin:4px 0}
+.compact-sales-filter{margin:0 0 14px;padding:10px 13px;font-size:13px}
+.sales-main-section,.traffic-edit-section{border:1px solid #cddae4;border-radius:20px;background:#fff;padding:17px;margin-bottom:13px;box-shadow:0 10px 28px rgba(37,73,100,.05)}
+.sales-main-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}.sales-main-head h2,.sales-main-head h3{margin:3px 0 0;color:#172638}.sales-main-head p{margin:4px 0 0;color:#778998;font-size:13px}
+.op-manager{border:1px solid #c8d7e2;border-radius:15px;margin:9px 0;overflow:hidden;background:#fbfdff}
+.op-manager>summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;gap:16px;align-items:center;padding:14px 16px;background:#edf3f7}
+.op-manager>summary::-webkit-details-marker,.op-traffic-group>summary::-webkit-details-marker,.op-source>summary::-webkit-details-marker,.source-period-row>summary::-webkit-details-marker{display:none}
+.op-manager-name{display:flex;align-items:center;gap:9px}.op-manager-name strong{font-size:17px}.op-manager-name span{font-size:11px;color:#758899;text-transform:uppercase}
+.op-manager-summary{display:flex;gap:18px;font-size:13px;color:#607486}.op-manager-summary b{color:#172638}
+.op-manager-body{padding:8px 12px 12px}
+.op-traffic-group{border:1px solid #d5e0e8;border-radius:12px;margin:7px 0;overflow:hidden}
+.op-traffic-group>summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:11px 13px;background:#f8fafc}
+.op-traffic-group>summary>div:first-child{display:flex;gap:8px;align-items:center}.op-group-summary{display:flex;gap:14px;font-size:12px;color:#667b8d}.op-group-summary b{color:#172638}
+.op-source-list{padding:6px 9px 9px}.op-source{border-top:1px solid #e1e8ee}.op-source:first-child{border-top:0}
+.op-source>summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;gap:14px;padding:10px 7px;font-size:13px}.op-source>summary span:last-child{color:#577086}
+.source-period-table{padding:0 7px 8px}.source-period-row{border:1px solid #dce5ec;border-radius:9px;margin:6px 0;overflow:hidden;background:#fff}
+.source-period-row>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:150px 1fr 1fr 90px;gap:10px;align-items:center;padding:9px 11px;font-size:12px}
+.current-period-row>summary{background:#fff8e9}.previous-period-row>summary{background:#f4f0fa}.period-name{font-weight:800;color:#26394a}.open-days{color:#1880b6;text-align:right;font-weight:700}.source-period-row[open] .open-days{font-size:0}.source-period-row[open] .open-days:after{content:'скрыть ↑';font-size:12px}
+.inline-days{padding:9px 10px 12px;border-top:1px solid #dce5ec;background:#fcfeff}.inline-days table{font-size:12px}.inline-days th,.inline-days td{padding:7px 8px}.date-cell{font-weight:800;color:#314b60}.empty-day{text-align:center;color:#7b8e9e;padding:15px!important}
+.traffic-edit-section{padding-bottom:14px}.traffic-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.traffic-strip-card{border:1px solid #d5e0e8;border-radius:12px;padding:11px;background:#f8fbfd;display:flex;justify-content:space-between;gap:8px;align-items:center}.traffic-strip-card strong,.traffic-strip-card span{display:block}.traffic-strip-card span{font-size:11px;color:#718495;margin-top:3px}.traffic-strip-card button{border:1px solid #9fc8dc;border-radius:8px;background:#fff;color:#146c95;padding:6px 8px;font-weight:750;font-size:11px;cursor:pointer}
+.department-dynamics,.compact-product-details{border:1px solid #d2dee7;border-radius:15px;background:#fff;margin:10px 0;overflow:hidden}.department-dynamics>summary,.compact-product-details>summary{list-style:none;cursor:pointer;padding:13px 15px;display:flex;justify-content:space-between;gap:15px;align-items:center}.department-dynamics>summary::-webkit-details-marker,.compact-product-details>summary::-webkit-details-marker{display:none}.department-dynamics[open]>summary,.compact-product-details[open]>summary{border-bottom:1px solid #dce5ec}.department-dynamics>.scroll-x,.compact-product-details>.scroll-x{padding:10px}
+@media(max-width:1100px){.sales-compact-top,.sales-three-blocks{grid-template-columns:1fr}.traffic-strip{grid-template-columns:repeat(2,1fr)}.source-period-row>summary{grid-template-columns:1fr 1fr}.open-days{text-align:left}}

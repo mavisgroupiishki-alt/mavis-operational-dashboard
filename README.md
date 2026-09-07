@@ -1,8 +1,8 @@
-# MAVIS Operational Dashboard v2.7.1
+# MAVIS Operational Dashboard v2.8.0
 
 Рабочая версия дашборда ОП + Производство для Bitrix24.
 
-## Ключевые изменения v2.7.1
+## Ключевые изменения v2.8.0
 
 ### Продажи — исправлена логика результата
 Основной показатель **Продажи / Сумма продаж** теперь считается строго так же, как пользовательский фильтр Bitrix:
@@ -43,7 +43,7 @@
 Сборка рассчитана на Render Free (`plan: free`) и Supabase для постоянных ручных данных.
 
 
-## v2.7.1 — исправление логики ОП
+## v2.8.0 — исправление логики ОП
 - Продажа = стадия «15. Продажа успешна».
 - Дата продажи = MOVED_TIME (дата изменения стадии), не CLOSEDATE.
 - Итог месяца = продажи отчетного периода + хвост, созданный до начала месяца.
@@ -51,14 +51,14 @@
 - Убрано ошибочное совпадение со стадией «Предоплата получена».
 
 
-## v2.7.1
+## v2.8.0
 - В продуктовой таблице добавлена колонка «Закрыто из новых», чтобы конверсия была прозрачной.
 - Конверсия продукта = закрыто из новых / новых.
 - Добавлены планы по продуктам: план шт и BYN, факт и % выполнения.
 - На вкладке «Планы / настройки» появился отдельный блок планов производства по продуктам.
 
 
-## v2.7.1
+## v2.8.0
 - Продажи разбиты на отдельные управленческие блоки: лиды, сделки/продажи, продукты.
 - В каждом блоке показана недельная динамика.
 - Недельная динамика раскрывается до дней.
@@ -68,13 +68,13 @@
 - Настройки источников сохраняются через существующее постоянное хранилище Supabase.
 
 
-## v2.7.1
+## v2.8.0
 - Frontend cache disabled to prevent old JS/CSS after deploy.
 - Static assets use versioned URLs.
-- Small v2.7.1 build marker appears bottom-right for verification.
+- Small v2.8.0 build marker appears bottom-right for verification.
 
 
-## v2.7.1 FAST
+## v2.8.0 FAST
 - Persist successful summary snapshots in Supabase.
 - Show last snapshot immediately after Render restart/redeploy while refreshing Bitrix in background.
 - Load product rows only for current-month deals and actual monthly sales.
@@ -82,8 +82,17 @@
 - 15-minute in-memory product-row cache.
 - `sync_seconds` is included for diagnostics.
 
-## v2.7.1
+## v2.8.0
 - Недельная динамика раскрывает дни внутри той же таблицы, без дополнительных отчетов ниже.
 - У каждого типа трафика появилась кнопка «Изменить».
 - Источники Bitrix можно добавлять/удалять прямо из блока трафика; настройки сохраняются через Supabase.
 - «Сумма продуктов» подписана как сумма товарных строк Bitrix (цена × количество).
+
+
+## v2.8.0
+- Sales page redesigned into one compact operational screen.
+- Only 3 summary blocks remain: Leads, Deals/Sales, Products.
+- Main matrix: Manager → traffic type → Bitrix source → Current/Previous period → actual dates.
+- Daily rows show real dates (01.08, 02.08, ...), not day numbers.
+- Redundant long weekly/source/manager reports removed from the main sales page.
+- Traffic editing remains available as a compact strip.
