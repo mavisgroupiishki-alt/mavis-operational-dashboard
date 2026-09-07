@@ -9,11 +9,14 @@ let drillTotal=0;
 let commentTarget=null;
 let teamTargetRole="expert";
 let npsTarget=null;
+let expandedSalesWeek=null;
+let trafficTargetGroup="";
+let trafficDraft={};
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
   deals:["Сделки","num"],deal_amount:["Сумма сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
-  deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов","money"],
+  deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
@@ -153,11 +156,27 @@ function weekDayBreakdowns(defs){
 }
 
 function weeklyGrid(){
-  const w=state.sales.overall.total.weeks;
-  const defs=[["leads","Лиды","num"],["qualified","Квал. лиды","num"],["qualified_rate","% в квал.","pct"],["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма сделок","money"],["sales","Продажи","num"],["sales_amount","Выручка","money"],["products","Продукты","num"],["product_amount","Сумма продуктов","money"],["sold_products","Продано продуктов","num"],["sold_product_amount","Сумма прод. продуктов","money"]];
-  let cells=`<div class="head">Показатель</div>${[1,2,3,4,5].map(i=>`<div class="head">${i} нед.</div>`).join("")}`;
-  defs.forEach(([k,label,type])=>{cells+=`<div class="metric">${esc(label)}</div>`;for(let i=0;i<5;i++)cells+=`<div class="value" ${drillAttrs("sales",k,{period_type:"total",week:i})}>${format(w[k]?.[i]||0,type)}</div>`});
-  return `<div class="week-grid">${cells}</div>${weekDayBreakdowns(defs)}`;
+  const w=state.sales.overall.total.weeks||{};
+  const daysMap=state.sales.overall.total.days||{};
+  const defs=[
+    ["leads","Лиды","num"],["qualified","Квал. лиды","num"],["qualified_rate","% в квал.","pct"],
+    ["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма сделок","money"],
+    ["sales","Продажи","num"],["sales_amount","Выручка","money"],["products","Продукты","num"],
+    ["product_amount","Сумма продуктов","money"],["sold_products","Продано продуктов","num"],
+    ["sold_product_amount","Сумма прод. продуктов","money"]
+  ];
+  const dayCount=(daysMap?.leads||[]).length||31;
+  const ranges=[[1,7],[8,14],[15,21],[22,28],[29,dayCount]];
+
+  const head=`<thead><tr><th>Показатель</th>${[0,1,2,3,4].map(i=>`<th class="num week-head-cell"><button type="button" class="week-head-btn ${expandedSalesWeek===i?'active':''}" data-week-toggle="${i}">${i+1} нед. <span>${expandedSalesWeek===i?'▲':'▼'}</span></button></th>`).join('')}</tr></thead>`;
+  const body=defs.map(([k,label,type])=>`<tr><td class="weekly-metric-name">${esc(label)}</td>${[0,1,2,3,4].map(i=>`<td class="num"><span class="cell-link" ${drillAttrs("sales",k,{period_type:"total",week:i})}>${format(w[k]?.[i]||0,type)}</span></td>`).join('')}</tr>`).join('');
+
+  let detail='';
+  if(expandedSalesWeek!==null){
+    const [a,b]=ranges[expandedSalesWeek];
+    detail=`<tr class="week-inline-detail-row"><td colspan="6"><div class="week-inline-detail"><div class="week-inline-title"><strong>${expandedSalesWeek+1} неделя · ${a}–${b}</strong><span class="muted">дни раскрыты внутри недельной таблицы</span></div>${dailyMetricTable(daysMap,defs,a,b,{period_type:'total',week:expandedSalesWeek})}</div></td></tr>`;
+  }
+  return `<div class="scroll-x"><table class="weekly-main-table">${head}<tbody>${body}${detail}</tbody></table></div>`;
 }
 
 function periodDailyBlock(agg, periodType, extra={}){
@@ -181,11 +200,79 @@ function salesStages(){
 function sourceRowsByGroup(group){
   return (state.sales.source_blocks||[]).filter(r=>r.group===group);
 }
+function trafficGroupCurrentSources(group){
+  return sourceRowsByGroup(group).map(x=>x.name);
+}
+function trafficGroupLabel(group){
+  return ({
+    "Холодные продажи":"Холодные продажи",
+    "Входящий трафик продажи":"Входящий трафик",
+    "Повторные продажи по базе":"Повторные продажи",
+    "Прочее":"Прочее"
+  })[group]||group;
+}
+function openTrafficGroupDialog(group){
+  trafficTargetGroup=group;
+  trafficDraft={...(state.traffic_config?.assignments||{})};
+  $("#trafficGroupTitle").textContent=`Источники · ${trafficGroupLabel(group)}`;
+  renderTrafficGroupEditor();
+  $("#trafficGroupDialog").showModal();
+}
+function renderTrafficGroupEditor(){
+  const all=state.traffic_config?.available_sources||state.sales.available_sources||[];
+  const current=new Set(trafficGroupCurrentSources(trafficTargetGroup));
+  // Explicit overrides in draft must be reflected immediately.
+  Object.entries(trafficDraft).forEach(([src,g])=>{
+    if(g===trafficTargetGroup)current.add(src);
+    else if(g==="__ignore__" || (g && g!==trafficTargetGroup))current.delete(src);
+  });
+  const selected=[...current].sort((a,b)=>a.localeCompare(b,'ru'));
+  const candidates=all.filter(s=>!current.has(s)).sort((a,b)=>a.localeCompare(b,'ru'));
+
+  $("#trafficSelected").innerHTML=selected.length?selected.map(src=>`
+    <div class="traffic-selected-row">
+      <span>${esc(src)}</span>
+      <div>
+        <button type="button" class="mini-edit" data-traffic-auto="${attr(src)}">Авто</button>
+        <button type="button" class="mini-edit danger-lite" data-traffic-remove="${attr(src)}">Удалить</button>
+      </div>
+    </div>`).join(''):`<div class="empty-inline">В этом типе пока нет источников</div>`;
+
+  $("#trafficAddSource").innerHTML=`<option value="">Выбери источник Bitrix</option>${candidates.map(src=>`<option value="${attr(src)}">${esc(src)}</option>`).join('')}`;
+}
+function addTrafficSourceToGroup(){
+  const src=$("#trafficAddSource").value;
+  if(!src)return;
+  trafficDraft[src]=trafficTargetGroup;
+  renderTrafficGroupEditor();
+}
+function removeTrafficSourceFromGroup(src){
+  // Явное удаление = источник не участвует в типовой разбивке, пока его не добавят
+  // в другой тип или не вернут в "Авто".
+  trafficDraft[src]="__ignore__";
+  renderTrafficGroupEditor();
+}
+function resetTrafficSourceAuto(src){
+  delete trafficDraft[src];
+  renderTrafficGroupEditor();
+}
+async function saveTrafficGroupDialog(){
+  const r=await fetch('/api/traffic-config',{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({assignments:trafficDraft,admin_key:$("#trafficGroupAdminKey").value||''})
+  });
+  if(!r.ok){alert(await r.text());return}
+  $("#trafficGroupDialog").close();
+  state=null;
+  load();
+}
+
 function trafficDistributionTree(){
   return (state.sales.groups||[]).map(g=>{
     const t=g.total.metrics;
     const sources=sourceRowsByGroup(g.name);
-    return `<details class="traffic-group" open><summary><div><strong>${esc(g.name)}</strong><span class="muted">${sources.length} источн.</span></div><div class="traffic-summary"><span>${fmt(t.sales)} продаж</span><b>${money(t.sales_amount)}</b></div></summary><div class="traffic-group-body">${sources.length?sources.map(r=>`<details class="traffic-source"><summary><span>${esc(r.name)}</span><span>${fmt(r.total.metrics.sales)} продаж · ${money(r.total.metrics.sales_amount)}</span></summary><div class="traffic-source-body">${periodDailyBlock(r.current,'current',{group:g.name,source:r.name})}${periodDailyBlock(r.previous,'previous',{group:g.name,source:r.name})}</div></details>`).join(''):'<div class="empty-inline">Нет источников</div>'}</div></details>`;
+    return `<details class="traffic-group" open><summary><div class="traffic-group-title"><strong>${esc(g.name)}</strong><span class="muted">${sources.length} источн.</span><button type="button" class="traffic-inline-edit" data-edit-traffic-group="${attr(g.name)}">Изменить</button></div><div class="traffic-summary"><span>${fmt(t.sales)} продаж</span><b>${money(t.sales_amount)}</b></div></summary><div class="traffic-group-body">${sources.length?sources.map(r=>`<details class="traffic-source"><summary><span>${esc(r.name)}</span><span>${fmt(r.total.metrics.sales)} продаж · ${money(r.total.metrics.sales_amount)}</span></summary><div class="traffic-source-body">${periodDailyBlock(r.current,'current',{group:g.name,source:r.name})}${periodDailyBlock(r.previous,'previous',{group:g.name,source:r.name})}</div></details>`).join(''):'<div class="empty-inline">Нет источников</div>'}</div></details>`;
   }).join('');
 }
 
@@ -223,6 +310,7 @@ function renderSales(){
   ${salesStructuredSection('БЛОК 1','Лиды и квалификация',['leads','qualified','qualified_rate','lead_to_deal_rate'],[['leads','Лиды','num'],['qualified','Квал.','num'],['qualified_rate','% в квал.','pct']],'lead-block')}
   ${salesStructuredSection('БЛОК 2','Сделки и продажи',['deals','deal_amount','sales','sales_amount','average_check','deal_to_sale_rate'],[['deals','Сделки','num'],['sales','Продажи','num'],['sales_amount','Выручка','money']],'sales-block')}
   ${salesStructuredSection('БЛОК 3','Продукты',['products_per_deal','products','product_amount','sold_products','sold_product_amount','average_product_check','product_sale_rate'],[['products','Продукты','num'],['sold_products','Продано','num'],['sold_product_amount','Выручка продуктов','money']],'product-block')}
+  <div class="product-definition-note"><strong>Сумма продуктов</strong> = сумма товарных строк Bitrix (цена × количество) в сделках, созданных в выбранном месяце. Это отдельный показатель и он может отличаться от «Суммы сделок».</div>
 
   ${panel("Распределение по типам и источникам",trafficDistributionTree(),"раскрой тип → источник → отчётный период / хвост → дни")}
   ${panel("По менеджерам → источники → период → дни",managerSourceTree(),"структура повторяет операционную таблицу для каждого менеджера")}
@@ -454,7 +542,7 @@ async function load(){
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
     state=j;renderAll();
-    if(j.syncing){$("#liveText").textContent="BITRIX ONLINE · обновляю в фоне"}
+    if(j.syncing){$("#liveText").textContent=j.cached_snapshot?"ПОКАЗАН ПОСЛЕДНИЙ SNAPSHOT · обновляю Bitrix в фоне":"BITRIX ONLINE · обновляю в фоне"}
   }catch(e){
     if(e.name==='AbortError')return;
     $("#liveDot").className="bad";$("#liveText").textContent="НЕТ СВЯЗИ";
@@ -573,6 +661,10 @@ function init(){
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
     const productPlan=e.target.closest('[data-edit-product-plan]');if(productPlan){e.stopPropagation();openPlanDialog("production","product",productPlan.dataset.editProductPlan||"");return}
+    const weekToggle=e.target.closest('[data-week-toggle]');if(weekToggle){e.stopPropagation();const i=Number(weekToggle.dataset.weekToggle);expandedSalesWeek=expandedSalesWeek===i?null:i;renderSales();return}
+    const editTraffic=e.target.closest('[data-edit-traffic-group]');if(editTraffic){e.preventDefault();e.stopPropagation();openTrafficGroupDialog(editTraffic.dataset.editTrafficGroup||"");return}
+    const trafficRemove=e.target.closest('[data-traffic-remove]');if(trafficRemove){e.preventDefault();e.stopPropagation();removeTrafficSourceFromGroup(trafficRemove.dataset.trafficRemove||"");return}
+    const trafficAuto=e.target.closest('[data-traffic-auto]');if(trafficAuto){e.preventDefault();e.stopPropagation();resetTrafficSourceAuto(trafficAuto.dataset.trafficAuto||"");return}
     const delNps=e.target.closest('[data-delete-nps]');if(delNps){e.stopPropagation();const q=new URLSearchParams({month:$('#month').value,entry_id:delNps.dataset.deleteNps,admin_key:$('#npsAdminKey').value||''});fetch('/api/nps?'+q.toString(),{method:'DELETE'}).then(async r=>{if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;renderNpsHistory();renderAll()});return}
     if(e.target.closest('#drillMore')){e.stopPropagation();loadMoreDrill();return}
     if(e.target.closest('#saveDormant')){saveDormant();return}
@@ -589,6 +681,9 @@ function init(){
   $("#npsExpert").addEventListener('change',()=>{npsTarget=$("#npsExpert").value;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory()});
   $("#saveNps").addEventListener('click',async()=>{npsTarget=$("#npsExpert").value||npsTarget;if(!npsTarget)return;const raw=$("#npsValue").value;if(raw===''){alert('Введи NPS от 0 до 10');return}const r=await fetch('/api/nps',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,expert:npsTarget,value:Number(raw),note:$('#npsNote').value,admin_key:$('#npsAdminKey').value})});if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();renderAll()});
   $("#closeTeam").addEventListener('click',()=>$("#teamDialog").close());
+  $("#closeTrafficGroup").addEventListener('click',()=>$("#trafficGroupDialog").close());
+  $("#addTrafficSource").addEventListener('click',addTrafficSourceToGroup);
+  $("#saveTrafficGroup").addEventListener('click',saveTrafficGroupDialog);
   $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
   const es=new EventSource('/events');es.addEventListener('update',()=>load());es.onerror=()=>{$("#liveDot").className='bad'};
   load();setInterval(load,120000);
@@ -603,7 +698,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.6.9";
+    b.textContent="v2.7.1";
     top.appendChild(b);
   }
 });

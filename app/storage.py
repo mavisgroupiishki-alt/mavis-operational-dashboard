@@ -163,6 +163,17 @@ class Storage:
         if self.remote_enabled:
             self._remote_set(key, value)
 
+    # ---------- Durable dashboard snapshots ----------
+    def snapshot_cache(self, cache_key: str):
+        value=self._get(f"snapshot_cache:{cache_key}",{})
+        return value if isinstance(value,dict) else {}
+
+    def set_snapshot_cache(self, cache_key: str, snapshot: dict):
+        self._set(f"snapshot_cache:{cache_key}",{
+            "snapshot":snapshot,
+            "saved_at":datetime.now(timezone.utc).isoformat(),
+        })
+
     # ---------- Plans ----------
     def plan_dict(self, month: str):
         value = self._get(f"plans:{month}", {})

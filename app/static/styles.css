@@ -367,3 +367,42 @@ td{padding:11px 9px}
   border:1px solid #d8e2e9;border-radius:7px;padding:3px 6px;
   pointer-events:none
 }
+
+
+/* v2.7.1 — inline day expansion in weekly table */
+.weekly-main-table{min-width:1040px}
+.week-head-cell{padding:0!important}
+.week-head-btn{
+  width:100%;height:100%;padding:13px 10px;border:0;background:transparent;
+  color:#5f7487;font-weight:800;cursor:pointer
+}
+.week-head-btn:hover,.week-head-btn.active{background:#e8f3fb;color:#1670a5}
+.week-inline-detail-row td{padding:0!important;background:#f6fafc}
+.week-inline-detail{padding:16px 18px 20px;border-top:2px solid #8bc9ea}
+.week-inline-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.weekly-metric-name{font-weight:650;color:#65798a}
+.week-inline-detail .daily-table{background:#fff;border-radius:12px;overflow:hidden}
+
+/* Inline traffic-source editing */
+.traffic-group-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.traffic-inline-edit{
+  border:1px solid #9fc9df;background:#fff;color:#17678f;border-radius:8px;
+  padding:5px 9px;font-size:12px;font-weight:750;cursor:pointer
+}
+.traffic-inline-edit:hover{background:#eaf6fc}
+.traffic-group-modal{width:min(880px,94vw)}
+.traffic-selected-list{display:flex;flex-direction:column;gap:8px;max-height:440px;overflow:auto;margin:18px 0}
+.traffic-selected-row{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:11px 13px;border:1px solid #d4e0e8;border-radius:11px;background:#f8fbfd
+}
+.traffic-selected-row>div{display:flex;gap:7px}
+.danger-lite{color:#a83d3d;border-color:#e1bcbc!important;background:#fff7f7!important}
+.traffic-add-line{display:grid;grid-template-columns:1fr auto;gap:10px;margin:15px 0}
+.traffic-add-line select{
+  min-height:44px;border:1px solid #c9d8e2;border-radius:10px;background:#fff;color:#172433;padding:8px 11px
+}
+.product-definition-note{
+  margin:-6px 0 18px;padding:11px 14px;border:1px solid #ddd3f4;border-radius:12px;
+  background:#faf7ff;color:#617086;font-size:13px;line-height:1.45
+}

@@ -23,6 +23,8 @@ class BitrixClient:
         self.client=httpx.AsyncClient(timeout=50)
         self.sem=asyncio.Semaphore(8)
         self._meta=None; self._meta_at=0
+        self._product_cache={}
+        self._product_cache_ttl=900
     @property
     def portal(self):
         p=urlparse(self.webhook)
@@ -66,38 +68,53 @@ class BitrixClient:
         p=await self.call("crm.deal.productrows.get",{"id":int(deal_id)})
         return p.get("result",[]) or []
     async def product_rows_many(self,deals):
-        """Load product rows in Bitrix batches instead of one HTTP request per deal.
-        Bitrix batch accepts up to 50 commands; 40 leaves a little safety margin.
-        Falls back to individual requests only for failed batches.
-        """
-        ids=[str(d.get("ID")) for d in deals if d.get("ID")]
+        """Fast product-row loader: concurrent Bitrix batches + short cache."""
+        ids=list(dict.fromkeys(str(d.get("ID")) for d in deals if d.get("ID")))
         if not ids:return {}
-        out={}
-        chunk_size=40
-        for pos in range(0,len(ids),chunk_size):
-            chunk=ids[pos:pos+chunk_size]
+        now=time.monotonic();out={};missing=[]
+        for did in ids:
+            cached=self._product_cache.get(did)
+            if cached and now-cached[0] < self._product_cache_ttl:
+                out[did]=cached[1]
+            else:
+                missing.append(did)
+        if not missing:return out
+
+        batch_sem=asyncio.Semaphore(4)
+        async def load_chunk(chunk):
+            chunk_out={}
             cmds={f"d{i}":f"crm.deal.productrows.get?id={did}" for i,did in enumerate(chunk)}
             try:
-                payload=await self.call("batch",{"halt":0,"cmd":cmds})
+                async with batch_sem:
+                    payload=await self.call("batch",{"halt":0,"cmd":cmds})
                 result=(payload.get("result") or {}).get("result") or {}
                 errors=(payload.get("result") or {}).get("result_error") or {}
                 failed=[]
                 for i,did in enumerate(chunk):
                     key=f"d{i}"
-                    if key in errors:
-                        failed.append(did)
-                    else:
-                        out[did]=result.get(key) or []
+                    if key in errors: failed.append(did)
+                    else: chunk_out[did]=result.get(key) or []
                 if failed:
                     async def one(did):
                         try:return did,await self.product_rows(did)
                         except:return did,[]
-                    out.update(dict(await asyncio.gather(*(one(x) for x in failed))))
+                    chunk_out.update(dict(await asyncio.gather(*(one(x) for x in failed))))
             except Exception:
                 async def one(did):
                     try:return did,await self.product_rows(did)
                     except:return did,[]
-                out.update(dict(await asyncio.gather(*(one(x) for x in chunk))))
+                chunk_out.update(dict(await asyncio.gather(*(one(x) for x in chunk))))
+            return chunk_out
+
+        chunks=[missing[i:i+50] for i in range(0,len(missing),50)]
+        results=await asyncio.gather(*(load_chunk(c) for c in chunks))
+        cache_now=time.monotonic()
+        for block in results:
+            out.update(block)
+            for did,rows in block.items():self._product_cache[did]=(cache_now,rows)
+        if len(self._product_cache)>6000:
+            cutoff=cache_now-self._product_cache_ttl
+            self._product_cache={k:v for k,v in self._product_cache.items() if v[0]>=cutoff}
         return out
     async def meta(self,force=False):
         if self._meta and not force and time.monotonic()-self._meta_at<600:return self._meta

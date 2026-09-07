@@ -3,6 +3,7 @@ import calendar
 import json
 import math
 import re
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -631,7 +632,17 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
     for block in results[:-1]:
         deals_raw.extend(block or [])
     deals_raw = list({str(d.get("ID")): d for d in deals_raw}.values())
-    rows_by_deal = await client.product_rows_many(deals_raw)
+
+    # Old open tail needs count/sum/source analytics but not product rows.
+    # Fetch products only for deals created in the month and actual sales of the month.
+    product_deals=[]
+    for d in deals_raw:
+        created=parse_dt(d.get("DATE_CREATE"),tz)
+        close=parse_dt(d.get("CLOSEDATE"),tz)
+        is_current=bool(created and month_start<=created<next_start)
+        is_sale=bool(int(d.get("CATEGORY_ID") or 0)==0 and str(d.get("STAGE_ID")) in success_stage_ids and close and month_start<=close<next_start)
+        if is_current or is_sale:product_deals.append(d)
+    rows_by_deal = await client.product_rows_many(product_deals)
 
     success_stage_names = [
         name for sid, name in (((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {}).items())
@@ -1061,6 +1072,7 @@ def month_pace(month_key: str, tz_name: str):
 
 
 async def build_snapshot(client, month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = "", source_overrides: Optional[Dict[str, str]] = None):
+    started=time.perf_counter()
     meta=await client.meta()
     sales_task=load_sales(client,month_key,meta,tz_name,source_overrides=source_overrides)
     prod_task=load_production(client,month_key,period,meta,tz_name,custom_start,custom_end)
@@ -1070,6 +1082,7 @@ async def build_snapshot(client, month_key: str, period: str, tz_name: str, cust
     period_start,period_end,_=period_bounds(month_key,period,tz_name,custom_start,custom_end)
     return {
         "ok":True,"updated_at":updated_at,"month_key":month_key,"period":period,
+        "sync_seconds":round(time.perf_counter()-started,2),
         "month_start":start.isoformat(),"month_end":end.isoformat(),"period_start":period_start.isoformat(),"period_end":period_end.isoformat(),"pace":month_pace(month_key,tz_name),
         "sales":sales,"production":production,"_details":details,
         "available_users": sorted(set((meta.get("users") or {}).values())),

@@ -41,6 +41,24 @@ def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
 
 
+def persistent_snapshot_key(month: str, period: str, custom_start: str = "", custom_end: str = ""):
+    return "|".join([month,period,custom_start or "",custom_end or ""])
+
+
+async def warm_snapshot_from_storage(month: str, period: str, custom_start: str = "", custom_end: str = ""):
+    key=(month,period,custom_start or "",custom_end or "")
+    if key in cache:return True
+    pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
+    try:saved=await asyncio.to_thread(storage.snapshot_cache,pkey)
+    except Exception:return False
+    snap=(saved or {}).get("snapshot") if isinstance(saved,dict) else None
+    if not isinstance(snap,dict) or not snap.get("ok"):return False
+    cache[key]=snap
+    cache_time[key]=0
+    detail_cache.setdefault(key,{})
+    return True
+
+
 def auth_hash():
     return hashlib.sha256((settings.view_password or "").encode()).hexdigest()
 
@@ -137,6 +155,8 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
             detail_cache[key] = details
             cache_time[key] = time.monotonic()
             last_error = None
+            pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
+            asyncio.create_task(asyncio.to_thread(storage.set_snapshot_cache,pkey,copy.deepcopy(snap)))
             return snap
         except Exception as e:
             last_error = str(e)
@@ -210,7 +230,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.9", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.7.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -269,7 +289,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.9", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.7.1", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
@@ -290,6 +310,12 @@ async def api_snapshot(
         if stale:
             schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
         return {**_apply_runtime(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+    # Render memory is empty after restart/redeploy. Try durable Supabase snapshot
+    # first and refresh Bitrix in background.
+    if await warm_snapshot_from_storage(month,period,custom_start,custom_end):
+        schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
+        return {**_apply_runtime(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
+
     schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
     return JSONResponse({
         "ok": False, "loading": True, "month_key": month, "period": period,
