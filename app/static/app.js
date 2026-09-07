@@ -15,7 +15,8 @@ let trafficDraft={};
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
-  deals:["Сделки","num"],deal_amount:["Сумма сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
+  lead_to_sale_rate:["Лид → продажа","pct"],qualified_to_sale_rate:["Квал. → продажа","pct"],
+  deals:["Сделки","num"],lost_deals:["Слитые сделки","num"],deal_amount:["Сумма сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
   deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
@@ -374,39 +375,201 @@ function compactProductBreakdown(){
   return `<details class="compact-product-details"><summary><strong>Продукты · детализация</strong><span>${fmt(x.products)} в сделках · ${fmt(x.sold_products)} продано · ${money(x.sold_product_amount)}</span></summary>${salesProductTable()}<div class="product-definition-note"><strong>Сумма продуктов в сделках</strong> = сумма товарных строк Bitrix (цена × количество) в сделках, созданных в выбранном месяце.</div></details>`;
 }
 
+
+const RNP_GROUPS=[
+  {
+    key:"Холодные продажи", cls:"cold",
+    title:"Холодные продажи",
+    metrics:[
+      ["leads","Число лидов всего","num"],
+      ["qualified_rate","% из лида в квал. лид","pct"],
+      ["qualified","Число квал. лидов","num"],
+      ["lead_to_deal_rate","% из квал. лида в сделку","pct"],
+      ["deals","Число созданных сделок","num"],
+      ["sales","Число продаж в отчётном периоде","num"],
+      ["lead_to_sale_rate","% из лида в продажу","pct"],
+      ["average_check","Средний чек","money"],
+      ["sales_amount","Выручка","money"]
+    ]
+  },
+  {
+    key:"Входящий трафик продажи", cls:"incoming",
+    title:"Входящие продажи",
+    metrics:[
+      ["leads","Число лидов всего","num"],
+      ["qualified_rate","% из лида в квал. лид","pct"],
+      ["qualified","Число квал. лидов","num"],
+      ["lead_to_deal_rate","% из квал. лида в сделку","pct"],
+      ["deals","Число созданных сделок","num"],
+      ["sales","Число продаж в отчётном периоде","num"],
+      ["qualified_to_sale_rate","% из квал. лида в продажу","pct"],
+      ["average_check","Средний чек","money"],
+      ["sales_amount","Выручка","money"]
+    ]
+  },
+  {
+    key:"Повторные продажи по базе", cls:"repeat",
+    title:"Повторные продажи",
+    metrics:[
+      ["deals","Число созданных сделок","num"],
+      ["lost_deals","Число слитых сделок","num"],
+      ["sales","Число продаж в отчётном периоде","num"],
+      ["deal_to_sale_rate","Конверсия из созданной сделки в продажу","pct"],
+      ["average_check","Средний чек","money"],
+      ["sales_amount","Выручка","money"]
+    ]
+  }
+];
+
+function rnpGroup(name){return (state.sales.groups||[]).find(x=>x.name===name)}
+function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","product_sale_rate"].includes(k)}
+function isAvgMetric(k){return ["average_check","average_product_check","products_per_deal"].includes(k)}
+function isAdditiveMetric(k){return !isPctMetric(k)&&!isAvgMetric(k)}
+
+function rnpWeekRanges(){
+  const [yy,mm]=(state.month_key||"").split("-").map(Number);
+  if(!yy||!mm)return [];
+  const first=new Date(yy,mm-1,1);
+  const mondayOffset=(first.getDay()+6)%7; // Mon=0
+  const firstMonday=new Date(yy,mm-1,1-mondayOffset);
+  const lastDay=new Date(yy,mm,0).getDate();
+  const out=[];
+  for(let i=0;i<5;i++){
+    const a=new Date(firstMonday);a.setDate(firstMonday.getDate()+i*7);
+    const b=new Date(a);b.setDate(a.getDate()+4);
+    const clipStart=(a.getMonth()===mm-1)?a.getDate():1;
+    const clipEnd=(b.getMonth()===mm-1)?b.getDate():lastDay;
+    let workdays=0;
+    for(let d=clipStart;d<=clipEnd;d++){
+      const dt=new Date(yy,mm-1,d),wd=dt.getDay();
+      if(wd!==0&&wd!==6)workdays++;
+    }
+    out.push({
+      index:i,start:clipStart,end:clipEnd,workdays,
+      label:`${String(a.getDate()).padStart(2,"0")}.${String(a.getMonth()+1).padStart(2,"0")}–${String(b.getDate()).padStart(2,"0")}.${String(b.getMonth()+1).padStart(2,"0")}`
+    });
+  }
+  return out;
+}
+function rnpTotalWorkdays(){return rnpWeekRanges().reduce((s,w)=>s+w.workdays,0)||1}
+function rnpWeekPlan(groupKey,metric,weekIndex){
+  const plan=getPlan("sales",metric,"source_group",groupKey);
+  if(!plan)return 0;
+  if(!isAdditiveMetric(metric))return plan;
+  const w=rnpWeekRanges()[weekIndex];
+  return w?plan*w.workdays/rnpTotalWorkdays():0;
+}
+function rnpPlanCell(groupKey,metric,type,fact){
+  const p=getPlan("sales",metric,"source_group",groupKey);
+  return `<span>${p?format(p,type):"—"}</span><strong>${format(fact,type)}</strong><span>${p?pct(Number(fact||0)/p*100):"—"}</span>`;
+}
+function rnpMonthlyTable(cfg,g){
+  const m=g?.current?.metrics||{};
+  return `<div class="rnp-month-table">
+    <div class="rnp-month-head"><span>Показатель</span><span>План</span><span>Факт</span><span>%</span></div>
+    ${cfg.metrics.map(([k,label,type])=>`<div class="rnp-month-row"><span>${esc(label)}</span>${rnpPlanCell(cfg.key,k,type,m[k]||0)}</div>`).join("")}
+  </div>`;
+}
+function rnpDailyTable(cfg,g,week){
+  const d=g?.current?.days||{};
+  const rows=[];
+  for(let day=week.start;day<=week.end;day++){
+    const active=cfg.metrics.some(([k])=>Number(d?.[k]?.[day-1]||0)!==0);
+    if(!active)continue;
+    rows.push(`<tr><td>${monthDateLabel(day)}</td>${cfg.metrics.map(([k,l,t])=>`<td class="num">${tdLink(d?.[k]?.[day-1]||0,"sales",k,t,{group:cfg.key,period_type:"current",day,week:week.index})}</td>`).join("")}</tr>`);
+  }
+  return `<div class="scroll-x"><table class="rnp-daily-table"><thead><tr><th>Дата</th>${cfg.metrics.map(x=>`<th class="num">${esc(x[1])}</th>`).join("")}</tr></thead><tbody>${rows.join("")||`<tr><td colspan="${cfg.metrics.length+1}" class="empty-day">Нет движения</td></tr>`}</tbody></table></div>`;
+}
+function rnpWeekTable(cfg,g){
+  const weeks=g?.current?.weeks||{},ranges=rnpWeekRanges();
+  return `<div class="rnp-weeks">${ranges.map(w=>{
+    const revenue=weeks.sales_amount?.[w.index]||0,sales=weeks.sales?.[w.index]||0;
+    return `<details class="rnp-week"><summary><div><strong>${w.index+1} неделя</strong><span>${w.label}</span></div><div><b>${money(revenue)}</b><span>${fmt(sales)} продаж</span></div></summary>
+      <div class="rnp-week-body">
+        <div class="rnp-week-facts">${cfg.metrics.map(([k,label,type])=>{
+          const fact=weeks[k]?.[w.index]||0,plan=rnpWeekPlan(cfg.key,k,w.index);
+          return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
+        }).join("")}</div>
+        ${rnpDailyTable(cfg,g,w)}
+      </div>
+    </details>`;
+  }).join("")}</div>`;
+}
+function rnpSourceList(cfg){
+  const rows=sourceRowsByGroup(cfg.key).sort((a,b)=>(b.total?.metrics?.sales_amount||0)-(a.total?.metrics?.sales_amount||0));
+  return `<details class="rnp-subdetails"><summary><strong>Источники внутри блока</strong><span>${rows.length} источн. · изменить ›</span></summary>
+    <div class="rnp-source-toolbar"><button type="button" class="btn soft-action" data-edit-traffic-group="${attr(cfg.key)}">Изменить источники</button></div>
+    <div class="rnp-source-list">${rows.map(r=>`<details><summary><span>${esc(r.name)}</span><span>${fmt(r.current.metrics.sales)} продаж · ${money(r.current.metrics.sales_amount)} · хвост ${money(r.previous.metrics.sales_amount)}</span></summary>${sourcePeriodRows(r,"",cfg.key)}</details>`).join("")||'<div class="empty-inline">Источников нет</div>'}</div>
+  </details>`;
+}
+function rnpBlock(cfg){
+  const g=rnpGroup(cfg.key)||{current:{metrics:{},weeks:{},days:{}},previous:{metrics:{}},total:{metrics:{}}};
+  const c=g.current.metrics||{},p=g.previous.metrics||{},t=g.total.metrics||{};
+  const plan=getPlan("sales","sales_amount","source_group",cfg.key);
+  return `<section class="rnp-block ${cfg.cls}">
+    <div class="rnp-block-head">
+      <div><div class="eyebrow">РНП · ${esc(cfg.title)}</div><h2>${esc(cfg.title)}</h2></div>
+      <button type="button" class="rnp-plan-btn" data-rnp-plan="${attr(cfg.key)}">Изменить план</button>
+    </div>
+    <div class="rnp-result-strip">
+      <div><span>Отчётный период</span><strong>${money(c.sales_amount||0)}</strong><small>${fmt(c.sales||0)} продаж</small></div>
+      <div><span>Предыдущий период / хвост</span><strong>${money(p.sales_amount||0)}</strong><small>${fmt(p.sales||0)} продаж</small></div>
+      <div class="rnp-total"><span>Итого продажи месяца</span><strong>${money(t.sales_amount||0)}</strong><small>${fmt(t.sales||0)} продаж</small></div>
+      <div><span>План выручки</span><strong>${plan?money(plan):"—"}</strong><small>${plan?pct((c.sales_amount||0)/plan*100):"не заполнен"}</small></div>
+    </div>
+    ${rnpMonthlyTable(cfg,g)}
+    <details class="rnp-subdetails"><summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>${rnpWeekTable(cfg,g)}</details>
+    ${rnpSourceList(cfg)}
+  </section>`;
+}
+
+function rnpManagerMatrix(){
+  return managers().map(m=>{
+    const groups=RNP_GROUPS.map(cfg=>({cfg,g:(m.groups||[]).find(x=>x.name===cfg.key)}));
+    return `<details class="rnp-manager"><summary><div><strong>${esc(m.name)}</strong><span>разбивка по трём блокам РНП</span></div><div><b>${money(m.total.metrics.sales_amount)}</b><span>${fmt(m.total.metrics.sales)} продаж</span></div></summary>
+      <div class="rnp-manager-body">${groups.map(({cfg,g})=>{
+        const c=g?.current?.metrics||{},p=g?.previous?.metrics||{};
+        const sources=(m.sources||[]).filter(x=>x.group===cfg.key).sort((a,b)=>(b.total.metrics.sales_amount||0)-(a.total.metrics.sales_amount||0));
+        const mini=cfg.key==="Повторные продажи по базе"
+          ? `Сделки ${fmt(c.deals||0)} · слито ${fmt(c.lost_deals||0)} · продажи ${fmt(c.sales||0)} · ${money(c.sales_amount||0)}`
+          : `Лиды ${fmt(c.leads||0)} · квал. ${fmt(c.qualified||0)} · сделки ${fmt(c.deals||0)} · продажи ${fmt(c.sales||0)} · ${money(c.sales_amount||0)}`;
+        return `<details class="rnp-manager-group"><summary><strong>${esc(cfg.title)}</strong><span>${mini}</span><small>хвост ${money(p.sales_amount||0)}</small></summary>
+          <div class="rnp-manager-sources">${sources.map(s=>`<details><summary><span>${esc(s.name)}</span><span>${fmt(s.current.metrics.sales)} продаж · ${money(s.current.metrics.sales_amount)} · хвост ${money(s.previous.metrics.sales_amount)}</span></summary>${sourcePeriodRows(s,m.name,cfg.key)}</details>`).join("")||'<div class="empty-inline">Нет источников</div>'}</div>
+        </details>`;
+      }).join("")}</div>
+    </details>`;
+  }).join("");
+}
 function renderSales(){
   const x=state.sales.overall.total.metrics;
   const sf=state.sales.sale_filter||{};
-  const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Предоплата + успешная продажа';
-  $('#sales').innerHTML=`
-    <div class="toolbar dept-toolbar compact-sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Один экран: ключевые цифры → менеджер → тип трафика → источник → период → даты</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Планы</button></div></div>
-
-    <div class="sales-compact-top">
-      <div class="sales-month-result"><div class="eyebrow">РЕЗУЛЬТАТ МЕСЯЦА</div><strong>${money(x.sales_amount)}</strong><span>${fmt(x.sales)} продаж · средний чек ${money(x.average_check)}</span></div>
-      <div class="sales-month-facts"><div><span>Сделки периода</span><b>${fmt(x.deals)}</b><small>${money(x.deal_amount)}</small></div><div><span>Продажи месяца</span><b>${fmt(x.sales)}</b><small>включая хвост</small></div><div><span>Конверсия когорты</span><b>${pct(x.deal_to_sale_rate)}</b><small>сделки месяца → продажи</small></div></div>
+  const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
+  $("#sales").innerHTML=`
+    <div class="toolbar dept-toolbar rnp-toolbar">
+      <div><div class="eyebrow">РНП · ОТДЕЛ ПРОДАЖ</div><div class="muted">Структура повторяет вкладку 09.2026: три блока → месяц → недели → дни → источники</div></div>
+      <div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Все планы</button></div>
     </div>
 
-    <div class="sales-three-blocks">
-      ${salesSummaryBlock('lead-mini','ЛИДЫ',[['leads','Лиды','num'],['qualified','Квал. лиды','num'],['qualified_rate','% в квал.','pct']])}
-      ${salesSummaryBlock('deal-mini','СДЕЛКИ И ПРОДАЖИ',[['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']])}
-      ${salesSummaryBlock('product-mini','ПРОДУКТЫ',[['products','В сделках','num'],['sold_products','Продано','num'],['sold_product_amount','Сумма проданных','money']])}
+    <div class="rnp-overall-strip">
+      <div><span>Выручка месяца</span><strong>${money(x.sales_amount)}</strong></div>
+      <div><span>Продажи месяца</span><strong>${fmt(x.sales)}</strong></div>
+      <div><span>Средний чек</span><strong>${money(x.average_check)}</strong></div>
+      <div><span>Сделки создано</span><strong>${fmt(x.deals)}</strong><small>${money(x.deal_amount)}</small></div>
     </div>
+    <div class="rnp-rule"><strong>Продажи:</strong> дата завершения в выбранном месяце + стадии ${esc(stageText)}. <strong>Сделки:</strong> созданы в выбранном месяце.</div>
 
-    <div class="criteria-box compact-sales-filter"><strong>Продажи месяца:</strong> дата завершения в выбранном месяце + стадия ${esc(stageText)}. Хвост включается автоматически только в продажи/выручку.</div>
+    <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
 
-    <section class="sales-main-section">
-      <div class="sales-main-head"><div><div class="eyebrow">ОСНОВНАЯ РАБОЧАЯ ТАБЛИЦА</div><h2>Менеджеры и источники</h2><p>Внутри каждого источника: отчётный период и предыдущий период. Строку периода можно раскрыть до конкретных дат.</p></div></div>
-      ${managerOperationalMatrix()}
+    <section class="rnp-secondary">
+      <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>
+      <details class="rnp-main-details"><summary><div><strong>Разбивка по продуктам</strong><span>${fmt(x.products)} продуктов в сделках · ${fmt(x.sold_products)} продано</span></div></summary>
+        ${salesProductTable()}
+        <div class="product-definition-note"><strong>Конверсия по продуктам</strong> = количество продуктов из сделок, созданных в выбранном месяце, которые продались в этом же месяце / количество продуктов в сделках, созданных в выбранном месяце. <strong>Хвост в эту конверсию не входит.</strong></div>
+      </details>
     </section>
-
-    <section class="traffic-edit-section"><div class="sales-main-head"><div><div class="eyebrow">НАСТРОЙКА ТРАФИКА</div><h3>Типы продаж</h3></div></div>${compactTrafficStrip()}</section>
-
-    ${departmentDailyDynamics()}
-    ${compactProductBreakdown()}
   `;
-  $('#openPlanSales')?.addEventListener('click',()=>openPlanDialog('sales'));
+  $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
 }
-
 function prodProductTable(){
   const rows=state.production.products.map(r=>{
     const planCount=getPlan("production","closed_count","product",r.name);
@@ -748,6 +911,7 @@ function init(){
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
     const productPlan=e.target.closest('[data-edit-product-plan]');if(productPlan){e.stopPropagation();openPlanDialog("production","product",productPlan.dataset.editProductPlan||"");return}
+    const rnpPlan=e.target.closest('[data-rnp-plan]');if(rnpPlan){e.preventDefault();e.stopPropagation();openPlanDialog("sales","source_group",rnpPlan.dataset.rnpPlan||"");return}
     const weekToggle=e.target.closest('[data-week-toggle]');if(weekToggle){e.stopPropagation();const i=Number(weekToggle.dataset.weekToggle);expandedSalesWeek=expandedSalesWeek===i?null:i;renderSales();return}
     const editTraffic=e.target.closest('[data-edit-traffic-group]');if(editTraffic){e.preventDefault();e.stopPropagation();openTrafficGroupDialog(editTraffic.dataset.editTrafficGroup||"");return}
     const trafficRemove=e.target.closest('[data-traffic-remove]');if(trafficRemove){e.preventDefault();e.stopPropagation();removeTrafficSourceFromGroup(trafficRemove.dataset.trafficRemove||"");return}
@@ -785,7 +949,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.8.0";
+    b.textContent="v2.9.0";
     top.appendChild(b);
   }
 });

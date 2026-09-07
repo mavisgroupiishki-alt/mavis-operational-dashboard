@@ -59,7 +59,9 @@ LEAD_SELECT = [
 ]
 
 SALES_METRICS = [
-    "leads", "qualified", "qualified_rate", "lead_to_deal_rate", "deals", "deal_amount",
+    "leads", "qualified", "qualified_rate", "lead_to_deal_rate",
+    "lead_to_sale_rate", "qualified_to_sale_rate",
+    "deals", "lost_deals", "deal_amount",
     "sales", "sales_amount", "average_check", "deal_to_sale_rate", "products_per_deal",
     "products", "product_amount", "sold_products", "sold_product_amount", "average_product_check",
     "product_sale_rate", "paid_amount", "net_revenue"
@@ -180,9 +182,21 @@ def month_diff(d: Optional[datetime], month_start: datetime) -> Optional[int]:
 
 
 def week_of_month(d: Optional[datetime], month_start: datetime) -> int:
+    """RNP week index: calendar week Mon-Sun, anchored by the Monday
+    containing the 1st day of the selected month.
+
+    Example for Sep-2026:
+      0 = 31.08-06.09 (facts inside selected month: 01-06.09)
+      1 = 07-13.09
+      2 = 14-20.09
+      3 = 21-27.09
+      4 = 28.09-04.10 (facts inside selected month: 28-30.09)
+    """
     if not d or d.year != month_start.year or d.month != month_start.month:
         return -1
-    return min(4, max(0, (d.day - 1) // 7))
+    first_monday = month_start.date() - timedelta(days=month_start.weekday())
+    idx = (d.date() - first_monday).days // 7
+    return min(4, max(0, idx))
 
 
 def business_days(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
@@ -211,18 +225,25 @@ def norm_text(s: Any) -> str:
 
 
 def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[str, str]] = None) -> str:
-    """Business split used in OP operational / plan-fact tables.
+    """Exact RNP traffic classification.
 
-    Default (AUTO) rule:
-      1) Existing client -> Repeat sales by base.
-      2) Reanimation / repeat-base source -> Repeat sales by base.
-      3) New client + Cold call -> Cold sales.
-      4) New client + other source -> Incoming traffic.
+    Manual source override from dashboard has the highest priority.
 
-    A dashboard admin may explicitly override an exact Bitrix source into:
-      Cold / Incoming / Repeat / Other / Ignore in breakdown.
-    Overall department totals are never lost; "Ignore" only removes the source
-    from traffic/source matrices.
+    Agreed AUTO rules:
+    - Partnerka Beltehexpertiza -> Cold (regardless of client type).
+    - Cold call:
+        New -> Cold
+        Existing -> Repeat
+    - Incoming direct call:
+        New -> Incoming
+        Existing -> Repeat
+    - Reanimation:
+        New -> Cold
+        Existing -> Repeat
+    - Google/Yandex calls and website requests, recommendation,
+      "sources ended", transferred by expert, open-line channels -> Incoming.
+    - Remaining Existing clients -> Repeat.
+    - Remaining New/unknown clients -> Incoming.
     """
     source_overrides = source_overrides or {}
     explicit = source_overrides.get(str(source or ""))
@@ -239,12 +260,41 @@ def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[s
 
     ct = norm_text(client_type)
     src = norm_text(source)
-    if "действующ" in ct:
-        return "Повторные продажи по базе"
-    if re.search(r"реанимац|повторн.*продаж|база успешн|передан.*эксперт", src):
-        return "Повторные продажи по базе"
-    if "холод" in src:
+    existing = "действующ" in ct
+    new_client = "нов" in ct
+
+    # Always cold.
+    if "белтехэкспертиз" in src and ("партнер" in src or "партнерк" in src):
         return "Холодные продажи"
+
+    # Conditional by client type.
+    if "холод" in src and "звон" in src:
+        return "Повторные продажи по базе" if existing else "Холодные продажи"
+
+    if "реанимац" in src:
+        return "Повторные продажи по базе" if existing else "Холодные продажи"
+
+    if "входящ" in src and "звон" in src and "прям" in src:
+        return "Повторные продажи по базе" if existing else "Входящий трафик продажи"
+
+    # Explicit incoming channels from RNP logic.
+    incoming_patterns = [
+        r"google.*реклам", r"google.*органик",
+        r"яндекс.*реклам", r"яндекс.*органик",
+        r"заявк.*сайт.*mavis", r"заявк.*сайт.*мавис",
+        r"по рекомендац",
+        r"источник.*кончил",
+        r"передан.*эксперт",
+        r"telegram|телеграм",
+        r"viber|вайбер",
+        r"электрон.*почт",
+        r"жив.*чат|открыт.*лини",
+    ]
+    if any(re.search(p, src) for p in incoming_patterns):
+        return "Входящий трафик продажи"
+
+    if existing:
+        return "Повторные продажи по базе"
     return "Входящий трафик продажи"
 
 
@@ -443,13 +493,17 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     product_qty = sum(pr["quantity"] for pr in products)
     sold_product_qty = sum(pr["quantity"] for pr in sold_products)
     cohort_sold_qty = sum(pr["quantity"] for pr in cohort_sold_products)
+    lost_rows = [r for r in deal_rows if r.get("lost_in_report_month")]
 
     m = {
         "leads": len(lead_rows),
         "qualified": len(qual_rows),
         "qualified_rate": pct(len(qual_rows), len(lead_rows)),
         "lead_to_deal_rate": pct(len(current_deals), len(qual_rows)),
+        "lead_to_sale_rate": pct(len(cohort_sales_rows), len(lead_rows)),
+        "qualified_to_sale_rate": pct(len(cohort_sales_rows), len(qual_rows)),
         "deals": len(deal_rows),
+        "lost_deals": len(lost_rows),
         "deal_amount": round(sum(r["amount"] for r in deal_rows), 2),
         "sales": len(sales_rows),
         "sales_amount": sales_amount,
@@ -469,7 +523,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     }
 
     weeks = {k: [0, 0, 0, 0, 0] for k in [
-        "leads", "qualified", "deals", "deal_amount", "sales", "sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
     for r in lead_rows:
         w = r.get("week", -1)
@@ -487,6 +541,13 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                     continue
                 weeks["products"][w] += pr["quantity"]
                 weeks["product_amount"][w] += pr["amount"]
+    for r in deal_rows:
+        if not r.get("lost_in_report_month"):
+            continue
+        close_dt = parse_dt(r.get("close"), month_start.tzinfo if month_start else None)
+        w = week_of_month(close_dt, month_start) if month_start else -1
+        if w >= 0:
+            weeks["lost_deals"][w] += 1
     for r in sales_rows:
         w = r.get("sale_week", -1)
         if w >= 0:
@@ -500,7 +561,9 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
 
     weeks["qualified_rate"] = [pct(weeks["qualified"][i], weeks["leads"][i]) for i in range(5)]
     weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
-    # Weekly deal->sale is kept as a flow view (sales closed in week / deals created in week).
+    weeks["lead_to_sale_rate"] = [pct(weeks["sales"][i], weeks["leads"][i]) for i in range(5)]
+    weeks["qualified_to_sale_rate"] = [pct(weeks["sales"][i], weeks["qualified"][i]) for i in range(5)]
+    # Weekly deal->sale is a flow view for the selected reporting cohort.
     weeks["deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
     weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
     weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]
@@ -511,7 +574,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     # report-period/source/week views in the dashboard.
     day_count = calendar.monthrange(month_start.year, month_start.month)[1] if month_start else 31
     days_map = {k: [0 for _ in range(day_count)] for k in [
-        "leads", "qualified", "deals", "deal_amount", "sales", "sales_amount",
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount",
         "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
 
@@ -539,6 +602,13 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 days_map["products"][di] += pr["quantity"]
                 days_map["product_amount"][di] += pr["amount"]
 
+    for r in deal_rows:
+        if not r.get("lost_in_report_month"):
+            continue
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["lost_deals"][di] += 1
+
     for r in sales_rows:
         di = _day_idx(r.get("close"))
         if di >= 0:
@@ -552,6 +622,8 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
 
     days_map["qualified_rate"] = [pct(days_map["qualified"][i], days_map["leads"][i]) for i in range(day_count)]
     days_map["lead_to_deal_rate"] = [pct(days_map["deals"][i], days_map["qualified"][i]) for i in range(day_count)]
+    days_map["lead_to_sale_rate"] = [pct(days_map["sales"][i], days_map["leads"][i]) for i in range(day_count)]
+    days_map["qualified_to_sale_rate"] = [pct(days_map["sales"][i], days_map["qualified"][i]) for i in range(day_count)]
     days_map["deal_to_sale_rate"] = [pct(days_map["sales"][i], days_map["deals"][i]) for i in range(day_count)]
     days_map["products_per_deal"] = [
         round(days_map["products"][i] / days_map["deals"][i], 2) if days_map["deals"][i] else 0
@@ -680,7 +752,13 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
             "client_type": client_type, "group": block, "stage": deal_stage_name, "stage_id": d.get("STAGE_ID"),
             "created": created.isoformat() if created else None, "close": close.isoformat() if close else None,
             "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
+            "lost_week": week_of_month(close, month_start) if close else -1,
             "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
+            "is_lost": bool(str(d.get("CLOSED") or "").upper() == "Y" and not is_won),
+            "lost_in_report_month": bool(
+                str(d.get("CLOSED") or "").upper() == "Y" and not is_won
+                and close and month_start <= close < next_start
+            ),
             "moved_time": moved.isoformat() if moved else None,
             "amount": round(amount, 2), "paid_amount": pay_amount(d), "net_revenue": num(d.get(F_NET_REVENUE)),
             "products": product_rows, "url": make_deal_url(client.portal, d.get("ID")),
@@ -796,7 +874,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
         client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
         active_records.append({
             "kind":"deal", "id":str(d.get("ID")), "title":d.get("TITLE") or f"Сделка {d.get('ID')}",
-            "manager":user_name(meta,d.get("ASSIGNED_BY_ID")), "source":src, "client_type":client_type, "group":sales_block(client_type,src),
+            "manager":user_name(meta,d.get("ASSIGNED_BY_ID")), "source":src, "client_type":client_type, "group":sales_block(client_type,src,source_overrides),
             "stage":name, "stage_id":d.get("STAGE_ID"), "amount":round(money(d),2),
             "created":created.isoformat() if created else None, "url":make_deal_url(client.portal,d.get("ID")),
         })
@@ -817,7 +895,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
         },
         "classification": {
             "blocks": sales_blocks,
-            "rule": "Действующий клиент → Повторные; Новый + Холодный звонок → Холодные; Новый + остальные источники → Входящие",
+            "rule": "РНП: Холодный звонок/Входящий прямой/Реанимация распределяются по типу клиента; Белтехэкспертиза → холодные; Google/Yandex/сайт/рекомендации/передан экспертом → входящие",
             "deal_client_type_field": F_DEAL_CLIENT_TYPE,
             "lead_client_type_field": F_LEAD_CLIENT_TYPE,
         },
@@ -1119,7 +1197,7 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
         deal_rows=current_deals; sales_universe=current_deals
     else:
         deal_rows=current_deals; sales_universe=current_deals+previous_deals
-    if metric in {"leads","qualified","qualified_rate","lead_to_deal_rate"}:
+    if metric in {"leads","qualified","qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate"}:
         rows=lead_rows if metric=="leads" else [r for r in lead_rows if r.get("is_qualified")]
         if week is not None: rows=[r for r in rows if r.get("week")==int(week)]
         if day is not None:
@@ -1128,6 +1206,12 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
     if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue"}:
         rows=[r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
+        return rows
+    if metric=="lost_deals":
+        rows=[r for r in deal_rows if r.get("lost_in_report_month")]
+        if week is not None: rows=[r for r in rows if r.get("lost_week")==int(week)]
         if day is not None:
             rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
         return rows

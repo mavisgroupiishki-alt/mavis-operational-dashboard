@@ -96,3 +96,14 @@
 - Daily rows show real dates (01.08, 02.08, ...), not day numbers.
 - Redundant long weekly/source/manager reports removed from the main sales page.
 - Traffic editing remains available as a compact strip.
+
+## v2.9.0 — RNP 09.2026
+- Sales tab rebuilt around the actual 09.2026 RNP structure.
+- Three primary blocks: Cold / Incoming / Repeat sales.
+- Exact RNP metrics added, including lost deals and two sale-conversion variants.
+- Monthly Plan / Fact / % by traffic block.
+- Weekly plan is automatically distributed by business days of the selected month.
+- Each work-week expands to daily facts with real dates.
+- Managers and product breakdowns remain.
+- Product conversion is explicitly defined as cohort product sales; tail is excluded.
+- Traffic auto-classification updated to the exact business rules agreed in chat.
