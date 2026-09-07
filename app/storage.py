@@ -112,6 +112,27 @@ class Storage:
             ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""", (key, raw, ts))
             c.commit()
 
+    def _legacy_get(self, key: str):
+        """Read settings from the old Render persistent disk during Supabase migration.
+
+        v2.2/v2.3 commonly stored the SQLite DB under /var/data. v2.4 can
+        copy those values into Supabase automatically before the disk is removed.
+        """
+        candidates = [Path("/var/data/mavis_dashboard_v2.sqlite3"), Path("/var/data/mavis_dashboard.sqlite3")]
+        for db in candidates:
+            if not db.exists() or db.resolve() == self.path.resolve():
+                continue
+            try:
+                c = sqlite3.connect(db)
+                c.row_factory = sqlite3.Row
+                row = c.execute("SELECT value FROM kv_local WHERE key=?", (key,)).fetchone()
+                c.close()
+                if row:
+                    return json.loads(row["value"])
+            except Exception:
+                continue
+        return None
+
     def _get(self, key: str, default):
         if key in self.mem:
             return self.mem[key]
@@ -121,6 +142,15 @@ class Storage:
                 self._local_set(key, value)  # warm fallback cache
                 self.mem[key] = value
                 return value
+            # One-time automatic migration from current/legacy SQLite into Supabase.
+            local_value = self._local_get(key, None)
+            if local_value is None:
+                local_value = self._legacy_get(key)
+            if local_value is not None:
+                if self._remote_set(key, local_value):
+                    self._local_set(key, local_value)
+                    self.mem[key] = local_value
+                    return local_value
         value = self._local_get(key, default)
         self.mem[key] = value
         return value

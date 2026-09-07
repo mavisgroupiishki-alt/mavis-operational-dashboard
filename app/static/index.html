@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f6f8">
+  <meta name="theme-color" content="#eef4f8">
   <title>MAVIS · Операционный дашборд</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -67,7 +67,8 @@
 
 
 <dialog id="commentDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">КОММЕНТАРИЙ</div><h2 id="commentTitle">Комментарий к показателю</h2></div><button class="icon" id="closeComment">×</button></div><textarea id="commentText" rows="6" placeholder="Оставьте пояснение к значению"></textarea><div class="admin-row"><button class="btn primary" id="saveComment">Сохранить</button></div></div></dialog>
-<dialog id="npsDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">NPS</div><h2 id="npsTitle">NPS эксперта</h2></div><button class="icon" id="closeNps">×</button></div><div class="plan-field"><label>NPS, 0–10</label><input id="npsValue" type="number" min="0" max="10" step="0.1"></div><div class="plan-field"><label>Комментарий</label><input id="npsNote"></div><div class="admin-row"><label>ADMIN_KEY<input id="npsAdminKey" type="password"></label><button class="btn primary" id="saveNps">Сохранить</button></div></div></dialog>
+<dialog id="npsDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">NPS ВРУЧНУЮ</div><h2 id="npsTitle">NPS эксперта</h2><div class="muted">Значение вводит руководитель. Bitrix его не рассчитывает.</div></div><button class="icon" id="closeNps">×</button></div><div class="form-stack"><label>Эксперт<select id="npsExpert"></select></label><label>NPS, 0–10<input id="npsValue" type="number" min="0" max="10" step="0.1" placeholder="Например, 9.5"></label><label>Комментарий<input id="npsNote" placeholder="Необязательно"></label></div><div class="admin-row"><label>ADMIN_KEY<input id="npsAdminKey" type="password"></label><button class="btn primary" id="saveNps">Сохранить NPS</button></div></div></dialog>
+<dialog id="teamDialog"><div class="modal-card small-modal"><div class="modal-head"><div><div class="eyebrow">КОМАНДА</div><h2 id="teamDialogTitle">Добавить из Bitrix</h2><div class="muted">После добавления показатели сотрудника начнут считаться в дашборде.</div></div><button class="icon" id="closeTeam">×</button></div><div class="form-stack"><label>Роль<select id="teamRole"><option value="expert">Эксперт</option><option value="manager">Менеджер</option></select></label><label>Пользователь Bitrix<select id="teamUser"></select></label></div><div class="admin-row"><label>ADMIN_KEY<input id="teamDialogAdminKey" type="password"></label><button class="btn primary" id="saveTeamMember">Добавить</button></div></div></dialog>
 <script src="/static/app.js"></script>
 </body>
 </html>
