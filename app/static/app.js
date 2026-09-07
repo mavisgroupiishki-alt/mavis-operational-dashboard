@@ -91,7 +91,7 @@ function renderOverview(){
     <div class="overview-primary">
       ${deptHero({kind:'sales',title:'Продажи',eyebrow:'ОТДЕЛ ПРОДАЖ',value:s.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'current'},substats:[{label:'Продажи',value:s.sales},{label:'Сделки',value:s.deals},{label:'Средний чек',value:s.average_check,type:'money'}]})}
       <div class="department-mini-row">
-        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'current'})}><span>Оплата получена</span><strong>${money(s.sales_amount)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'current'})}><span>Предоплата + успешная продажа</span><strong>${money(s.sales_amount)}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','net_revenue',{period_type:'current'})}><span>Чистая выручка</span><strong>${money(s.net_revenue)}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'current'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
       </div>
@@ -115,7 +115,7 @@ function renderOverview(){
   </div>`;
 }
 
-function salesPeriodSelector(){return `<div class="segmented" id="salesPeriodType"><button data-ptype="total" class="${selectedPeriodType==="total"?"active":""}">Итого 3 мес.</button><button data-ptype="current" class="${selectedPeriodType==="current"?"active":""}">Отчётный период</button><button data-ptype="previous" class="${selectedPeriodType==="previous"?"active":""}">Предыдущий период</button></div>`}
+function salesPeriodSelector(){return `<div class="segmented" id="salesPeriodType"><button data-ptype="total" class="${selectedPeriodType==="total"?"active":""}">Итого: отчётный + хвост</button><button data-ptype="current" class="${selectedPeriodType==="current"?"active":""}">Отчётный период</button><button data-ptype="previous" class="${selectedPeriodType==="previous"?"active":""}">Предыдущий период</button></div>`}
 function salesManagerTable(compact=false){
   let rows=managers().map(m=>{const x=m[selectedPeriodType].metrics;return `<tr><td>${esc(m.name)}</td><td class="num">${tdLink(x.deals,"sales","deals","num",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sales,"sales","sales","num",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sales_amount,"sales","sales_amount","money",{period_type:selectedPeriodType,manager:m.name})}</td>${compact?"":`<td class="num">${getPlan("sales","sales_amount","manager",m.name)?money(getPlan("sales","sales_amount","manager",m.name)):"—"}</td><td class="num">${getPlan("sales","sales_amount","manager",m.name)?pct(x.sales_amount/getPlan("sales","sales_amount","manager",m.name)*100):"—"}</td><td class="num">${tdLink(x.deal_to_sale_rate,"sales","deal_to_sale_rate","pct",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",{period_type:selectedPeriodType,manager:m.name})}</td>`}</tr>`}).join("");
   return `<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>Конв.</th><th class='num'>Прод. продукты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -151,13 +151,13 @@ function salesManagerBreakdowns(){
 function renderSales(){
   const x=state.sales.overall[selectedPeriodType].metrics;
   const sf=state.sales.sale_filter||{};
-  const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Оплата получена';
+  const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Предоплата + успешная продажа';
   $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Отчётный месяц + предыдущий период + детальная матрица по менеджерам, источникам и продуктам</div></div><div class="toolbar-actions">${salesPeriodSelector()}<button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
   <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный период + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки в Bitrix.</div>
   <div class="department-page-head sales-page-head">
     ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:selectedPeriodType==='current'?'ОТЧЁТНЫЙ ПЕРИОД':selectedPeriodType==='previous'?'ПРЕДЫДУЩИЙ ПЕРИОД':'ИТОГО 3 МЕСЯЦА',value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:selectedPeriodType},substats:[{label:'Продажи',value:x.sales},{label:'Сделки',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
     <div class="overview-signals compact-signals">
-      ${signalCard('blue','Оплата получена',x.sales_amount,'money','sales','sales_amount','дата завершения + стадия',{period_type:selectedPeriodType})}
+      ${signalCard('blue','Предоплата + успешная продажа',x.sales_amount,'money','sales','sales_amount','дата завершения',{period_type:selectedPeriodType})}
       ${signalCard('green','Конверсия сделка → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','',{period_type:selectedPeriodType})}
     </div>
   </div>

@@ -44,7 +44,7 @@ F_ACT = "UF_CRM_1785928288816"
 
 DEAL_SELECT = [
     "ID", "TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
-    "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
+    "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
     F_SERVICE, F_EXPECTED_CLOSE, F_PROD_START, F_RETURN_REASON, F_STUCK_REASON_OLD, F_STUCK_REASON_NEW,
     F_SALES_MANAGER, F_SALES_LINK, F_PAID_OLD, F_PAID, F_NET_REVENUE, F_OUR_AMOUNT,
     F_CONTRACTOR_COST, F_PAYMENTS_TOTAL, F_PAYMENT_REMAINDER, F_NEXT_PAYMENT, F_NPS, F_ACT,
@@ -301,13 +301,21 @@ def stage_name(meta: Dict[str, Any], sid: Any, entity: Optional[str] = None) -> 
     return (meta.get("statuses") or {}).get(str(sid), str(sid or "Не указана"))
 
 
-def payment_received_stage_ids(meta: Dict[str, Any]) -> set[str]:
-    """Return sales-pipeline stages named 'Оплата получена'."""
+def successful_sale_stage_ids(meta: Dict[str, Any]) -> set[str]:
+    """Stages included in OP sales/revenue.
+
+    Agreed logic:
+    - 14. Предоплата получена
+    - 15. Продажа успешна
+    Revenue period is determined by CLOSEDATE, not MOVED_TIME.
+    """
     stages = ((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {})
-    return {
-        str(sid) for sid, name in stages.items()
-        if "оплата получена" in norm_text(name)
-    }
+    result = set()
+    for sid, name in stages.items():
+        n = norm_text(name)
+        if "предоплата получена" in n or "продажа успешна" in n:
+            result.add(str(sid))
+    return result
 
 
 def pay_amount(d: Dict[str, Any]) -> float:
@@ -424,23 +432,67 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     month_start, next_start, prev2_start, _ = month_bounds(month_key, tz_name)
     tz = ZoneInfo(tz_name)
 
-    # Все категории и лиды читаем параллельно. Раньше категории шли последовательно.
-    deal_tasks=[]
+    # СОГЛАСОВАННАЯ ЛОГИКА ОП ИЗ ФИНАЛЬНОГО ОТЧЁТА:
+    # - отчётный период: сделки, созданные в выбранном месяце;
+    # - хвост: сделки, созданные до начала месяца и не закрытые до начала месяца;
+    # - продажа/выручка: текущая стадия «14. Предоплата получена»
+    #   ИЛИ «15. Продажа успешна»;
+    # - дата попадания в месяц: CLOSEDATE;
+    # - сумма продажи: OPPORTUNITY.
+    success_stage_ids = successful_sale_stage_ids(meta)
+
+    deal_tasks = []
+    # Сделки отчётного периода — созданные в месяце.
     for cid in SALES_CATEGORY_IDS:
-        deal_tasks.append(client.deal_list({"CATEGORY_ID": cid, ">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, DEAL_SELECT))
-        deal_tasks.append(client.deal_list({"CATEGORY_ID": cid, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(next_start)}, DEAL_SELECT))
-    leads_task=client.lead_list({">=DATE_CREATE": iso(prev2_start), "<DATE_CREATE": iso(next_start)}, LEAD_SELECT)
-    results=await asyncio.gather(*deal_tasks,leads_task)
-    leads_raw=results[-1] or []
-    deals_raw=[]
-    for block in results[:-1]: deals_raw.extend(block or [])
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            ">=DATE_CREATE": iso(month_start),
+            "<DATE_CREATE": iso(next_start),
+        }, DEAL_SELECT))
+
+    # Хвост на начало месяца: старые сделки, которые всё ещё активны сейчас,
+    # плюс сделки, закрытые после начала выбранного месяца. Дедупликация ниже.
+    for cid in SALES_CATEGORY_IDS:
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            "<DATE_CREATE": iso(month_start),
+            "CLOSED": "N",
+        }, DEAL_SELECT))
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            "<DATE_CREATE": iso(month_start),
+            ">=CLOSEDATE": iso(month_start),
+        }, DEAL_SELECT))
+
+    # Все продажи месяца берём отдельно по двум стадиям:
+    # «Предоплата получена» и «Продажа успешна».
+    # Период определяется по дате завершения сделки (CLOSEDATE).
+    # Так в итог попадут и сделки хвоста любой давности.
+    if success_stage_ids:
+        for sid in success_stage_ids:
+            deal_tasks.append(client.deal_list({
+                "CATEGORY_ID": 0,
+                "STAGE_ID": sid,
+                ">=CLOSEDATE": iso(month_start),
+                "<CLOSEDATE": iso(next_start),
+            }, DEAL_SELECT))
+
+    leads_task = client.lead_list({
+        ">=DATE_CREATE": iso(month_start),
+        "<DATE_CREATE": iso(next_start),
+    }, LEAD_SELECT)
+
+    results = await asyncio.gather(*deal_tasks, leads_task)
+    leads_raw = results[-1] or []
+    deals_raw = []
+    for block in results[:-1]:
+        deals_raw.extend(block or [])
     deals_raw = list({str(d.get("ID")): d for d in deals_raw}.values())
     rows_by_deal = await client.product_rows_many(deals_raw)
 
-    payment_stage_ids = payment_received_stage_ids(meta)
-    payment_stage_names = [
+    success_stage_names = [
         name for sid, name in (((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {}).items())
-        if str(sid) in payment_stage_ids
+        if str(sid) in success_stage_ids
     ]
 
     deals = []
@@ -448,16 +500,16 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         cid = int(d.get("CATEGORY_ID") or 0)
         created = parse_dt(d.get("DATE_CREATE"), tz)
         close = parse_dt(d.get("CLOSEDATE"), tz)
-        md = month_diff(created, month_start)
-        if md == 0:
+        moved = parse_dt(d.get("MOVED_TIME"), tz)
+        if created and month_start <= created < next_start:
             ptype = "current"
-        elif md in (-1, -2):
+        elif created and created < month_start:
             ptype = "previous"
         else:
             ptype = "older"
         src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
         deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
-        is_won = cid == 0 and str(d.get("STAGE_ID")) in payment_stage_ids
+        is_won = cid == 0 and str(d.get("STAGE_ID")) in success_stage_ids
         product_rows = []
         for p in rows_by_deal.get(str(d.get("ID")), []):
             name = p.get("productName") or p.get("PRODUCT_NAME") or p.get("PRODUCT_ID") or "Без названия"
@@ -473,6 +525,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
             "created": created.isoformat() if created else None, "close": close.isoformat() if close else None,
             "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
             "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
+            "moved_time": moved.isoformat() if moved else None,
             "amount": round(amount, 2), "paid_amount": pay_amount(d), "net_revenue": num(d.get(F_NET_REVENUE)),
             "products": product_rows, "url": make_deal_url(client.portal, d.get("ID")),
         })
@@ -481,13 +534,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     qualified_needle = "качественный лид"
     for l in leads_raw:
         created = parse_dt(l.get("DATE_CREATE"), tz)
-        md = month_diff(created, month_start)
-        if md == 0:
-            ptype = "current"
-        elif md in (-1, -2):
-            ptype = "previous"
-        else:
-            ptype = "older"
+        ptype = "current" if created and month_start <= created < next_start else "older"
         status = stage_name(meta, l.get("STATUS_ID"), "STATUS")
         src = source_name(meta, l)
         leads.append({
@@ -571,10 +618,10 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         "product_categories": product_categories, "product_managers": product_managers,
         "stages": stage_rows, "active_deals_count": len(active),
         "sale_filter": {
-            "stage_ids": sorted(payment_stage_ids),
-            "stage_names": payment_stage_names,
-            "rule": "Дата завершения в выбранном периоде + стадия «Оплата получена»",
-            "amount_source": "Поле «Сумма» сделки (OPPORTUNITY)",
+            "stage_ids": sorted(success_stage_ids),
+            "stage_names": success_stage_names,
+            "rule": "Переход в стадию «15. Продажа успешна» в выбранном периоде; дата продажи = дата изменения стадии (MOVED_TIME)",
+            "amount_source": "Поле «Сумма» сделки Bitrix (OPPORTUNITY)",
         },
         "_records": records,
     }
@@ -871,6 +918,8 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
 
 async def build_trends_light(client, end_month: str, months: int, tz_name: str):
     tz=ZoneInfo(tz_name)
+    meta = await client.meta()
+    success_stage_ids = successful_sale_stage_ids(meta)
     y,m=map(int,end_month.split('-'))
     keys=[]
     for i in range(months-1,-1,-1):
@@ -881,7 +930,12 @@ async def build_trends_light(client, end_month: str, months: int, tz_name: str):
     start=month_bounds(keys[0],tz_name)[0]
     end=month_bounds(keys[-1],tz_name)[1]
     sales_created_task=client.deal_list({"CATEGORY_ID":0,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
-    sales_won_task=client.deal_list({"CATEGORY_ID":0,"STAGE_ID":SALES_WON,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    async def _load_success():
+        rows=[]
+        for sid in success_stage_ids:
+            rows.extend(await client.deal_list({"CATEGORY_ID":0,"STAGE_ID":sid,">=MOVED_TIME":iso(start),"<MOVED_TIME":iso(end)},DEAL_SELECT) or [])
+        return list({str(d.get("ID")):d for d in rows}.values())
+    sales_won_task=_load_success()
     leads_task=client.lead_list({">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},LEAD_SELECT)
     prod_new_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
     prod_closed_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,"STAGE_ID":PROD_WON,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
@@ -896,7 +950,7 @@ async def build_trends_light(client, end_month: str, months: int, tz_name: str):
         k=key_of(d.get('DATE_CREATE')); 
         if k in out: out[k]['deals']+=1
     for d in sw or []:
-        k=key_of(d.get('CLOSEDATE'))
+        k=key_of(d.get('MOVED_TIME'))
         if k in out: out[k]['sales']+=1; out[k]['sales_amount']+=money(d)
     qneedle='качественный лид'
     for l in leads or []:

@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.5.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -237,7 +237,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.5.0", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.1", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
