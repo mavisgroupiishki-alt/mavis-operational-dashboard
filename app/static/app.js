@@ -15,14 +15,14 @@ const SALES_LABELS={
   deals:["Сделки","num"],deal_amount:["Сумма сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
   deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
-  paid_amount:["Оплачено","money"],net_revenue:["Чистая выручка","money"]
+  paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
 const PROD_LABELS={
   closed_count:["Закрыто продуктов","num"],closed_amount:["Сумма закрытых","money"],avg_check:["Средний чек","money"],
   new_count:["Пришло за период","num"],new_amount:["Сумма пришедших","money"],period_closed_count:["Закрыто из пришедших","num"],period_closed_amount:["Сумма закрытых из пришедших","money"],new_to_success_pct:["Конверсия периода","pct"],
   capacity_count:["Ёмкость периода, шт","num"],capacity_amount:["Ёмкость периода, BYN","money"],returns_count:["Возвраты","num"],returns_amount:["Сумма возвратов","money"],
   avg_production_days:["Срок производства","days"],avg_deviation_days:["Отклонение от нормы","days"],within_norm_pct:["В нормативе","pct"],
-  nps_avg:["NPS вручную","num"],act_share_pct:["С актом","pct"],dormant_count:["Зависшие по ожидаемой дате","num"],returned_to_production:["Вернулось в производство","num"],dormant_with_reason_pct:["Причина заполнена","pct"]
+  nps_avg:["NPS вручную","num"],dormant_count:["Зависшие по ожидаемой дате","num"],returned_to_production:["Вернулось в производство","num"],dormant_with_reason_pct:["Причина заполнена","pct"]
 };
 
 const $=s=>document.querySelector(s);
@@ -39,8 +39,14 @@ function selectedManagers(){return state?.team?.managers||["Ирина Бого�
 function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова"]}
 function managers(){const s=new Set(selectedManagers());return (state?.sales?.managers||[]).filter(x=>s.has(x.name))}
 function experts(){const s=new Set(selectedExperts());return (state?.production?.experts||[]).filter(x=>s.has(x.name))}
-function expertNps(e){const m=state?.manual_nps?.[e.name];return m?Number(m.value):null}
-function overallManualNps(){const vals=experts().map(expertNps).filter(v=>v!==null&&Number.isFinite(v));return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null}
+function expertNpsMeta(e){const m=state?.manual_nps?.[e.name];if(!m)return {value:null,count:0,entries:[]};return {value:Number(m.value),count:Number(m.count||0),entries:m.entries||[]}}
+function expertNps(e){return expertNpsMeta(e).value}
+function overallManualNpsMeta(){
+  let total=0,sum=0;
+  experts().forEach(e=>{const m=expertNpsMeta(e);if(m.value!==null&&Number.isFinite(m.value)&&m.count>0){sum+=m.value*m.count;total+=m.count}});
+  return {value:total?sum/total:null,count:total};
+}
+function overallManualNps(){return overallManualNpsMeta().value}
 function npsText(v){return v===null||v===undefined?"Не задан":fmt(v)}
 function getComment(scope,metric){return state?.comments?.[`${scope}|${metric}`]?.comment||""}
 
@@ -65,9 +71,9 @@ function card(title,value,scope,metric,type="num",extra={},note="",ct="overall",
   }
   return `<div class="card clickable" ${drillAttrs(scope,metric,extra)}><button class="comment-btn" data-comment-scope="${attr(scope)}" data-comment-metric="${attr(metric)}" data-comment-title="${attr(title)}" title="Комментарий">${comment?'●':'+'}</button><div class="kpi-label">${esc(title)}</div><div class="kpi-value">${format(value,type)}</div><div class="kpi-meta plan-line"><span>План: ${pr.plan?format(pr.plan,type):'—'}</span><span>${pr.plan?`Выполнение: ${pct(value/pr.plan*100)}`:'Выполнение: —'}</span></div>${note?`<div class="kpi-note">${esc(note)}</div>`:''}${comment?`<div class="tile-comment">${esc(comment)}</div>`:''}${pr.plan?`<div class="progress"><span class="${pr.cls}" style="width:${Math.min(100,Math.max(0,pr.p))}%"></span></div>`:""}${pace}</div>`;
 }
-function manualNpsCard(value){
+function manualNpsCard(value,count=0){
   const shown=value===null||value===undefined?'—':fmt(value);
-  return `<div class="card nps-manual-card"><div class="kpi-label">NPS вручную</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${value===null||value===undefined?'Не задан':'Среднее по введённым экспертам'}</span></div><button class="btn soft-action" data-open-nps="1">+ Внести NPS</button></div>`;
+  return `<div class="card nps-manual-card"><div class="kpi-label">NPS вручную</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${count?`Среднее по ${fmt(count)} оценкам`:'Оценок пока нет'}</span></div><button class="btn soft-action" data-open-nps="1">+ Добавить оценку NPS</button></div>`;
 }
 function progressPct(scope,metric,fact,ct="overall",ck=""){const p=getPlan(scope,metric,ct,ck);return p?Math.max(0,Math.min(100,Number(fact||0)/p*100)):0}
 function deptHero({kind,title,eyebrow,value,valueType='money',scope,metric,extra={},planMetric=metric,substats=[]}){
@@ -79,13 +85,13 @@ function panel(title,body,note=""){return `<div class="panel"><div class="panel-
 function tdLink(value,scope,metric,type,extra={}){return `<span class="cell-link" ${drillAttrs(scope,metric,extra)}>${format(value,type)}</span>`}
 
 function renderOverview(){
-  const s=state.sales.overall.current.metrics,p=state.production.kpi,nps=overallManualNps();
+  const s=state.sales.overall.current.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
   $("#overview").innerHTML=`
   <div class="overview-layout">
     <div class="overview-primary">
       ${deptHero({kind:'sales',title:'Продажи',eyebrow:'ОТДЕЛ ПРОДАЖ',value:s.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'current'},substats:[{label:'Продажи',value:s.sales},{label:'Сделки',value:s.deals},{label:'Средний чек',value:s.average_check,type:'money'}]})}
       <div class="department-mini-row">
-        <div class="mini-metric clickable" ${drillAttrs('sales','paid_amount',{period_type:'current'})}><span>Оплачено</span><strong>${money(s.paid_amount)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'current'})}><span>Оплата получена</span><strong>${money(s.sales_amount)}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','net_revenue',{period_type:'current'})}><span>Чистая выручка</span><strong>${money(s.net_revenue)}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'current'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
       </div>
@@ -94,7 +100,7 @@ function renderOverview(){
       ${signalCard('green','Производство · закрытые акты',p.closed_amount,'money','production','closed_amount',`${fmt(p.closed_count)} закрытых продуктов`)}
       ${signalCard('coral','Зависшие периода',p.dormant_count,'num','production','dormant_count',money(p.dormant_amount))}
       ${signalCard('blue','Конверсия производства',p.new_to_success_pct,'pct','production','new_to_success_pct',`${fmt(p.period_closed_count)} из ${fmt(p.new_count)} пришедших`)}
-      ${`<div class="signal-card violet nps-signal"><div class="signal-top"><span>NPS вручную</span><span class="signal-arrow">+</span></div><div class="signal-value">${npsText(nps)}</div><div class="signal-note">Вводит руководитель</div><button class="signal-action" data-open-nps="1">Внести / изменить</button></div>`}
+      ${`<div class="signal-card violet nps-signal"><div class="signal-top"><span>NPS вручную</span><span class="signal-arrow">+</span></div><div class="signal-value">${npsText(nps)}</div><div class="signal-note">${npsMeta.count?`${fmt(npsMeta.count)} оценок · среднее`:'Оценок пока нет'}</div><button class="signal-action" data-open-nps="1">+ Добавить оценку</button></div>`}
     </div>
   </div>
   <div class="department-split">
@@ -144,11 +150,14 @@ function salesManagerBreakdowns(){
 }
 function renderSales(){
   const x=state.sales.overall[selectedPeriodType].metrics;
+  const sf=state.sales.sale_filter||{};
+  const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Оплата получена';
   $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Отчётный месяц + предыдущий период + детальная матрица по менеджерам, источникам и продуктам</div></div><div class="toolbar-actions">${salesPeriodSelector()}<button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
+  <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный период + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки в Bitrix.</div>
   <div class="department-page-head sales-page-head">
     ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:selectedPeriodType==='current'?'ОТЧЁТНЫЙ ПЕРИОД':selectedPeriodType==='previous'?'ПРЕДЫДУЩИЙ ПЕРИОД':'ИТОГО 3 МЕСЯЦА',value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:selectedPeriodType},substats:[{label:'Продажи',value:x.sales},{label:'Сделки',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
     <div class="overview-signals compact-signals">
-      ${signalCard('blue','Оплачено',x.paid_amount,'money','sales','paid_amount','по данным Bitrix',{period_type:selectedPeriodType})}
+      ${signalCard('blue','Оплата получена',x.sales_amount,'money','sales','sales_amount','дата завершения + стадия',{period_type:selectedPeriodType})}
       ${signalCard('green','Конверсия сделка → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','',{period_type:selectedPeriodType})}
     </div>
   </div>
@@ -168,27 +177,28 @@ function prodProductTable(){
   return `<div class="scroll-x"><table><thead><tr><th>Продукт</th><th>Сложность</th><th class="num">Норма</th><th class="num">Новых</th><th class="num">Новых BYN</th><th class="num">Закрыто</th><th class="num">Закрыто BYN</th><th class="num">План</th><th class="num">% плана</th><th class="num">Конв.</th><th class="num">Ср чек</th><th class="num">Срок</th><th class="num">Откл.</th><th class="num">В норме</th><th class="num">Ёмкость</th><th class="num">Ёмкость BYN</th><th class="num">Возвраты</th><th class="num">Возвраты BYN</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function expertTable(compact=false){
-  const rows=experts().map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{expert:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{expert:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{expert:r.name})}</td>${compact?"":`<td class="num">${getPlan("production","closed_amount","expert",r.name)?money(getPlan("production","closed_amount","expert",r.name)):"—"}</td><td class="num">${getPlan("production","closed_amount","expert",r.name)?pct(r.closed_amount/getPlan("production","closed_amount","expert",r.name)*100):"—"}</td><td class="num">${npsText(expertNps(r))} <button class="mini-edit" data-nps-edit="1" data-expert="${attr(r.name)}">задать</button></td><td class="num">${tdLink(r.active_count,"production","active","num",{expert:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{expert:r.name})}</td>`}</tr>`).join("");
+  const rows=experts().map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.closed_count,"production","closed_count","num",{expert:r.name})}</td><td class="num">${tdLink(r.closed_amount,"production","closed_amount","money",{expert:r.name})}</td><td class="num">${tdLink(r.avg_production_days,"production","avg_production_days","days",{expert:r.name})}</td><td class="num">${tdLink(r.within_norm_pct,"production","within_norm_pct","pct",{expert:r.name})}</td>${compact?"":`<td class="num">${getPlan("production","closed_amount","expert",r.name)?money(getPlan("production","closed_amount","expert",r.name)):"—"}</td><td class="num">${getPlan("production","closed_amount","expert",r.name)?pct(r.closed_amount/getPlan("production","closed_amount","expert",r.name)*100):"—"}</td><td class="num">${npsText(expertNps(r))}${expertNpsMeta(r).count?` · ${fmt(expertNpsMeta(r).count)} оц.`:''} <button class="mini-edit" data-nps-edit="1" data-expert="${attr(r.name)}">+ добавить</button></td><td class="num">${tdLink(r.active_count,"production","active","num",{expert:r.name})}</td><td class="num">${tdLink(r.returns_count,"production","returns_count","num",{expert:r.name})}</td>`}</tr>`).join("");
   return `<div class="scroll-x"><table><thead><tr><th>Эксперт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>NPS вручную</th><th class='num'>Активно</th><th class='num'>Возвраты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function prodStages(){return `<table><thead><tr><th>Стадия</th><th class="num">Кол-во</th><th class="num">Сумма</th></tr></thead><tbody>${state.production.stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"production","active","num",{stage:r.name})}</td><td class="num">${tdLink(r.amount,"production","active","money",{stage:r.name})}</td></tr>`).join("")}</tbody></table>`}
 function renderProduction(){
-  const p={...state.production.kpi,nps_avg:overallManualNps()};
+  const npsMeta=overallManualNpsMeta();
+  const p={...state.production.kpi,nps_avg:npsMeta.value};
   $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn soft-action" data-open-nps="1">+ NPS вручную</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
-  <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg)}</div>
+  <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,npsMeta.count)}</div>
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   <div class="section-title">Поток выбранного периода</div>
   <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct")}</div>
   <div class="section-title">Воронка и сроки</div>
-  <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}${card("С актом",p.act_share_pct,"production","act_share_pct","pct")}</div>
+  <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
   ${panel("Разбивка по продуктам",prodProductTable(),"нажми на показатель → эксперт → продукт → компания")}
   <div class="grid-2">${panel("Эксперты",expertTable(false),"состав можно менять прямо здесь")}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
   $("#openPlanProd")?.addEventListener("click",()=>openPlanDialog("production"));
 }
 
 function renderExperts(){
-  const cards=experts().map(e=>{const nv=expertNps(e);return `<div class="expert-card"><div class="expert-card-top"><div><div class="expert-name">${esc(e.name)}</div><div class="expert-result">${money(e.closed_amount)}</div></div><button class="btn nps-button" data-nps-edit="1" data-expert="${attr(e.name)}">${nv===null?'+ Задать NPS':'NPS '+fmt(nv)+' · изменить'}</button></div><div class="expert-stats"><div><span>Закрыто</span><strong>${tdLink(e.closed_count,"production","closed_count","num",{expert:e.name})}</strong></div><div><span>В работе</span><strong>${tdLink(e.active_count,"production","active","num",{expert:e.name})}</strong></div><div><span>В норме</span><strong>${pct(e.within_norm_pct)}</strong></div><div><span>Возвраты</span><strong>${tdLink(e.returns_count,"production","returns_count","num",{expert:e.name})}</strong></div></div><details class="nested"><summary>По продуктам (${e.products.length})</summary><div class="nested-body"><table><thead><tr><th>Продукт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th></tr></thead><tbody>${e.products.map(p=>`<tr><td>${esc(p.name)}</td><td class="num">${tdLink(p.closed_count,"production","closed_count","num",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.closed_amount,"production","closed_amount","money",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.avg_days,"production","avg_production_days","days",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.within_norm_pct,"production","within_norm_pct","pct",{expert:e.name,product:p.name})}</td></tr>`).join("")}</tbody></table></div></details></div>`}).join("");
+  const cards=experts().map(e=>{const nm=expertNpsMeta(e),nv=nm.value;return `<div class="expert-card"><div class="expert-card-top"><div><div class="expert-name">${esc(e.name)}</div><div class="expert-result">${money(e.closed_amount)}</div></div><button class="btn nps-button" data-nps-edit="1" data-expert="${attr(e.name)}">${nv===null?'+ Добавить NPS':'NPS '+fmt(nv)+' · '+fmt(nm.count)+' оц. · добавить'}</button></div><div class="expert-stats"><div><span>Закрыто</span><strong>${tdLink(e.closed_count,"production","closed_count","num",{expert:e.name})}</strong></div><div><span>В работе</span><strong>${tdLink(e.active_count,"production","active","num",{expert:e.name})}</strong></div><div><span>В норме</span><strong>${pct(e.within_norm_pct)}</strong></div><div><span>Возвраты</span><strong>${tdLink(e.returns_count,"production","returns_count","num",{expert:e.name})}</strong></div></div><details class="nested"><summary>По продуктам (${e.products.length})</summary><div class="nested-body"><table><thead><tr><th>Продукт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th></tr></thead><tbody>${e.products.map(p=>`<tr><td>${esc(p.name)}</td><td class="num">${tdLink(p.closed_count,"production","closed_count","num",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.closed_amount,"production","closed_amount","money",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.avg_days,"production","avg_production_days","days",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.within_norm_pct,"production","within_norm_pct","pct",{expert:e.name,product:p.name})}</td></tr>`).join("")}</tbody></table></div></details></div>`}).join("");
   $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и NPS — NPS всегда вводит руководитель</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button class="btn soft-action" data-open-nps="1">+ Внести NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>`;
 }
 
@@ -229,7 +239,7 @@ async function addTeam(role){const sel=document.querySelector(`[data-team-select
 async function removeTeam(role,name){const q=new URLSearchParams({role,name,admin_key:$('#teamAdminKey')?.value||''});const r=await fetch('/api/team?'+q,{method:'DELETE'});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;renderAll()}
 async function saveDormant(){const stages=$$('[data-dormant-stage]:checked').map(x=>x.value);const r=await fetch('/api/dormant-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({stages,admin_key:$('#dormantAdminKey')?.value||''})});if(!r.ok){alert(await r.text());return}state=null;load()}
 function renderDynamics(){const el=$('#dynamics');el.innerHTML='<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю динамику</div><div class="muted">Считаю лёгкий агрегат за 6 месяцев без тяжёлой расшифровки</div></div></div>';fetch(`/api/dynamics?month=${encodeURIComponent($('#month').value)}&months=6`).then(r=>r.json()).then(j=>{const rows=j.rows||[];el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ДИНАМИКА</div><div class="muted">Ключевые показатели за 6 месяцев</div></div></div>${panel('Продажи',trendTable(rows,'sales'))}${panel('Производство',trendTable(rows,'production'))}`}).catch(e=>el.innerHTML=`<div class="error">${esc(e.message)}</div>`)}
-function trendTable(rows,scope){const cols=scope==='sales'?[['sales_amount','Выручка','money'],['sales','Продажи','num'],['avg_check','Средний чек','money'],['deals','Сделки','num'],['leads','Лиды','num']]:[['prod_closed_amount','Закрытые акты','money'],['prod_closed','Закрытые продукты','num'],['prod_new','Новые','num'],['prod_conversion','Конверсия','pct'],['avg_prod_days','Срок','days'],['returns','Возвраты','num']];return `<div class="scroll-x"><table><thead><tr><th>Месяц</th>${cols.map(c=>`<th class="num">${c[1]}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.month)}</td>${cols.map(c=>`<td class="num">${format(r[c[0]],c[2])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
+function trendTable(rows,scope){const cols=scope==='sales'?[['sales_amount','Выручка','money'],['sales','Продажи','num'],['avg_check','Средний чек','money'],['deals','Сделки','num'],['leads','Лиды','num']]:[['prod_closed_amount','Сумма закрытых','money'],['prod_closed','Закрытые продукты','num'],['prod_new','Новые','num'],['prod_conversion','Конверсия','pct'],['avg_prod_days','Срок','days'],['returns','Возвраты','num']];return `<div class="scroll-x"><table><thead><tr><th>Месяц</th>${cols.map(c=>`<th class="num">${c[1]}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.month)}</td>${cols.map(c=>`<td class="num">${format(r[c[0]],c[2])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
 
 function forecastCard(title,fact,plan,type="money"){
   const pace=state?.pace||{};const share=Number(pace.share||0);const total=Number(pace.business_days_total||0),elapsed=Number(pace.business_days_elapsed||0);const remaining=Math.max(0,total-elapsed);
@@ -243,9 +253,9 @@ function renderForecast(){
   const currentMonth=new Date().toISOString().slice(0,7);const isCurrent=$("#month").value===currentMonth && $("#period").value==="month";
   el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОГНОЗ МЕСЯЦА</div><div class="muted">Прогноз по темпу рабочих дней + контроль качества данных</div></div></div>
   ${!isCurrent?`<div class="criteria-box">Прогноз темпа корректнее смотреть для текущего месяца в режиме «Месяц». Сейчас показан ориентир на основе выбранного месяца.</div>`:""}
-  <div class="grid-2">${forecastCard("Выручка ОП",s.sales_amount,getPlan("sales","sales_amount"),"money")}${forecastCard("Закрытые акты",p.closed_amount,getPlan("production","closed_amount"),"money")}${forecastCard("Продажи",s.sales,getPlan("sales","sales"),"num")}${forecastCard("Закрытые продукты",p.closed_count,getPlan("production","closed_count"),"num")}</div>
+  <div class="grid-2">${forecastCard("Выручка ОП",s.sales_amount,getPlan("sales","sales_amount"),"money")}${forecastCard("Сумма закрытых",p.closed_amount,getPlan("production","closed_amount"),"money")}${forecastCard("Продажи",s.sales,getPlan("sales","sales"),"num")}${forecastCard("Закрытые продукты",p.closed_count,getPlan("production","closed_count"),"num")}</div>
   <div class="section-title">Контроль качества данных</div>
-  <div class="kpi-grid">${qualityCard("Активные без предполагаемой даты",p.active_missing_expected_count||0,"active_missing_expected_count","не попадают в ёмкость")}${qualityCard("Зависшие без причины",p.dormant_without_reason_count||0,"dormant_count","из ожидаемой даты выбранного периода")}${qualityCard("Закрытые без акта",p.closed_without_act_count||0,"closed_without_act_count")}${qualityCard("Активные без продукта",p.active_missing_service_count||0,"active_missing_service_count")}${qualityCard("Активные без эксперта",p.active_missing_expert_count||0,"active_missing_expert_count")}</div>`;
+  <div class="kpi-grid">${qualityCard("Активные без предполагаемой даты",p.active_missing_expected_count||0,"active_missing_expected_count","не попадают в ёмкость")}${qualityCard("Зависшие без причины",p.dormant_without_reason_count||0,"dormant_count","из ожидаемой даты выбранного периода")}${qualityCard("Активные без продукта",p.active_missing_service_count||0,"active_missing_service_count")}${qualityCard("Активные без эксперта",p.active_missing_expert_count||0,"active_missing_expert_count")}</div>`;
 }
 
 function renderPlanInline(){
@@ -316,12 +326,14 @@ function detailHtml(r){
   return `<div class="detail-card" data-search="${attr([title,...meta,products].join(' ').toLowerCase())}"><div class="detail-main"><div><div class="detail-title">${r.url?`<a href="${attr(r.url)}" target="_blank" rel="noreferrer">${esc(title)}</a>`:esc(title)}</div><div class="detail-meta">${meta.map(x=>`<span>${esc(x)}</span>`).join("")}</div>${products?`<div class="detail-products">${esc(products)}</div>`:""}</div><div class="detail-money">${amount}</div></div></div>`;
 }
 async function openDrill(el){
-  const d=el.dataset;drillOffset=0;drillMeta={...d};const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:'0',limit:'100'});
+  const d=el.dataset;drillOffset=0;drillMeta={...d};
+  $("#drillSearch").value="";
+  const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:'0',limit:'500'});
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value);}
   ["periodType","manager","group","source","product","expert","stage","reason","week"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const label=(d.scope==="sales"?SALES_LABELS[d.metric]?.[0]:PROD_LABELS[d.metric]?.[0])||d.metric;
   $("#drillTitle").textContent=label;$("#drillSubtitle").textContent="Расшифровка из уже загруженного snapshot";$("#drillBody").innerHTML='<div class="loading">Загрузка…</div>';$("#drillDialog").showModal();
-  try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(r.status===202||j.loading){$("#drillBody").innerHTML='<div class="loading">Расшифровка ещё готовится. Через несколько секунд нажми снова.</div>';return}if(!r.ok)throw new Error(j.detail||JSON.stringify(j));drillRows=j.rows||[];drillOffset=drillRows.length;drillTotal=Number(j.count||drillRows.length);$("#drillCount").textContent=`${drillTotal} записей`;$("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');renderDrillRows()}catch(e){$("#drillBody").innerHTML=`<div class="error">${esc(e.message)}</div>`}
+  try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(r.status===202||j.loading){$("#drillBody").innerHTML='<div class="loading">Расшифровка ещё готовится. Через несколько секунд нажми снова.</div>';return}if(!r.ok)throw new Error(j.detail||JSON.stringify(j));drillRows=j.rows||[];drillOffset=drillRows.length;drillTotal=Number(j.count||drillRows.length);$("#drillCount").textContent=`${drillTotal} записей · показано ${drillRows.length}`;$("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');renderDrillRows()}catch(e){$("#drillBody").innerHTML=`<div class="error">${esc(e.message)}</div>`}
 }
 function groupRows(rows,keyFn){const m=new Map();rows.forEach(r=>{const k=keyFn(r)||"Не указано";if(!m.has(k))m.set(k,[]);m.get(k).push(r)});return [...m.entries()].sort((a,b)=>b[1].reduce((s,x)=>s+Number(x.amount||0),0)-a[1].reduce((s,x)=>s+Number(x.amount||0),0))}
 function drillGroupKeys(r){
@@ -336,6 +348,7 @@ function drillGroupKeys(r){
 }
 function renderDrillRows(){
   const q=normSearch($("#drillSearch").value);const rows=q?drillRows.filter(r=>JSON.stringify(r).toLowerCase().includes(q)):drillRows;
+  $("#drillCount").textContent=q?`${drillTotal} всего · найдено ${rows.length}`:`${drillTotal} записей · показано ${drillRows.length}`;
   if(!rows.length){$("#drillBody").innerHTML='<div class="empty">Нет записей</div>';return}
   const firstGroups=groupRows(rows,r=>drillGroupKeys(r)[0]);
   const maxCount=Math.max(1,...firstGroups.map(x=>x[1].length));
@@ -351,16 +364,24 @@ function normSearch(s){return String(s||'').trim().toLowerCase()}
 
 async function loadMoreDrill(){
   if(!drillMeta||drillOffset>=drillTotal)return;
-  const d=drillMeta;const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:String(drillOffset),limit:'100'});
+  const d=drillMeta;const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:String(drillOffset),limit:'500'});
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value)}
   ["periodType","manager","group","source","product","expert","stage","reason","week"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const btn=$("#drillMore");if(btn){btn.disabled=true;btn.textContent='Загружаю…'}
   try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(!r.ok)throw new Error(j.detail||JSON.stringify(j));const add=j.rows||[];drillRows=drillRows.concat(add);drillOffset+=add.length;drillTotal=Number(j.count||drillTotal);renderDrillRows()}catch(e){if(btn){btn.disabled=false;btn.textContent='Повторить загрузку'}}
 }
+function renderNpsHistory(){
+  const row=state?.manual_nps?.[npsTarget]||null;
+  const entries=row?.entries||[];
+  $("#npsTitle").textContent=npsTarget?`NPS · ${npsTarget}`:'NPS вручную';
+  const avg=row?fmt(row.value):'—',count=row?Number(row.count||0):0;
+  $("#npsHistory").innerHTML=`<div class="nps-summary"><strong>Среднее: ${avg}</strong><span>${fmt(count)} оценок</span></div>${entries.length?entries.map(x=>`<div class="nps-history-row"><div><strong>${fmt(x.value)}</strong>${x.note?`<span>${esc(x.note)}</span>`:''}</div><button class="mini-edit danger" data-delete-nps="${attr(x.id)}">удалить</button></div>`).join(''):'<div class="muted">Оценок пока нет</div>'}`;
+}
 function openNpsDialog(expert=""){
   const list=selectedExperts();$("#npsExpert").innerHTML=list.map(n=>`<option value="${attr(n)}">${esc(n)}</option>`).join('');
   if(expert&&list.includes(expert))$("#npsExpert").value=expert;
-  npsTarget=$("#npsExpert").value||expert||list[0]||"";const row=state?.manual_nps?.[npsTarget];$("#npsTitle").textContent=npsTarget?`NPS · ${npsTarget}`:'NPS вручную';$("#npsValue").value=row?.value??'';$("#npsNote").value=row?.note??'';$("#npsDialog").showModal();
+  npsTarget=$("#npsExpert").value||expert||list[0]||"";
+  $("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();$("#npsDialog").showModal();
 }
 function openTeamDialog(role="expert"){
   teamTargetRole=role;$("#teamRole").value=role;const users=state?.available_users||[];$("#teamUser").innerHTML=users.map(u=>`<option value="${attr(u)}">${esc(u)}</option>`).join('');$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
@@ -397,6 +418,7 @@ function init(){
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
+    const delNps=e.target.closest('[data-delete-nps]');if(delNps){e.stopPropagation();const q=new URLSearchParams({month:$('#month').value,entry_id:delNps.dataset.deleteNps,admin_key:$('#npsAdminKey').value||''});fetch('/api/nps?'+q.toString(),{method:'DELETE'}).then(async r=>{if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;renderNpsHistory();renderAll()});return}
     if(e.target.closest('#drillMore')){e.stopPropagation();loadMoreDrill();return}
     if(e.target.closest('#saveDormant')){saveDormant();return}
     const add=e.target.closest('[data-team-add]');if(add){addTeam(add.dataset.teamAdd);return}
@@ -409,8 +431,8 @@ function init(){
   $("#closeComment").addEventListener('click',()=>$("#commentDialog").close());
   $("#saveComment").addEventListener('click',async()=>{if(!commentTarget)return;const r=await fetch('/api/comment',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,scope:commentTarget.scope,metric:commentTarget.metric,comment:$('#commentText').value})});if(!r.ok){alert(await r.text());return}state.comments=(await r.json()).comments;$('#commentDialog').close();renderAll()});
   $("#closeNps").addEventListener('click',()=>$("#npsDialog").close());
-  $("#npsExpert").addEventListener('change',()=>{npsTarget=$("#npsExpert").value;const row=state?.manual_nps?.[npsTarget];$("#npsTitle").textContent=`NPS · ${npsTarget}`;$("#npsValue").value=row?.value??'';$("#npsNote").value=row?.note??''});
-  $("#saveNps").addEventListener('click',async()=>{npsTarget=$("#npsExpert").value||npsTarget;if(!npsTarget)return;const raw=$("#npsValue").value;if(raw===''){alert('Введи NPS от 0 до 10');return}const r=await fetch('/api/nps',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,expert:npsTarget,value:Number(raw),note:$('#npsNote').value,admin_key:$('#npsAdminKey').value})});if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;$('#npsDialog').close();renderAll()});
+  $("#npsExpert").addEventListener('change',()=>{npsTarget=$("#npsExpert").value;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory()});
+  $("#saveNps").addEventListener('click',async()=>{npsTarget=$("#npsExpert").value||npsTarget;if(!npsTarget)return;const raw=$("#npsValue").value;if(raw===''){alert('Введи NPS от 0 до 10');return}const r=await fetch('/api/nps',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,expert:npsTarget,value:Number(raw),note:$('#npsNote').value,admin_key:$('#npsAdminKey').value})});if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();renderAll()});
   $("#closeTeam").addEventListener('click',()=>$("#teamDialog").close());
   $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
   const es=new EventSource('/events');es.addEventListener('update',()=>load());es.onerror=()=>{$("#liveDot").className='bad'};

@@ -225,3 +225,12 @@ tr:hover td{background:#f5f9fc}
   .overview-signals,.dept-substats,.department-mini-row,.expert-stats{grid-template-columns:1fr 1fr}
   .signal-card{min-height:112px}.department-hero{padding:18px}.dept-ring{width:60px;height:60px}.dept-ring:before{width:44px;height:44px}
 }
+
+/* v2.5 NPS history + filter diagnostics */
+.nps-history{margin-top:16px;border-top:1px solid var(--line-soft);padding-top:14px;display:grid;gap:8px}
+.nps-summary{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#f5f8fb;border:1px solid var(--line);border-radius:12px}
+.nps-summary strong{font-size:15px}.nps-summary span{color:#718394;font-size:12px}
+.nps-history-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#fff;border:1px solid var(--line);border-radius:11px}
+.nps-history-row>div{display:flex;gap:10px;align-items:center}.nps-history-row span{color:#718394;font-size:12px}
+.mini-edit.danger{color:#a84f58}
+.sales-filter-note{margin-bottom:14px;background:linear-gradient(90deg,#eef7fd,#f7fbfe);border-left:4px solid #2499d4}

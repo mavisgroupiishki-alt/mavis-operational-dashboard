@@ -301,6 +301,15 @@ def stage_name(meta: Dict[str, Any], sid: Any, entity: Optional[str] = None) -> 
     return (meta.get("statuses") or {}).get(str(sid), str(sid or "Не указана"))
 
 
+def payment_received_stage_ids(meta: Dict[str, Any]) -> set[str]:
+    """Return sales-pipeline stages named 'Оплата получена'."""
+    stages = ((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {})
+    return {
+        str(sid) for sid, name in stages.items()
+        if "оплата получена" in norm_text(name)
+    }
+
+
 def pay_amount(d: Dict[str, Any]) -> float:
     return max(num(d.get(F_PAID)), num(d.get(F_PAID_OLD)), num(d.get(F_PAYMENTS_TOTAL)))
 
@@ -351,11 +360,17 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 continue
             sold_products.append({**p, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("sale_week", -1)})
 
+    conversion_deal_rows = deal_rows
+    if period_type == "total":
+        conversion_deal_rows = [r for r in deals if common(r) and r.get("period_type") == "current"]
+        if product_cat:
+            conversion_deal_rows = [r for r in conversion_deal_rows if any(p.get("category") == product_cat for p in r.get("products", []))]
+
     m = {
         "leads": len(lead_rows),
         "qualified": len(qual_rows),
         "qualified_rate": pct(len(qual_rows), len(lead_rows)),
-        "lead_to_deal_rate": pct(len(deal_rows), len(qual_rows)),
+        "lead_to_deal_rate": pct(len(conversion_deal_rows), len(qual_rows)),
         "deals": len(deal_rows),
         "deal_amount": round(sum(r["amount"] for r in deal_rows), 2),
         "sales": len(sales_rows),
@@ -422,11 +437,17 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     deals_raw = list({str(d.get("ID")): d for d in deals_raw}.values())
     rows_by_deal = await client.product_rows_many(deals_raw)
 
+    payment_stage_ids = payment_received_stage_ids(meta)
+    payment_stage_names = [
+        name for sid, name in (((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {}).items())
+        if str(sid) in payment_stage_ids
+    ]
+
     deals = []
     for d in deals_raw:
         cid = int(d.get("CATEGORY_ID") or 0)
         created = parse_dt(d.get("DATE_CREATE"), tz)
-        close = parse_dt(d.get("CLOSEDATE") or d.get("DATE_MODIFY"), tz)
+        close = parse_dt(d.get("CLOSEDATE"), tz)
         md = month_diff(created, month_start)
         if md == 0:
             ptype = "current"
@@ -435,8 +456,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         else:
             ptype = "older"
         src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
-        stage_sem = str(d.get("STAGE_SEMANTIC_ID") or "").upper()
-        is_won = (stage_sem == "S" or d.get("STAGE_ID") == SALES_WON) and cid != REANIMATION_CATEGORY_ID
+        deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
+        is_won = cid == 0 and str(d.get("STAGE_ID")) in payment_stage_ids
         product_rows = []
         for p in rows_by_deal.get(str(d.get("ID")), []):
             name = p.get("productName") or p.get("PRODUCT_NAME") or p.get("PRODUCT_ID") or "Без названия"
@@ -444,11 +465,11 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
             price = num(p.get("price", p.get("PRICE", 0)))
             product_rows.append({"name": str(name), "category": product_category(str(name)), "quantity": q, "amount": round(price * q, 2)})
         products_amount = sum(p["amount"] for p in product_rows)
-        amount = products_amount if products_amount > 0 else money(d)
+        amount = money(d)
         deals.append({
             "kind": "deal", "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
             "category_id": cid, "manager": user_name(meta, d.get("ASSIGNED_BY_ID")), "source": src,
-            "group": source_group(src), "stage": stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}"), "stage_id": d.get("STAGE_ID"),
+            "group": source_group(src), "stage": deal_stage_name, "stage_id": d.get("STAGE_ID"),
             "created": created.isoformat() if created else None, "close": close.isoformat() if close else None,
             "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
             "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
@@ -548,7 +569,14 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     return {
         "overall": overall, "groups": groups, "exact_sources": exact_sources, "managers": managers,
         "product_categories": product_categories, "product_managers": product_managers,
-        "stages": stage_rows, "active_deals_count": len(active), "_records": records,
+        "stages": stage_rows, "active_deals_count": len(active),
+        "sale_filter": {
+            "stage_ids": sorted(payment_stage_ids),
+            "stage_names": payment_stage_names,
+            "rule": "Дата завершения в выбранном периоде + стадия «Оплата получена»",
+            "amount_source": "Поле «Сумма» сделки (OPPORTUNITY)",
+        },
+        "_records": records,
     }
 
 

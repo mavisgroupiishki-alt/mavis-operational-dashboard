@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.4.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.5.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -237,7 +237,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.4.0", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.5.0", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
@@ -270,7 +270,7 @@ async def drilldown(
     scope: str, metric: str, month: str = "", period: str = "month", period_type: str = "current",
     manager: str | None = None, group: str | None = None, source: str | None = None, product: str | None = None,
     expert: str | None = None, stage: str | None = None, reason: str | None = None, week: int | None = None,
-    custom_start: str = "", custom_end: str = "", offset: int = 0, limit: int = 100,
+    custom_start: str = "", custom_end: str = "", offset: int = 0, limit: int = 500,
 ):
     month = month or current_month(); key=(month,period,custom_start or "",custom_end or "")
     if key not in detail_cache:
@@ -286,7 +286,7 @@ async def drilldown(
             if selected:rows=[r for r in rows if r.get('stage') in selected]
     else: raise HTTPException(400,"scope должен быть sales или production")
     rows=sorted(rows,key=lambda r:(r.get("close") or r.get("created") or "", r.get("id") or ""),reverse=True)
-    limit=max(20,min(int(limit),200));offset=max(0,int(offset))
+    limit=max(20,min(int(limit),1000));offset=max(0,int(offset))
     return {"count":len(rows),"offset":offset,"limit":limit,"rows":rows[offset:offset+limit]}
 
 
@@ -334,7 +334,14 @@ async def save_comment(body: CommentBody):
 async def save_nps(body: NpsBody):
     if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
     if body.value<0 or body.value>10:raise HTTPException(400,'NPS должен быть от 0 до 10')
-    storage.set_manual_nps(body.month,body.expert,body.value,body.note);return {'ok':True,'manual_nps':storage.manual_nps(body.month)}
+    storage.add_manual_nps(body.month,body.expert,body.value,body.note)
+    return {'ok':True,'manual_nps':storage.manual_nps(body.month)}
+
+@app.delete('/api/nps')
+async def delete_nps(month:str, entry_id:str, admin_key:str=''):
+    if settings.admin_key and not secrets.compare_digest(admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
+    storage.delete_manual_nps(month, entry_id)
+    return {'ok':True,'manual_nps':storage.manual_nps(month)}
 
 @app.put('/api/dormant-config')
 async def save_dormant_config(body: DormantConfigBody):

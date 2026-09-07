@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -244,18 +245,83 @@ class Storage:
         self._set(f"comments:{month}", value)
 
     # ---------- Manual NPS ----------
-    def manual_nps(self, month):
-        value = self._get(f"nps:{month}", {})
-        return value if isinstance(value, dict) else {}
+    def _nps_entries(self, month):
+        key = f"nps_entries:{month}"
+        value = self._get(key, None)
+        if isinstance(value, list):
+            return value
 
-    def set_manual_nps(self, month, expert, value, note=""):
-        data = self.manual_nps(month)
-        data[expert] = {
+        # Migrate v2.4 single-value-per-expert structure without losing data.
+        legacy = self._get(f"nps:{month}", {})
+        entries = []
+        if isinstance(legacy, dict):
+            for expert, row in legacy.items():
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    score = float(row.get("value"))
+                except Exception:
+                    continue
+                entries.append({
+                    "id": str(uuid.uuid4()),
+                    "expert": expert,
+                    "value": score,
+                    "note": row.get("note") or "",
+                    "created_at": row.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                })
+        self._set(key, entries)
+        return entries
+
+    def manual_nps(self, month):
+        """Aggregate all manual NPS entries by expert.
+
+        `value` is the arithmetic mean of all entered ratings for the expert.
+        `count` is the number of ratings. Entries are preserved for history.
+        """
+        entries = self._nps_entries(month)
+        grouped = {}
+        for row in entries:
+            expert = str(row.get("expert") or "").strip()
+            if not expert:
+                continue
+            x = grouped.setdefault(expert, {"values": [], "entries": []})
+            try:
+                score = float(row.get("value"))
+            except Exception:
+                continue
+            x["values"].append(score)
+            x["entries"].append(row)
+        out = {}
+        for expert, x in grouped.items():
+            vals = x["values"]
+            rows = sorted(x["entries"], key=lambda r: str(r.get("created_at") or ""), reverse=True)
+            out[expert] = {
+                "value": round(sum(vals) / len(vals), 2) if vals else 0,
+                "count": len(vals),
+                "note": rows[0].get("note") if rows else "",
+                "updated_at": rows[0].get("created_at") if rows else "",
+                "entries": rows,
+            }
+        return out
+
+    def add_manual_nps(self, month, expert, value, note=""):
+        entries = list(self._nps_entries(month))
+        entries.append({
+            "id": str(uuid.uuid4()),
+            "expert": expert,
             "value": float(value),
             "note": note or "",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._set(f"nps:{month}", data)
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        self._set(f"nps_entries:{month}", entries)
+
+    def delete_manual_nps(self, month, entry_id):
+        entries = [x for x in self._nps_entries(month) if str(x.get("id")) != str(entry_id)]
+        self._set(f"nps_entries:{month}", entries)
+
+    # Backward-compatible method name used by earlier code.
+    def set_manual_nps(self, month, expert, value, note=""):
+        self.add_manual_nps(month, expert, value, note)
 
     # ---------- Generic settings ----------
     def _settings(self):
