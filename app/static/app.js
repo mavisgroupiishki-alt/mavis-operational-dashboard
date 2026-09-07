@@ -594,3 +594,16 @@ function init(){
   load();setInterval(load,120000);
 }
 init();
+
+
+// Build marker: helps verify that the browser is not showing stale frontend files.
+window.addEventListener("DOMContentLoaded",()=>{
+  const top=document.querySelector(".topbar")||document.querySelector("header")||document.body;
+  if(!document.querySelector("#buildMarker")){
+    const b=document.createElement("span");
+    b.id="buildMarker";
+    b.className="build-marker";
+    b.textContent="v2.6.9";
+    top.appendChild(b);
+  }
+});

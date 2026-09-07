@@ -360,3 +360,10 @@ td{padding:11px 9px}
   .compact-week-head,.compact-week-row{grid-template-columns:1.2fr repeat(5,minmax(90px,1fr))}
   .traffic-config-row{grid-template-columns:1fr}
 }
+
+.build-marker{
+  position:fixed;right:10px;bottom:8px;z-index:20;
+  font-size:10px;color:#8798a7;background:rgba(255,255,255,.88);
+  border:1px solid #d8e2e9;border-radius:7px;padding:3px 6px;
+  pointer-events:none
+}

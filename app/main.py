@@ -210,7 +210,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.7", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.9", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -245,14 +245,31 @@ async def login(password: str = Form(...)):
     return RedirectResponse("/login?error=1", status_code=303)
 
 
+
+@app.middleware("http")
+async def no_cache_frontend(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 @app.get("/")
 async def index():
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(
+        STATIC / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.8", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.9", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")
