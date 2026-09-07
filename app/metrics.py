@@ -41,17 +41,19 @@ F_PAYMENT_REMAINDER = "UF_CRM_MPS_REMAINDER"
 F_NEXT_PAYMENT = "UF_CRM_MPS_NEXT_DATE"
 F_NPS = "UF_CRM_1781707277198"
 F_ACT = "UF_CRM_1785928288816"
+F_DEAL_CLIENT_TYPE = "UF_CRM_1756973967704"
+F_LEAD_CLIENT_TYPE = "UF_CRM_1756973545759"
 
 DEAL_SELECT = [
     "ID", "TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
     "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
     F_SERVICE, F_EXPECTED_CLOSE, F_PROD_START, F_RETURN_REASON, F_STUCK_REASON_OLD, F_STUCK_REASON_NEW,
     F_SALES_MANAGER, F_SALES_LINK, F_PAID_OLD, F_PAID, F_NET_REVENUE, F_OUR_AMOUNT,
-    F_CONTRACTOR_COST, F_PAYMENTS_TOTAL, F_PAYMENT_REMAINDER, F_NEXT_PAYMENT, F_NPS, F_ACT,
+    F_CONTRACTOR_COST, F_PAYMENTS_TOTAL, F_PAYMENT_REMAINDER, F_NEXT_PAYMENT, F_NPS, F_ACT, F_DEAL_CLIENT_TYPE,
 ]
 LEAD_SELECT = [
     "ID", "TITLE", "STATUS_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "DATE_CREATE", "DATE_MODIFY",
-    "ASSIGNED_BY_ID", "OPPORTUNITY", "CURRENCY_ID"
+    "ASSIGNED_BY_ID", "OPPORTUNITY", "CURRENCY_ID", F_LEAD_CLIENT_TYPE
 ]
 
 SALES_METRICS = [
@@ -206,18 +208,30 @@ def norm_text(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower().replace("ё", "е"))
 
 
+def sales_block(client_type: Any, source: str) -> str:
+    """Business split used in OP operational / plan-fact tables.
+
+    1) Existing client -> Repeat sales by base.
+    2) New client + Cold call -> Cold sales.
+    3) New client + any other source -> Incoming traffic sales.
+
+    For legacy rows where client type is empty, use explicit repeat-source names
+    as a safe fallback before classifying by source.
+    """
+    ct = norm_text(client_type)
+    src = norm_text(source)
+    if "действующ" in ct:
+        return "Повторные продажи по базе"
+    if re.search(r"реанимац|повторн.*продаж|база успешн|передан.*эксперт", src):
+        return "Повторные продажи по базе"
+    if "холод" in src:
+        return "Холодные продажи"
+    return "Входящий трафик продажи"
+
+
 def source_group(name: str) -> str:
-    n = norm_text(name)
-    if "холод" in n:
-        return "Холодный звонок"
-    if re.search(r"реанимац|повтор|успешн.*клиент|передан.*эксперт|действующ", n):
-        return "Из реанимации"
-    if re.search(r"входящ|партнер|партнёр|яндекс|google|гугл|заявк.*сайт|органик|реклам|рекомендац|электрон.*почт|telegram|телеграм|tgapi|viber|вайбер|instagram|инстаграм|соцсет", n):
-        return "Входящий звонок (прямой)"
-    mapped = SOURCE_MAP.get(name)
-    if mapped:
-        return mapped
-    return "Прочее"
+    # Backward-compatible helper for places without client type.
+    return sales_block(None, name)
 
 
 def product_category(name: str) -> str:
@@ -332,6 +346,19 @@ def make_lead_url(portal: str, lead_id: Any) -> str:
 
 def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total", manager=None, group=None,
                     source=None, product_cat=None, month_start=None) -> Dict[str, Any]:
+    """Aggregate OP metrics for one selected month.
+
+    Main dashboard semantics (period_type='total'):
+    - leads / qualified leads: created in selected month;
+    - deals / deal amount / products in deals: deals created in selected month;
+    - sales / sales amount / sold products: all deals closed in selected month on
+      the sales stages, regardless of when the deal was created (tail included);
+    - deal->sale conversion: cohort conversion only for deals created in the
+      selected month, so the tail never distorts the percentage.
+
+    current/previous are retained only for backward-compatible drilldown/API use;
+    they are no longer exposed as separate dashboard modes.
+    """
     leads = records["leads"]
     deals = records["deals"]
 
@@ -344,54 +371,80 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
             return False
         return True
 
-    lead_rows = []
-    if period_type != "previous":
-        lead_rows = [r for r in leads if common(r) and r.get("period_type") == "current"]
+    # Leads always belong to the selected reporting month.
+    lead_rows = [] if period_type == "previous" else [
+        r for r in leads if common(r) and r.get("period_type") == "current"
+    ]
     qual_rows = [r for r in lead_rows if r.get("is_qualified")]
 
-    deal_rows = [r for r in deals if common(r) and (period_type == "total" or r.get("period_type") == period_type)]
-    if product_cat:
-        deal_rows = [r for r in deal_rows if any(p.get("category") == product_cat for p in r.get("products", []))]
+    current_deals = [r for r in deals if common(r) and r.get("period_type") == "current"]
+    previous_deals = [r for r in deals if common(r) and r.get("period_type") == "previous"]
 
-    sales_rows = [r for r in deal_rows if r.get("is_won") and r.get("sale_in_report_month")]
+    if product_cat:
+        current_deals = [r for r in current_deals if any(p.get("category") == product_cat for p in r.get("products", []))]
+        previous_deals = [r for r in previous_deals if any(p.get("category") == product_cat for p in r.get("products", []))]
+
+    if period_type == "previous":
+        deal_rows = previous_deals
+        sales_universe = previous_deals
+    elif period_type == "current":
+        deal_rows = current_deals
+        sales_universe = current_deals
+    else:
+        # IMPORTANT: deal metrics are ALWAYS the selected month's created deals.
+        deal_rows = current_deals
+        # Sales include both current-period deals and the historical tail.
+        sales_universe = current_deals + previous_deals
+
+    sales_rows = [r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
+    cohort_sales_rows = [r for r in current_deals if r.get("is_won") and r.get("sale_in_report_month")]
 
     products = []
-    sold_products = []
     for d in deal_rows:
-        for p in d.get("products", []):
-            if product_cat and p.get("category") != product_cat:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
                 continue
-            products.append({**p, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("creation_week", -1)})
-    for d in sales_rows:
-        for p in d.get("products", []):
-            if product_cat and p.get("category") != product_cat:
-                continue
-            sold_products.append({**p, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("sale_week", -1)})
+            products.append({**pr, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("creation_week", -1)})
 
-    conversion_deal_rows = deal_rows
-    if period_type == "total":
-        conversion_deal_rows = [r for r in deals if common(r) and r.get("period_type") == "current"]
-        if product_cat:
-            conversion_deal_rows = [r for r in conversion_deal_rows if any(p.get("category") == product_cat for p in r.get("products", []))]
+    sold_products = []
+    for d in sales_rows:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            sold_products.append({**pr, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("sale_week", -1)})
+
+    cohort_sold_products = []
+    for d in cohort_sales_rows:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_products.append(pr)
+
+    sales_amount = round(sum(r["amount"] for r in sales_rows), 2)
+    product_qty = sum(pr["quantity"] for pr in products)
+    sold_product_qty = sum(pr["quantity"] for pr in sold_products)
+    cohort_sold_qty = sum(pr["quantity"] for pr in cohort_sold_products)
 
     m = {
         "leads": len(lead_rows),
         "qualified": len(qual_rows),
         "qualified_rate": pct(len(qual_rows), len(lead_rows)),
-        "lead_to_deal_rate": pct(len(conversion_deal_rows), len(qual_rows)),
+        "lead_to_deal_rate": pct(len(current_deals), len(qual_rows)),
         "deals": len(deal_rows),
         "deal_amount": round(sum(r["amount"] for r in deal_rows), 2),
         "sales": len(sales_rows),
-        "sales_amount": round(sum(r["amount"] for r in sales_rows), 2),
-        "average_check": round(sum(r["amount"] for r in sales_rows) / len(sales_rows), 2) if sales_rows else 0,
-        "deal_to_sale_rate": pct(len(sales_rows), len(deal_rows)),
-        "products_per_deal": round(sum(p["quantity"] for p in products) / len(deal_rows), 2) if deal_rows else 0,
-        "products": round(sum(p["quantity"] for p in products), 2),
-        "product_amount": round(sum(p["amount"] for p in products), 2),
-        "sold_products": round(sum(p["quantity"] for p in sold_products), 2),
-        "sold_product_amount": round(sum(p["amount"] for p in sold_products), 2),
-        "average_product_check": round(sum(p["amount"] for p in sold_products) / sum(p["quantity"] for p in sold_products), 2) if sold_products and sum(p["quantity"] for p in sold_products) else 0,
-        "product_sale_rate": pct(sum(p["quantity"] for p in sold_products), sum(p["quantity"] for p in products)),
+        "sales_amount": sales_amount,
+        "average_check": round(sales_amount / len(sales_rows), 2) if sales_rows else 0,
+        # Cohort conversion: sales from deals created in the month / deals created in the month.
+        "deal_to_sale_rate": pct(len(cohort_sales_rows), len(current_deals)),
+        "products_per_deal": round(product_qty / len(deal_rows), 2) if deal_rows else 0,
+        "products": round(product_qty, 2),
+        "product_amount": round(sum(pr["amount"] for pr in products), 2),
+        "sold_products": round(sold_product_qty, 2),
+        "sold_product_amount": round(sum(pr["amount"] for pr in sold_products), 2),
+        "average_product_check": round(sum(pr["amount"] for pr in sold_products) / sold_product_qty, 2) if sold_product_qty else 0,
+        # Product conversion is also cohort-based so tail sales do not inflate it.
+        "product_sale_rate": pct(cohort_sold_qty, product_qty),
         "paid_amount": round(sum(r.get("paid_amount", 0) for r in sales_rows), 2),
         "net_revenue": round(sum(r.get("net_revenue", 0) for r in sales_rows), 2),
     }
@@ -410,21 +463,31 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         if w >= 0:
             weeks["deals"][w] += 1
             weeks["deal_amount"][w] += r["amount"]
-            for p in r.get("products", []):
-                if not product_cat or p.get("category") == product_cat:
-                    weeks["products"][w] += p["quantity"]
-                    weeks["product_amount"][w] += p["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                weeks["products"][w] += pr["quantity"]
+                weeks["product_amount"][w] += pr["amount"]
     for r in sales_rows:
         w = r.get("sale_week", -1)
         if w >= 0:
             weeks["sales"][w] += 1
             weeks["sales_amount"][w] += r["amount"]
-            for p in r.get("products", []):
-                if not product_cat or p.get("category") == product_cat:
-                    weeks["sold_products"][w] += p["quantity"]
-                    weeks["sold_product_amount"][w] += p["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                weeks["sold_products"][w] += pr["quantity"]
+                weeks["sold_product_amount"][w] += pr["amount"]
+
     weeks["qualified_rate"] = [pct(weeks["qualified"][i], weeks["leads"][i]) for i in range(5)]
     weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
+    # Weekly deal->sale is kept as a flow view (sales closed in week / deals created in week).
+    weeks["deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
+    weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
+    weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]
+    weeks["average_product_check"] = [round(weeks["sold_product_amount"][i] / weeks["sold_products"][i], 2) if weeks["sold_products"][i] else 0 for i in range(5)]
+    weeks["product_sale_rate"] = [pct(weeks["sold_products"][i], weeks["products"][i]) for i in range(5)]
+
     return {"metrics": m, "weeks": weeks}
 
 
@@ -508,6 +571,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         else:
             ptype = "older"
         src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
+        client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
+        block = sales_block(client_type, src)
         deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
         is_won = cid == 0 and str(d.get("STAGE_ID")) in success_stage_ids
         product_rows = []
@@ -521,7 +586,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         deals.append({
             "kind": "deal", "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
             "category_id": cid, "manager": user_name(meta, d.get("ASSIGNED_BY_ID")), "source": src,
-            "group": source_group(src), "stage": deal_stage_name, "stage_id": d.get("STAGE_ID"),
+            "client_type": client_type, "group": block, "stage": deal_stage_name, "stage_id": d.get("STAGE_ID"),
             "created": created.isoformat() if created else None, "close": close.isoformat() if close else None,
             "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
             "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
@@ -537,9 +602,11 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         ptype = "current" if created and month_start <= created < next_start else "older"
         status = stage_name(meta, l.get("STATUS_ID"), "STATUS")
         src = source_name(meta, l)
+        client_type = enum_label(meta, F_LEAD_CLIENT_TYPE, l.get(F_LEAD_CLIENT_TYPE)) or "Не указан"
+        block = sales_block(client_type, src)
         leads.append({
             "kind": "lead", "id": str(l.get("ID")), "title": l.get("TITLE") or f"Лид {l.get('ID')}",
-            "manager": user_name(meta, l.get("ASSIGNED_BY_ID")), "source": src, "group": source_group(src),
+            "manager": user_name(meta, l.get("ASSIGNED_BY_ID")), "source": src, "client_type": client_type, "group": block,
             "status": status, "is_qualified": norm_text(status) == qualified_needle or str(l.get("STATUS_ID")) == "CONVERTED",
             "created": created.isoformat() if created else None, "period_type": ptype,
             "week": week_of_month(created, month_start), "url": make_lead_url(client.portal, l.get("ID")),
@@ -549,7 +616,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     overall = {p: aggregate_sales(records, p, month_start=month_start) for p in ["total", "current", "previous"]}
 
     groups = []
-    for g in ["Холодный звонок", "Входящий звонок (прямой)", "Из реанимации", "Прочее"]:
+    sales_blocks = ["Холодные продажи", "Входящий трафик продажи", "Повторные продажи по базе"]
+    for g in sales_blocks:
         row = {"name": g}
         for p in ["total", "current", "previous"]:
             row[p] = aggregate_sales(records, p, group=g, month_start=month_start)
@@ -557,10 +625,28 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
 
     exact_sources = []
     for s in sorted({r["source"] for r in leads + deals}):
-        row = {"name": s, "group": source_group(s)}
+        # A source can belong to different business blocks depending on client type.
+        # Keep a representative label here; detailed source rows by block are exposed separately below.
+        matched_blocks = sorted({r.get("group") for r in leads + deals if r.get("source") == s and r.get("group")})
+        row = {"name": s, "group": " / ".join(matched_blocks) if matched_blocks else source_group(s)}
         for p in ["total", "current", "previous"]:
             row[p] = aggregate_sales(records, p, source=s, month_start=month_start)
         exact_sources.append(row)
+
+    source_blocks = []
+    for g in sales_blocks:
+        sources_in_block = sorted({r["source"] for r in leads + deals if r.get("group") == g})
+        for src_name in sources_in_block:
+            row = {"name": src_name, "group": g}
+            for p in ["total", "current", "previous"]:
+                # aggregate with both group + exact source so the same source may appear in different blocks
+                # when client type differs.
+                rec = {
+                    "leads": [r for r in leads if r.get("group") == g],
+                    "deals": [r for r in deals if r.get("group") == g],
+                }
+                row[p] = aggregate_sales(rec, p, source=src_name, month_start=month_start)
+            source_blocks.append(row)
 
     managers = []
     for m in sorted({r["manager"] for r in leads + deals if r.get("manager")}):
@@ -568,7 +654,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         for p in ["total", "current", "previous"]:
             row[p] = aggregate_sales(records, p, manager=m, month_start=month_start)
         row["groups"] = []
-        for g in ["Холодный звонок", "Входящий звонок (прямой)", "Из реанимации", "Прочее"]:
+        for g in sales_blocks:
             grow = {"name": g}
             for p in ["total", "current", "previous"]:
                 grow[p] = aggregate_sales(records, p, manager=m, group=g, month_start=month_start)
@@ -603,9 +689,10 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
         stages[name]["amount"] += money(d)
         created = parse_dt(d.get("DATE_CREATE"), tz)
         src = source_name(meta, d, False)
+        client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
         active_records.append({
             "kind":"deal", "id":str(d.get("ID")), "title":d.get("TITLE") or f"Сделка {d.get('ID')}",
-            "manager":user_name(meta,d.get("ASSIGNED_BY_ID")), "source":src, "group":source_group(src),
+            "manager":user_name(meta,d.get("ASSIGNED_BY_ID")), "source":src, "client_type":client_type, "group":sales_block(client_type,src),
             "stage":name, "stage_id":d.get("STAGE_ID"), "amount":round(money(d),2),
             "created":created.isoformat() if created else None, "url":make_deal_url(client.portal,d.get("ID")),
         })
@@ -614,14 +701,20 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str)
     records["active"] = active_records
 
     return {
-        "overall": overall, "groups": groups, "exact_sources": exact_sources, "managers": managers,
+        "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "managers": managers,
         "product_categories": product_categories, "product_managers": product_managers,
         "stages": stage_rows, "active_deals_count": len(active),
         "sale_filter": {
             "stage_ids": sorted(success_stage_ids),
             "stage_names": success_stage_names,
-            "rule": "Переход в стадию «15. Продажа успешна» в выбранном периоде; дата продажи = дата изменения стадии (MOVED_TIME)",
+            "rule": "CLOSEDATE в выбранном периоде + стадия «14. Предоплата получена» или «15. Продажа успешна»",
             "amount_source": "Поле «Сумма» сделки Bitrix (OPPORTUNITY)",
+        },
+        "classification": {
+            "blocks": sales_blocks,
+            "rule": "Действующий клиент → Повторные; Новый + Холодный звонок → Холодные; Новый + остальные источники → Входящие",
+            "deal_client_type_field": F_DEAL_CLIENT_TYPE,
+            "lead_client_type_field": F_LEAD_CLIENT_TYPE,
         },
         "_records": records,
     }
@@ -639,13 +732,17 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
     full_days = calendar_days(created, close)
     norm_days = num((norm_spec or {}).get("norm_days")) if norm_spec else 0
     in_norm = bool(prod_days is not None and norm_days > 0 and prod_days <= norm_days)
+    # Причина зависания: актуальное поле имеет приоритет.
+    # Старое поле используем только как fallback, чтобы одна сделка
+    # не попадала одновременно в две причины из-за исторических значений.
     reasons = []
-    for f in [F_STUCK_REASON_OLD, F_STUCK_REASON_NEW]:
-        raw = enum_label(meta, f, d.get(f))
-        if isinstance(raw, list):
-            reasons.extend([str(x) for x in raw if x])
-        elif raw:
-            reasons.append(str(raw))
+    raw = enum_label(meta, F_STUCK_REASON_NEW, d.get(F_STUCK_REASON_NEW))
+    if not raw:
+        raw = enum_label(meta, F_STUCK_REASON_OLD, d.get(F_STUCK_REASON_OLD))
+    if isinstance(raw, list):
+        reasons = [str(x) for x in raw if x]
+    elif raw:
+        reasons = [str(raw)]
     reasons = list(dict.fromkeys(reasons))
     return {
         "kind": role, "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
@@ -688,16 +785,36 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
 
-    new_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, ">=DATE_CREATE": iso(range_start), "<DATE_CREATE": iso(range_end)}, DEAL_SELECT)
+    # "Пришло в производство" = дата начала оказания услуг / передачи в производство.
+    # Для старых карточек, где это поле не заполнено, используем DATE_CREATE как fallback.
+    new_by_start_task = client.deal_list({
+        "CATEGORY_ID": PROD_CATEGORY,
+        f">={F_PROD_START}": iso(range_start),
+        f"<{F_PROD_START}": iso(range_end),
+    }, DEAL_SELECT)
+    new_by_created_task = client.deal_list({
+        "CATEGORY_ID": PROD_CATEGORY,
+        ">=DATE_CREATE": iso(range_start),
+        "<DATE_CREATE": iso(range_end),
+    }, DEAL_SELECT)
     closed_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_WON, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     returns_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_RETURN, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     active_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     returned_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_TO_PROD, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
-    new_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = await asyncio.gather(
-        new_task, closed_task, returns_task, active_task, dormant_task, returned_task
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = await asyncio.gather(
+        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, dormant_task, returned_task
     )
-    new_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = [x or [] for x in [new_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw]]
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = [
+        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw]
+    ]
+    # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
+    # дата начала оказания услуг не заполнена — это именно fallback.
+    new_map = {str(d.get("ID")): d for d in new_by_start_raw}
+    for d in new_by_created_raw:
+        if not d.get(F_PROD_START):
+            new_map.setdefault(str(d.get("ID")), d)
+    new_raw = list(new_map.values())
 
     def convert(rows, role="production"):
         return [prod_item(client, meta, d, tz, month_start, next_start, role=role) for d in rows]
@@ -823,7 +940,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         else:buckets["30+ дней"]+=1
 
     return {
-        "period_label": period_label, "kpi": kpi, "products": products, "experts": experts, "stages": stages,
+        "period_label": period_label,
+        "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
+        "kpi": kpi, "products": products, "experts": experts, "stages": stages,
         "dormant": {"reasons": reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
         "return_reasons": return_reasons,
         "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
@@ -881,15 +1001,23 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
         rows=[r for r in active if common(r) and r.get("stage")==stage]
         return rows
     lead_rows=[r for r in leads if common(r) and (period_type!="previous" and r.get("period_type")=="current")]
-    deal_rows=[r for r in deals if common(r) and (period_type=="total" or r.get("period_type")==period_type)]
+    current_deals=[r for r in deals if common(r) and r.get("period_type")=="current"]
+    previous_deals=[r for r in deals if common(r) and r.get("period_type")=="previous"]
     if product:
-        deal_rows=[r for r in deal_rows if any(p.get("category")==product or p.get("name")==product for p in r.get("products",[]))]
+        current_deals=[r for r in current_deals if any(p.get("category")==product or p.get("name")==product for p in r.get("products",[]))]
+        previous_deals=[r for r in previous_deals if any(p.get("category")==product or p.get("name")==product for p in r.get("products",[]))]
+    if period_type=="previous":
+        deal_rows=previous_deals; sales_universe=previous_deals
+    elif period_type=="current":
+        deal_rows=current_deals; sales_universe=current_deals
+    else:
+        deal_rows=current_deals; sales_universe=current_deals+previous_deals
     if metric in {"leads","qualified","qualified_rate","lead_to_deal_rate"}:
         rows=lead_rows if metric=="leads" else [r for r in lead_rows if r.get("is_qualified")]
         if week is not None: rows=[r for r in rows if r.get("week")==int(week)]
         return rows
     if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue"}:
-        rows=[r for r in deal_rows if r.get("is_won") and r.get("sale_in_report_month")]
+        rows=[r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
         return rows
     rows=deal_rows

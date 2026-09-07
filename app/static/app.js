@@ -1,5 +1,5 @@
 let state=null;
-let selectedPeriodType="current";
+const selectedPeriodType="total";
 let drillRows=[];
 let loadTimer=null;
 let loadController=null;
@@ -85,15 +85,15 @@ function panel(title,body,note=""){return `<div class="panel"><div class="panel-
 function tdLink(value,scope,metric,type,extra={}){return `<span class="cell-link" ${drillAttrs(scope,metric,extra)}>${format(value,type)}</span>`}
 
 function renderOverview(){
-  const s=state.sales.overall.current.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
+  const s=state.sales.overall.total.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
   $("#overview").innerHTML=`
   <div class="overview-layout">
     <div class="overview-primary">
-      ${deptHero({kind:'sales',title:'Продажи',eyebrow:'ОТДЕЛ ПРОДАЖ',value:s.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'current'},substats:[{label:'Продажи',value:s.sales},{label:'Сделки',value:s.deals},{label:'Средний чек',value:s.average_check,type:'money'}]})}
+      ${deptHero({kind:'sales',title:'Продажи',eyebrow:'ОТДЕЛ ПРОДАЖ',value:s.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'total'},substats:[{label:'Продажи',value:s.sales},{label:'Сделки',value:s.deals},{label:'Средний чек',value:s.average_check,type:'money'}]})}
       <div class="department-mini-row">
-        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'current'})}><span>Предоплата + успешная продажа</span><strong>${money(s.sales_amount)}</strong></div>
-        <div class="mini-metric clickable" ${drillAttrs('sales','net_revenue',{period_type:'current'})}><span>Чистая выручка</span><strong>${money(s.net_revenue)}</strong></div>
-        <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'current'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Предоплата + успешная продажа</span><strong>${money(s.sales_amount)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','net_revenue',{period_type:'total'})}><span>Чистая выручка</span><strong>${money(s.net_revenue)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'total'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
       </div>
     </div>
     <div class="overview-signals">
@@ -115,24 +115,24 @@ function renderOverview(){
   </div>`;
 }
 
-function salesPeriodSelector(){return `<div class="segmented" id="salesPeriodType"><button data-ptype="total" class="${selectedPeriodType==="total"?"active":""}">Итого: отчётный + хвост</button><button data-ptype="current" class="${selectedPeriodType==="current"?"active":""}">Отчётный период</button><button data-ptype="previous" class="${selectedPeriodType==="previous"?"active":""}">Предыдущий период</button></div>`}
+function salesPeriodSelector(){return ``}
 function salesManagerTable(compact=false){
   let rows=managers().map(m=>{const x=m[selectedPeriodType].metrics;return `<tr><td>${esc(m.name)}</td><td class="num">${tdLink(x.deals,"sales","deals","num",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sales,"sales","sales","num",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sales_amount,"sales","sales_amount","money",{period_type:selectedPeriodType,manager:m.name})}</td>${compact?"":`<td class="num">${getPlan("sales","sales_amount","manager",m.name)?money(getPlan("sales","sales_amount","manager",m.name)):"—"}</td><td class="num">${getPlan("sales","sales_amount","manager",m.name)?pct(x.sales_amount/getPlan("sales","sales_amount","manager",m.name)*100):"—"}</td><td class="num">${tdLink(x.deal_to_sale_rate,"sales","deal_to_sale_rate","pct",{period_type:selectedPeriodType,manager:m.name})}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",{period_type:selectedPeriodType,manager:m.name})}</td>`}</tr>`}).join("");
   return `<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>Конв.</th><th class='num'>Прод. продукты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function sourceTable(exact=false){
   const rows=(exact?state.sales.exact_sources:state.sales.groups).map(r=>{const x=r[selectedPeriodType].metrics;const extra=exact?{period_type:selectedPeriodType,source:r.name}:{period_type:selectedPeriodType,group:r.name};return `<tr><td>${esc(r.name)}</td>${exact?`<td>${esc(r.group)}</td>`:""}<td class="num">${tdLink(x.leads,"sales","leads","num",extra)}</td><td class="num">${tdLink(x.qualified,"sales","qualified","num",extra)}</td><td class="num">${tdLink(x.deals,"sales","deals","num",extra)}</td><td class="num">${tdLink(x.sales,"sales","sales","num",extra)}</td><td class="num">${tdLink(x.sales_amount,"sales","sales_amount","money",extra)}</td><td class="num">${getPlan("sales","sales_amount",exact?"source":"source_group",r.name)?money(getPlan("sales","sales_amount",exact?"source":"source_group",r.name)):"—"}</td><td class="num">${getPlan("sales","sales_amount",exact?"source":"source_group",r.name)?pct(x.sales_amount/getPlan("sales","sales_amount",exact?"source":"source_group",r.name)*100):"—"}</td><td class="num">${tdLink(x.deal_to_sale_rate,"sales","deal_to_sale_rate","pct",extra)}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",extra)}</td></tr>`}).join("");
-  return `<div class="scroll-x"><table><thead><tr><th>${exact?"Источник":"Группа"}</th>${exact?"<th>Группа</th>":""}<th class="num">Лиды</th><th class="num">Квал.</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">План</th><th class="num">% плана</th><th class="num">Конв.</th><th class="num">Продукты</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="scroll-x"><table><thead><tr><th>${exact?"Источник":"Группа"}</th>${exact?"<th>Тип продаж</th>":""}<th class="num">Лиды</th><th class="num">Квал.</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">План</th><th class="num">% плана</th><th class="num">Конв.</th><th class="num">Продукты</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function salesProductTable(){
   const rows=state.sales.product_categories.map(r=>{const x=r[selectedPeriodType].metrics;const extra={period_type:selectedPeriodType,product:r.name};return `<tr><td>${esc(r.name)}</td><td class="num">${tdLink(x.products,"sales","products","num",extra)}</td><td class="num">${tdLink(x.product_amount,"sales","product_amount","money",extra)}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",extra)}</td><td class="num">${tdLink(x.sold_product_amount,"sales","sold_product_amount","money",extra)}</td><td class="num">${tdLink(x.average_product_check,"sales","average_product_check","money",extra)}</td><td class="num">${tdLink(x.product_sale_rate,"sales","product_sale_rate","pct",extra)}</td></tr>`}).join("");
   return `<div class="scroll-x"><table><thead><tr><th>Категория</th><th class="num">В сделках</th><th class="num">Сумма</th><th class="num">Продано</th><th class="num">Сумма продаж</th><th class="num">Ср чек</th><th class="num">Конв.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function weeklyGrid(){
-  const w=state.sales.overall.current.weeks;
+  const w=state.sales.overall.total.weeks;
   const defs=[["leads","Лиды","num"],["qualified","Квал. лиды","num"],["qualified_rate","% в квал.","pct"],["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма сделок","money"],["sales","Продажи","num"],["sales_amount","Выручка","money"],["products","Продукты","num"],["product_amount","Сумма продуктов","money"],["sold_products","Продано продуктов","num"],["sold_product_amount","Сумма прод. продуктов","money"]];
   let cells=`<div class="head">Показатель</div>${[1,2,3,4,5].map(i=>`<div class="head">${i} нед.</div>`).join("")}`;
-  defs.forEach(([k,label,type])=>{cells+=`<div class="metric">${esc(label)}</div>`;for(let i=0;i<5;i++)cells+=`<div class="value" ${drillAttrs("sales",k,{period_type:"current",week:i})}>${format(w[k]?.[i]||0,type)}</div>`});
+  defs.forEach(([k,label,type])=>{cells+=`<div class="metric">${esc(label)}</div>`;for(let i=0;i<5;i++)cells+=`<div class="value" ${drillAttrs("sales",k,{period_type:"total",week:i})}>${format(w[k]?.[i]||0,type)}</div>`});
   return `<div class="week-grid">${cells}</div>`;
 }
 function salesStages(){
@@ -140,35 +140,80 @@ function salesStages(){
   return `<table><thead><tr><th>Стадия</th><th class="num">Сделок</th><th class="num">Сумма</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+function salesTypeMatrix(){
+  const rows=(state.sales.groups||[]).map(g=>{
+    const c=g.current.metrics,p=g.previous.metrics,t=g.total.metrics;
+    const ec={period_type:'current',group:g.name},ep={period_type:'previous',group:g.name},et={period_type:'total',group:g.name};
+    return `<tr>
+      <td><strong>${esc(g.name)}</strong></td>
+      <td class="num">${tdLink(c.leads,'sales','leads','num',ec)}</td><td class="num">${tdLink(c.qualified,'sales','qualified','num',ec)}</td>
+      <td class="num">${tdLink(c.deals,'sales','deals','num',ec)}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',ec)}</td>
+      <td class="num">${tdLink(c.sales,'sales','sales','num',ec)}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',ec)}</td>
+      <td class="num">${tdLink(p.deals,'sales','deals','num',ep)}</td><td class="num">${tdLink(p.deal_amount,'sales','deal_amount','money',ep)}</td>
+      <td class="num">${tdLink(p.sales,'sales','sales','num',ep)}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',ep)}</td>
+      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',et)}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',et)}</td>
+      <td class="num">${getPlan('sales','sales_amount','source_group',g.name)?money(getPlan('sales','sales_amount','source_group',g.name)):'—'}</td>
+      <td class="num">${getPlan('sales','sales_amount','source_group',g.name)?pct(t.sales_amount/getPlan('sales','sales_amount','source_group',g.name)*100):'—'}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="scroll-x"><table class="type-matrix"><thead>
+    <tr><th rowspan="2">Тип продаж</th><th colspan="6" class="period-band current-band">Отчётный период · создано в месяце</th><th colspan="4" class="period-band previous-band">Предыдущий период · хвост</th><th colspan="4" class="period-band total-band">Продажи месяца</th></tr>
+    <tr><th>Лиды</th><th>Квал.</th><th>Сделки</th><th>Сумма сделок</th><th>Продажи</th><th>Выручка</th><th>Хвост, шт</th><th>Сумма хвоста</th><th>Продажи</th><th>Выручка</th><th>Продажи</th><th>Выручка</th><th>План</th><th>% плана</th></tr>
+  </thead><tbody>${rows}</tbody></table></div>`;
+}
+function sourcePeriodMatrix(){
+  const grouped=new Map();
+  (state.sales.source_blocks||[]).forEach(r=>{if(!grouped.has(r.group))grouped.set(r.group,[]);grouped.get(r.group).push(r)});
+  return [...grouped.entries()].map(([group,items])=>{
+    const rows=items.map(r=>{const c=r.current.metrics,p=r.previous.metrics,t=r.total.metrics;return `<tr>
+      <td>${esc(r.name)}</td><td class="num">${tdLink(c.deals,'sales','deals','num',{period_type:'current',group,source:r.name})}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',{period_type:'current',group,source:r.name})}</td>
+      <td class="num">${tdLink(c.sales,'sales','sales','num',{period_type:'current',group,source:r.name})}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',{period_type:'current',group,source:r.name})}</td>
+      <td class="num">${tdLink(p.sales,'sales','sales','num',{period_type:'previous',group,source:r.name})}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',{period_type:'previous',group,source:r.name})}</td>
+      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',{period_type:'total',group,source:r.name})}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',{period_type:'total',group,source:r.name})}</td></tr>`}).join('');
+    return `<details class="manager-breakdown source-breakdown"><summary><span>${esc(group)}</span><span class="muted">${items.length} источн.</span></summary><div class="manager-breakdown-body single"><div class="scroll-x"><table><thead><tr><th>Источник Bitrix</th><th>Сделки отч.</th><th>Сумма сделок</th><th>Продажи отч.</th><th>Выручка отч.</th><th>Продажи хвоста</th><th>Выручка хвоста</th><th>Продажи всего</th><th>Выручка всего</th></tr></thead><tbody>${rows}</tbody></table></div></div></details>`;
+  }).join('');
+}
+function managerTypeMatrix(){
+  return managers().map(m=>{
+    const rows=(m.groups||[]).map(g=>{const c=g.current.metrics,p=g.previous.metrics,t=g.total.metrics;return `<tr>
+      <td><strong>${esc(g.name)}</strong></td><td class="num">${tdLink(c.deals,'sales','deals','num',{period_type:'current',manager:m.name,group:g.name})}</td><td class="num">${tdLink(c.deal_amount,'sales','deal_amount','money',{period_type:'current',manager:m.name,group:g.name})}</td>
+      <td class="num">${tdLink(c.sales,'sales','sales','num',{period_type:'current',manager:m.name,group:g.name})}</td><td class="num">${tdLink(c.sales_amount,'sales','sales_amount','money',{period_type:'current',manager:m.name,group:g.name})}</td>
+      <td class="num">${tdLink(p.sales,'sales','sales','num',{period_type:'previous',manager:m.name,group:g.name})}</td><td class="num">${tdLink(p.sales_amount,'sales','sales_amount','money',{period_type:'previous',manager:m.name,group:g.name})}</td>
+      <td class="num strong-cell">${tdLink(t.sales,'sales','sales','num',{period_type:'total',manager:m.name,group:g.name})}</td><td class="num strong-cell">${tdLink(t.sales_amount,'sales','sales_amount','money',{period_type:'total',manager:m.name,group:g.name})}</td></tr>`}).join('');
+    return `<details class="manager-breakdown"><summary><span>${esc(m.name)}</span><span class="muted">холодные · входящие · повторные</span></summary><div class="manager-breakdown-body single"><div class="scroll-x"><table><thead><tr><th>Тип</th><th>Сделки отч.</th><th>Сумма сделок</th><th>Продажи отч.</th><th>Выручка отч.</th><th>Продажи хвоста</th><th>Выручка хвоста</th><th>Продажи всего</th><th>Выручка всего</th></tr></thead><tbody>${rows}</tbody></table></div></div></details>`;
+  }).join('');
+}
+
 function salesManagerBreakdowns(){
   const productMap=new Map((state.sales.product_managers||[]).map(x=>[x.name,x.categories||[]]));
   return managers().map(m=>{
     const groups=(m.groups||[]).map(g=>{const x=g[selectedPeriodType].metrics,extra={period_type:selectedPeriodType,manager:m.name,group:g.name};return `<tr><td>${esc(g.name)}</td><td class="num">${tdLink(x.leads,"sales","leads","num",extra)}</td><td class="num">${tdLink(x.deals,"sales","deals","num",extra)}</td><td class="num">${tdLink(x.sales,"sales","sales","num",extra)}</td><td class="num">${tdLink(x.sales_amount,"sales","sales_amount","money",extra)}</td><td class="num">${tdLink(x.deal_to_sale_rate,"sales","deal_to_sale_rate","pct",extra)}</td></tr>`}).join("");
     const products=(productMap.get(m.name)||[]).map(p=>{const x=p[selectedPeriodType].metrics,extra={period_type:selectedPeriodType,manager:m.name,product:p.name};return `<tr><td>${esc(p.name)}</td><td class="num">${tdLink(x.products,"sales","products","num",extra)}</td><td class="num">${tdLink(x.product_amount,"sales","product_amount","money",extra)}</td><td class="num">${tdLink(x.sold_products,"sales","sold_products","num",extra)}</td><td class="num">${tdLink(x.sold_product_amount,"sales","sold_product_amount","money",extra)}</td><td class="num">${tdLink(x.product_sale_rate,"sales","product_sale_rate","pct",extra)}</td></tr>`}).join("");
-    return `<details class="manager-breakdown"><summary><span>${esc(m.name)}</span><span class="muted">источники + продукты</span></summary><div class="manager-breakdown-body"><div><div class="subhead">По группам источников</div><div class="scroll-x"><table><thead><tr><th>Группа</th><th class="num">Лиды</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${groups}</tbody></table></div></div><div><div class="subhead">По продуктовым категориям</div><div class="scroll-x"><table><thead><tr><th>Категория</th><th class="num">В сделках</th><th class="num">Сумма</th><th class="num">Продано</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${products}</tbody></table></div></div></div></details>`;
+    return `<details class="manager-breakdown"><summary><span>${esc(m.name)}</span><span class="muted">типы продаж + продукты</span></summary><div class="manager-breakdown-body"><div><div class="subhead">По типам продаж</div><div class="scroll-x"><table><thead><tr><th>Тип продаж</th><th class="num">Лиды</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${groups}</tbody></table></div></div><div><div class="subhead">По продуктовым категориям</div><div class="scroll-x"><table><thead><tr><th>Категория</th><th class="num">В сделках</th><th class="num">Сумма</th><th class="num">Продано</th><th class="num">Выручка</th><th class="num">Конв.</th></tr></thead><tbody>${products}</tbody></table></div></div></div></details>`;
   }).join("");
 }
 function renderSales(){
   const x=state.sales.overall[selectedPeriodType].metrics;
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(', '):'Предоплата + успешная продажа';
-  $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Отчётный месяц + предыдущий период + детальная матрица по менеджерам, источникам и продуктам</div></div><div class="toolbar-actions">${salesPeriodSelector()}<button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
+  $("#sales").innerHTML=`<div class="toolbar dept-toolbar sales-toolbar"><div><div class="eyebrow">ПЛАН / ФАКТ ОП</div><div class="muted">Сделки — созданные в выбранном месяце. Продажи — закрытые в выбранном месяце, включая хвост. Детальная матрица по менеджерам, источникам и продуктам</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Добавить менеджера</button><button class="btn ghost" id="openPlanSales">Изменить планы</button></div></div>
   <div class="criteria-box sales-filter-note"><strong>Фильтр продаж:</strong> дата завершения попадает в выбранный период + стадия <strong>${esc(stageText)}</strong>. <strong>Сумма продаж</strong> = поле «Сумма» сделки в Bitrix.</div>
   <div class="department-page-head sales-page-head">
-    ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:selectedPeriodType==='current'?'ОТЧЁТНЫЙ ПЕРИОД':selectedPeriodType==='previous'?'ПРЕДЫДУЩИЙ ПЕРИОД':'ИТОГО 3 МЕСЯЦА',value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:selectedPeriodType},substats:[{label:'Продажи',value:x.sales},{label:'Сделки',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
+    ${deptHero({kind:'sales',title:'Результат отдела продаж',eyebrow:'ВЫБРАННЫЙ МЕСЯЦ' ,value:x.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:selectedPeriodType},substats:[{label:'Продажи',value:x.sales},{label:'Сделки',value:x.deals},{label:'Средний чек',value:x.average_check,type:'money'}]})}
     <div class="overview-signals compact-signals">
       ${signalCard('blue','Предоплата + успешная продажа',x.sales_amount,'money','sales','sales_amount','дата завершения',{period_type:selectedPeriodType})}
-      ${signalCard('green','Конверсия сделка → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','',{period_type:selectedPeriodType})}
+      ${signalCard('green','Конверсия сделок периода → продажа',x.deal_to_sale_rate,'pct','sales','deal_to_sale_rate','',{period_type:selectedPeriodType})}
     </div>
   </div>
   <div class="section-title">Ключевые показатели</div>
   <div class="kpi-grid dense">${Object.entries(SALES_LABELS).map(([k,[label,type]])=>card(label,x[k],"sales",k,type,{period_type:selectedPeriodType})).join("")}</div>
-  <div class="grid-2">${panel("4 группы источников",sourceTable(false),"нажми на показатель → источник → сделки")}${panel("Менеджеры",salesManagerTable(false),"нажми на показатель → менеджер → источник → сделка")}</div>
-  ${panel("Менеджеры · детальная матрица",salesManagerBreakdowns(),"каждый МОП → группы источников + продуктовые категории")}
-  ${panel("Недельная динамика · отчётный месяц",weeklyGrid(),"1–7 · 8–14 · 15–21 · 22–28 · 29–конец")}
-  <div class="grid-2">${panel("Точные источники Bitrix",sourceTable(true),"не только 4 агрегированные группы")}${panel("Продуктовые категории",salesProductTable(),"5 категорий из исходной таблицы")}</div>
+  ${panel("Распределение по типам продаж",salesTypeMatrix(),"как в операционной таблице: холодные · входящие · повторные; отчётный период и хвост внутри разбивки")}
+  <div class="grid-2">${panel("Менеджеры",salesManagerTable(false),"общий результат выбранного месяца")}${panel("Продуктовые категории",salesProductTable(),"разбивка по продуктам")}</div>
+  ${panel("По менеджерам · тип продаж × период",managerTypeMatrix(),"Ирина / Роман → холодные, входящие, повторные → отчётный период и хвост")}
+  ${panel("По источникам Bitrix · тип × период",sourcePeriodMatrix(),"раскрой тип → точный источник → отчётный период / хвост → конкретные сделки")}
+  ${panel("Менеджеры · продукты",salesManagerBreakdowns(),"каждый МОП → типы продаж + продуктовые категории")}
+  ${panel("Недельная динамика · выбранный месяц",weeklyGrid(),"1–7 · 8–14 · 15–21 · 22–28 · 29–конец")}
   ${panel("Текущая воронка продаж",salesStages(),`${fmt(state.sales.active_deals_count)} активных сделок`)}`;
-  $("#salesPeriodType")?.addEventListener("click",e=>{const b=e.target.closest("button[data-ptype]");if(!b)return;selectedPeriodType=b.dataset.ptype;renderSales();renderOverview();});
   $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
 }
 
@@ -189,7 +234,7 @@ function renderProduction(){
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   <div class="section-title">Поток выбранного периода</div>
-  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct")}</div>
+  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
   ${panel("Разбивка по продуктам",prodProductTable(),"нажми на показатель → эксперт → продукт → компания")}
@@ -249,7 +294,7 @@ function forecastCard(title,fact,plan,type="money"){
 }
 function qualityCard(title,value,metric,note="") {return `<div class="quality-card clickable" ${drillAttrs("production",metric)}><div class="kpi-label">${esc(title)}</div><div class="quality-value">${fmt(value)}</div><div class="muted">${esc(note)}</div></div>`}
 function renderForecast(){
-  if(!state)return;const el=$("#forecast");const s=state.sales.overall.current.metrics,p=state.production.kpi;
+  if(!state)return;const el=$("#forecast");const s=state.sales.overall.total.metrics,p=state.production.kpi;
   const currentMonth=new Date().toISOString().slice(0,7);const isCurrent=$("#month").value===currentMonth && $("#period").value==="month";
   el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОГНОЗ МЕСЯЦА</div><div class="muted">Прогноз по темпу рабочих дней + контроль качества данных</div></div></div>
   ${!isCurrent?`<div class="criteria-box">Прогноз темпа корректнее смотреть для текущего месяца в режиме «Месяц». Сейчас показан ориентир на основе выбранного месяца.</div>`:""}
@@ -354,7 +399,7 @@ function renderDrillRows(){
   const maxCount=Math.max(1,...firstGroups.map(x=>x[1].length));
   const html=firstGroups.map(([g,items])=>{
     const total=items.reduce((a,r)=>a+Number(r.amount||0),0);const secondGroups=groupRows(items,r=>drillGroupKeys(r)[1]);
-    return `<details class="drill-group" open><summary><div class="drill-summary-main"><span>${esc(g)}</span><div class="group-bar"><i style="width:${Math.max(5,items.length/maxCount*100)}%"></i></div></div><span>${fmt(items.length)} · ${money(total)}</span></summary><div class="drill-group-body">${secondGroups.map(([sg,sub])=>`<details class="drill-subgroup"><summary><span>${esc(sg)}</span><span>${fmt(sub.length)} · ${money(sub.reduce((a,r)=>a+Number(r.amount||0),0))}</span></summary><div>${sub.map(detailHtml).join('')}</div></details>`).join('')}</div></details>`;
+    return `<details class="drill-group" open><summary><div class="drill-summary-main"><span>${esc(g)}</span><div class="group-bar"><i style="width:${Math.max(5,items.length/maxCount*100)}%"></i></div></div><span>${fmt(items.length)} шт · ${money(total)}</span></summary><div class="drill-group-body">${secondGroups.map(([sg,sub])=>`<details class="drill-subgroup"><summary><span>${esc(sg)}</span><span>${fmt(sub.length)} шт · ${money(sub.reduce((a,r)=>a+Number(r.amount||0),0))}</span></summary><div>${sub.map(detailHtml).join('')}</div></details>`).join('')}</div></details>`;
   }).join('');
   const more=(!q&&drillOffset<drillTotal)?`<button class="btn primary-light load-more" id="drillMore">Показать ещё <span>${fmt(Math.min(100,drillTotal-drillOffset))}</span></button>`:'';
   $("#drillBody").innerHTML=html+more;

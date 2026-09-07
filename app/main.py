@@ -60,13 +60,19 @@ def _default_dormant_stages(available):
     return out
 
 def _dormant_stages(available):
+    eligible = _default_dormant_stages(available)
+    eligible_set = set(eligible)
     raw=storage.get_setting('dormant_stages','').strip()
     if raw:
         try:
             vals=json.loads(raw)
-            if isinstance(vals,list):return vals
-        except:pass
-    return _default_dormant_stages(available)
+            if isinstance(vals,list):
+                cleaned=[v for v in vals if v in eligible_set]
+                if cleaned:
+                    return cleaned
+        except:
+            pass
+    return eligible
 
 def _apply_runtime(snap, details, month):
     x=copy.deepcopy(snap)
@@ -195,7 +201,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.1", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.6.6", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -237,7 +243,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.1", "storage": storage.backend_name}
+    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.6.6", "storage": storage.backend_name}
 
 
 @app.get("/api/snapshot")

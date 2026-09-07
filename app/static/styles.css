@@ -234,3 +234,72 @@ tr:hover td{background:#f5f9fc}
 .nps-history-row>div{display:flex;gap:10px;align-items:center}.nps-history-row span{color:#718394;font-size:12px}
 .mini-edit.danger{color:#a84f58}
 .sales-filter-note{margin-bottom:14px;background:linear-gradient(90deg,#eef7fd,#f7fbfe);border-left:4px solid #2499d4}
+
+/* v2.6.4 OP type/period matrix */
+.type-matrix .period-band{text-align:center;font-weight:700;letter-spacing:.02em}
+.type-matrix .current-band{background:#eaf5ff;color:#245a7a}.type-matrix .previous-band{background:#f2eefc;color:#5a4d7d}.type-matrix .total-band{background:#eaf8ef;color:#276442}
+.type-matrix .strong-cell,.strong-cell{font-weight:750;background:rgba(39,174,96,.055)}
+.manager-breakdown-body.single{grid-template-columns:1fr}.source-breakdown summary{background:linear-gradient(90deg,rgba(31,153,220,.06),rgba(255,255,255,.2))}
+
+
+/* v2.6.6 readability */
+body{font-size:16px}
+.tab{font-size:15px}
+.muted{font-size:13.5px}
+.panel-title{font-size:16px}
+.kpi-label{font-size:12.5px}
+.kpi-meta{font-size:13px}
+.kpi-note{font-size:12.5px}
+table{font-size:14px}
+th{font-size:11.5px}
+td{padding:11px 9px}
+
+/* Плановый редактор: светлые читаемые поля */
+.modal-card{
+  background:#f7fafc!important;
+  color:#162333!important;
+  border-color:#ccd9e3!important;
+}
+.modal-head h2{font-size:28px!important}
+.plan-context label,.admin-row label{
+  color:#61778a!important;
+  font-size:12px!important;
+  font-weight:700!important;
+}
+.plan-context select{
+  background:#fff!important;
+  color:#172433!important;
+  border:1px solid #c7d6e1!important;
+  font-size:15px!important;
+  min-height:46px;
+}
+.plan-form{gap:10px 22px}
+.plan-field{
+  grid-template-columns:1fr 150px;
+  padding:11px 0;
+  border-bottom:1px solid #d3dee7!important;
+}
+.plan-field label{
+  font-size:15px!important;
+  color:#536b7f!important;
+  font-weight:600;
+}
+.plan-field input{
+  background:#fff!important;
+  color:#122233!important;
+  border:1px solid #c4d4df!important;
+  font-size:17px!important;
+  font-weight:700!important;
+  min-height:46px;
+  padding:10px 14px!important;
+}
+.plan-field input:focus,.plan-context select:focus{
+  outline:2px solid rgba(37,153,215,.18);
+  border-color:#4da8d7!important;
+}
+.admin-row input{
+  background:#fff!important;
+  color:#172433!important;
+  border:1px solid #c7d6e1!important;
+  min-height:44px;
+}
