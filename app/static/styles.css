@@ -629,3 +629,10 @@ td{padding:11px 9px}
 @media(max-width:900px){
   .rnp-block-summary .rnp-result-strip{grid-template-columns:1fr 1fr}
 }
+
+.drill-retry-wrap{display:flex;justify-content:center;margin-top:12px}
+
+.sales-semantics-note{
+  margin:10px 0 14px;padding:9px 12px;border-radius:10px;
+  background:#f7fafc;border:1px solid #d9e3ea;color:#647889;font-size:12px
+}

@@ -47,15 +47,37 @@ def persistent_snapshot_key(month: str, period: str, custom_start: str = "", cus
 
 async def warm_snapshot_from_storage(month: str, period: str, custom_start: str = "", custom_end: str = ""):
     key=(month,period,custom_start or "",custom_end or "")
-    if key in cache:return True
+    if key in cache and key in detail_cache:return True
     pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
-    try:saved=await asyncio.to_thread(storage.snapshot_cache,pkey)
-    except Exception:return False
+    try:
+        saved, saved_details = await asyncio.gather(
+            asyncio.to_thread(storage.snapshot_cache,pkey),
+            asyncio.to_thread(storage.detail_snapshot_cache,pkey),
+        )
+    except Exception:
+        return False
     snap=(saved or {}).get("snapshot") if isinstance(saved,dict) else None
+    details=(saved_details or {}).get("details") if isinstance(saved_details,dict) else None
     if not isinstance(snap,dict) or not snap.get("ok"):return False
     cache[key]=snap
     cache_time[key]=0
-    detail_cache.setdefault(key,{})
+    detail_cache[key]=details if isinstance(details,dict) else {}
+    return True
+
+async def warm_details_from_storage(month: str, period: str, custom_start: str = "", custom_end: str = ""):
+    key=(month,period,custom_start or "",custom_end or "")
+    existing=detail_cache.get(key)
+    if isinstance(existing,dict) and existing:
+        return True
+    pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
+    try:
+        saved=await asyncio.to_thread(storage.detail_snapshot_cache,pkey)
+    except Exception:
+        return False
+    details=(saved or {}).get("details") if isinstance(saved,dict) else None
+    if not isinstance(details,dict) or not details:
+        return False
+    detail_cache[key]=details
     return True
 
 
@@ -155,9 +177,12 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
             detail_cache[key] = details
             cache_time[key] = time.monotonic()
             pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
-            # A full Bitrix sync is expensive. Persist the result before
-            # returning success so a Render restart cannot throw it away.
-            await asyncio.to_thread(storage.set_snapshot_cache,pkey,copy.deepcopy(snap))
+            # Persist both KPI snapshot and drilldown rows. This keeps
+            # расшифровки usable immediately after Render redeploy.
+            await asyncio.gather(
+                asyncio.to_thread(storage.set_snapshot_cache,pkey,copy.deepcopy(snap)),
+                asyncio.to_thread(storage.set_detail_snapshot_cache,pkey,copy.deepcopy(details)),
+            )
             last_error = None
             return snap
         except Exception as e:
@@ -232,7 +257,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.9.2", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.9.4", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -295,7 +320,7 @@ async def health():
         "ok": True,
         "bitrix_configured": bool(settings.bitrix_webhook),
         "last_error": last_error,
-        "version": "2.9.2",
+        "version": "2.9.3",
         "storage": storage.backend_name,
         "supabase_configured": bool(settings.supabase_url and settings.supabase_key),
         "storage_error": storage.last_remote_error or "",
@@ -341,9 +366,14 @@ async def drilldown(
     custom_start: str = "", custom_end: str = "", offset: int = 0, limit: int = 500,
 ):
     month = month or current_month(); key=(month,period,custom_start or "",custom_end or "")
-    if key not in detail_cache:
-        schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
-        return JSONResponse({"loading":True,"message":"Расшифровка готовится вместе со snapshot"},status_code=202)
+    if key not in detail_cache or not detail_cache.get(key):
+        restored=await warm_details_from_storage(month,period,custom_start,custom_end)
+        if not restored:
+            schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
+            return JSONResponse({
+                "loading":True,
+                "message":"Расшифровка восстанавливается в фоне"
+            },status_code=202)
     details=detail_cache.get(key,{})
     if scope == "sales":
         rows=filter_sales_details(details.get("sales",{}), metric, period_type, manager, group, source, product, week, stage, day)

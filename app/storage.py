@@ -174,6 +174,16 @@ class Storage:
             "saved_at":datetime.now(timezone.utc).isoformat(),
         })
 
+    def detail_snapshot_cache(self, cache_key: str):
+        value=self._get(f"detail_snapshot_cache:{cache_key}",{})
+        return value if isinstance(value,dict) else {}
+
+    def set_detail_snapshot_cache(self, cache_key: str, details: dict):
+        self._set(f"detail_snapshot_cache:{cache_key}",{
+            "details":details,
+            "saved_at":datetime.now(timezone.utc).isoformat(),
+        })
+
     # ---------- Plans ----------
     def plan_dict(self, month: str):
         value = self._get(f"plans:{month}", {})

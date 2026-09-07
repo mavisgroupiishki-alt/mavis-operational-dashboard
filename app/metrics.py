@@ -401,6 +401,19 @@ def successful_sale_stage_ids(meta: Dict[str, Any]) -> set[str]:
     return result
 
 
+def is_success_sale_record(r: Dict[str, Any]) -> bool:
+    """Hard guard for OP sales.
+    A sale is ONLY a deal currently on one of the agreed sale stages
+    (14. Предоплата получена / 15. Продажа успешна) with CLOSEDATE
+    inside the selected reporting month. Lost/refused deals are excluded.
+    """
+    return bool(
+        r.get("is_won")
+        and r.get("sale_in_report_month")
+        and not r.get("is_lost")
+    )
+
+
 def pay_amount(d: Dict[str, Any]) -> float:
     return max(num(d.get(F_PAID)), num(d.get(F_PAID_OLD)), num(d.get(F_PAYMENTS_TOTAL)))
 
@@ -465,8 +478,8 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         # Sales include both current-period deals and the historical tail.
         sales_universe = current_deals + previous_deals
 
-    sales_rows = [r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
-    cohort_sales_rows = [r for r in current_deals if r.get("is_won") and r.get("sale_in_report_month")]
+    sales_rows = [r for r in sales_universe if is_success_sale_record(r)]
+    cohort_sales_rows = [r for r in current_deals if is_success_sale_record(r)]
 
     products = []
     for d in deal_rows:
@@ -754,9 +767,15 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
             "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
             "lost_week": week_of_month(close, month_start) if close else -1,
             "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
-            "is_lost": bool(str(d.get("CLOSED") or "").upper() == "Y" and not is_won),
+            "is_lost": bool(
+                (str(d.get("CLOSED") or "").upper() == "Y" and not is_won)
+                or "отказ" in norm_text(deal_stage_name)
+            ),
             "lost_in_report_month": bool(
-                str(d.get("CLOSED") or "").upper() == "Y" and not is_won
+                (
+                    (str(d.get("CLOSED") or "").upper() == "Y" and not is_won)
+                    or "отказ" in norm_text(deal_stage_name)
+                )
                 and close and month_start <= close < next_start
             ),
             "moved_time": moved.isoformat() if moved else None,
@@ -1204,7 +1223,7 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
             rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
         return rows
     if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue"}:
-        rows=[r for r in sales_universe if r.get("is_won") and r.get("sale_in_report_month")]
+        rows=[r for r in sales_universe if is_success_sale_record(r)]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
         if day is not None:
             rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]

@@ -37,7 +37,7 @@ let trafficDraft={};
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
   lead_to_sale_rate:["Лид → продажа","pct"],qualified_to_sale_rate:["Квал. → продажа","pct"],
-  deals:["Сделки","num"],lost_deals:["Слитые сделки","num"],deal_amount:["Сумма сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
+  deals:["Сделки","num"],lost_deals:["Слитые сделки","num"],deal_amount:["Сумма созданных сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
   deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
@@ -182,7 +182,7 @@ function weeklyGrid(){
   const daysMap=state.sales.overall.total.days||{};
   const defs=[
     ["leads","Лиды","num"],["qualified","Квал. лиды","num"],["qualified_rate","% в квал.","pct"],
-    ["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма сделок","money"],
+    ["lead_to_deal_rate","Квал. → сделка","pct"],["deals","Сделки","num"],["deal_amount","Сумма созданных сделок","money"],
     ["sales","Продажи","num"],["sales_amount","Выручка","money"],["products","Продукты","num"],
     ["product_amount","Сумма продуктов","money"],["sold_products","Продано продуктов","num"],
     ["sold_product_amount","Сумма прод. продуктов","money"]
@@ -206,7 +206,7 @@ function periodDailyBlock(agg, periodType, extra={}){
   if(periodType==='previous'){
     return `<details class="period-row"><summary><span>Предыдущий период · хвост</span><span><b>${fmt(m.deals)} шт</b> · ${money(m.deal_amount)} · продано ${fmt(m.sales)} · ${money(m.sales_amount)}</span></summary><div class="period-body"><div class="opening-balance">Хвост на начало: <strong>${fmt(m.deals)} шт · ${money(m.deal_amount)}</strong></div>${dailyMetricTable(d,[['sales','Продажи','num'],['sales_amount','Выручка','money']],1,null,{...extra,period_type:'previous'})}</div></details>`;
   }
-  return `<details class="period-row"><summary><span>Отчётный период</span><span>сделки <b>${fmt(m.deals)}</b> · ${money(m.deal_amount)} · продажи ${fmt(m.sales)} · ${money(m.sales_amount)}</span></summary><div class="period-body">${dailyMetricTable(d,[['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']],1,null,{...extra,period_type:'current'})}</div></details>`;
+  return `<details class="period-row"><summary><span>Отчётный период</span><span>сделки <b>${fmt(m.deals)}</b> · ${money(m.deal_amount)} · продажи ${fmt(m.sales)} · ${money(m.sales_amount)}</span></summary><div class="period-body">${dailyMetricTable(d,[['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма созданных сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']],1,null,{...extra,period_type:'current'})}</div></details>`;
 }
 
 function salesStructuredSection(title,subtitle,keys,weekDefs,kind){
@@ -333,7 +333,7 @@ function periodDayTable(agg,periodType,extra={}){
   const n=(d.sales||d.deals||d.leads||[]).length||31;
   const current=periodType==='current';
   const defs=current
-    ? [['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']]
+    ? [['leads','Лиды','num'],['qualified','Квал.','num'],['deals','Сделки','num'],['deal_amount','Сумма созданных сделок','money'],['sales','Продажи','num'],['sales_amount','Выручка','money']]
     : [['sales','Продажи','num'],['sales_amount','Выручка','money']];
   const rows=[];
   for(let day=1;day<=n;day++){
@@ -350,7 +350,7 @@ function sourcePeriodRows(src,manager,group){
   const prevExtra={manager,group,source:src.name,period_type:'previous'};
   return `<div class="source-period-table">
     <details class="source-period-row current-period-row">
-      <summary><span class="period-name">Отчётный период</span><span>${fmt(c.deals)} сделок · ${money(c.deal_amount)}</span><span>${fmt(c.sales)} продаж · <b>${money(c.sales_amount)}</b></span><span class="open-days">по дням ›</span></summary>
+      <summary><span class="period-name">Отчётный период</span><span>${fmt(c.deals)} создано · ${money(c.deal_amount)}</span><span>${fmt(c.sales)} продаж · <b>${money(c.sales_amount)}</b></span><span class="open-days">по дням ›</span></summary>
       ${periodDayTable(src.current,'current',currentExtra)}
     </details>
     <details class="source-period-row previous-period-row">
@@ -610,6 +610,7 @@ function renderSales(){
     </div>
 
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
+    <div class="sales-semantics-note"><strong>Важно:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и «Выручка» — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>
@@ -874,6 +875,45 @@ async function load(){
   }
 }
 
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+async function apiJson(url,opts={}){
+  const r=await fetch(url,{cache:"no-store",...opts});
+  if(r.status===401){location.href="/login";throw new Error("AUTH_REQUIRED")}
+  const ct=(r.headers.get("content-type")||"").toLowerCase();
+  if(!ct.includes("application/json")){
+    const raw=await r.text();
+    const e=new Error(
+      r.status>=500
+        ?"Сервис сейчас обновляется. Повторяю запрос автоматически…"
+        :"Расшифровка временно недоступна. Повтори через несколько секунд."
+    );
+    e.retryable=r.status>=500 || raw.trim().startsWith("<!DOCTYPE") || raw.trim().startsWith("<html");
+    e.status=r.status;
+    throw e;
+  }
+  return {response:r,data:await r.json()};
+}
+async function fetchDrillJson(params,maxAttempts=5){
+  let lastError=null;
+  for(let attempt=0;attempt<maxAttempts;attempt++){
+    try{
+      const out=await apiJson('/api/drilldown?'+params.toString());
+      if(out.response.status===202 || out.data?.loading){
+        lastError=new Error(out.data?.message||"Расшифровка готовится");
+        lastError.retryable=true;
+      }else{
+        return out;
+      }
+    }catch(e){
+      if(e.message==="AUTH_REQUIRED")throw e;
+      lastError=e;
+      if(!e.retryable)throw e;
+    }
+    if(attempt<maxAttempts-1)await sleep(1200+attempt*500);
+  }
+  throw lastError||new Error("Расшифровка пока не готова");
+}
+
 function detailHtml(r){
   const title=r.title||r.deal_title||r.service||r.id;const amount=r.amount!==undefined?money(r.amount):"";
   const meta=[r.kind==='lead'?r.status:r.stage,r.manager||r.expert,r.source,r.service,r.created?new Date(r.created).toLocaleDateString('ru-RU'):null,r.close?`закрыто ${new Date(r.close).toLocaleDateString('ru-RU')}`:null,r.prod_days!==undefined&&r.prod_days!==null?`${r.prod_days} раб.дн.`:null,r.norm_days?`норма ${r.norm_days}`:null,r.return_reason].filter(Boolean);
@@ -888,7 +928,19 @@ async function openDrill(el){
   ["periodType","manager","group","source","product","expert","stage","reason","week","day"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const label=(d.scope==="sales"?SALES_LABELS[d.metric]?.[0]:PROD_LABELS[d.metric]?.[0])||d.metric;
   $("#drillTitle").textContent=label;$("#drillSubtitle").textContent="Расшифровка из уже загруженного snapshot";$("#drillBody").innerHTML='<div class="loading">Загрузка…</div>';$("#drillDialog").showModal();
-  try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(r.status===202||j.loading){$("#drillBody").innerHTML='<div class="loading">Расшифровка ещё готовится. Через несколько секунд нажми снова.</div>';return}if(!r.ok)throw new Error(j.detail||JSON.stringify(j));drillRows=j.rows||[];drillOffset=drillRows.length;drillTotal=Number(j.count||drillRows.length);$("#drillCount").textContent=`${drillTotal} записей · показано ${drillRows.length}`;$("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');renderDrillRows()}catch(e){$("#drillBody").innerHTML=`<div class="error">${esc(e.message)}</div>`}
+  try{
+    $("#drillBody").innerHTML='<div class="loading">Готовлю расшифровку…</div>';
+    const {response:r,data:j}=await fetchDrillJson(params,5);
+    if(!r.ok)throw new Error(j.detail||JSON.stringify(j));
+    drillRows=j.rows||[];drillOffset=drillRows.length;drillTotal=Number(j.count||drillRows.length);
+    $("#drillCount").textContent=`${drillTotal} записей · показано ${drillRows.length}`;
+    $("#drillSubtitle").textContent=[d.manager,d.expert,d.group,d.source,d.product,d.stage,d.reason,d.week!==undefined?`неделя ${Number(d.week)+1}`:null].filter(Boolean).join(' · ');
+    renderDrillRows()
+  }catch(e){
+    if(e.message==="AUTH_REQUIRED")return;
+    $("#drillBody").innerHTML=`<div class="error">Расшифровка пока не загрузилась. ${esc(e.message)}</div><div class="drill-retry-wrap"><button class="btn primary-light" id="retryDrill">Повторить</button></div>`;
+    $("#retryDrill")?.addEventListener("click",()=>openDrill(el));
+  }
 }
 function groupRows(rows,keyFn){const m=new Map();rows.forEach(r=>{const k=keyFn(r)||"Не указано";if(!m.has(k))m.set(k,[]);m.get(k).push(r)});return [...m.entries()].sort((a,b)=>b[1].reduce((s,x)=>s+Number(x.amount||0),0)-a[1].reduce((s,x)=>s+Number(x.amount||0),0))}
 function drillGroupKeys(r){
@@ -923,7 +975,14 @@ async function loadMoreDrill(){
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value)}
   ["periodType","manager","group","source","product","expert","stage","reason","week","day"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
   const btn=$("#drillMore");if(btn){btn.disabled=true;btn.textContent='Загружаю…'}
-  try{const r=await fetch('/api/drilldown?'+params.toString());const j=await r.json();if(!r.ok)throw new Error(j.detail||JSON.stringify(j));const add=j.rows||[];drillRows=drillRows.concat(add);drillOffset+=add.length;drillTotal=Number(j.count||drillTotal);renderDrillRows()}catch(e){if(btn){btn.disabled=false;btn.textContent='Повторить загрузку'}}
+  try{
+    const {response:r,data:j}=await fetchDrillJson(params,4);
+    if(!r.ok)throw new Error(j.detail||JSON.stringify(j));
+    const add=j.rows||[];
+    drillRows=drillRows.concat(add);drillOffset+=add.length;drillTotal=Number(j.count||drillTotal);renderDrillRows()
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Повторить загрузку'}
+  }
 }
 function renderNpsHistory(){
   const row=state?.manual_nps?.[npsTarget]||null;
@@ -1023,7 +1082,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.9.2";
+    b.textContent="v2.9.4";
     top.appendChild(b);
   }
 });
