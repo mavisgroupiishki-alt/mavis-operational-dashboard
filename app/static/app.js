@@ -9,6 +9,27 @@ let drillTotal=0;
 let commentTarget=null;
 let teamTargetRole="expert";
 let npsTarget=null;
+const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v2:";
+function browserCacheKey(month,period){
+  const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
+  return `${BROWSER_CACHE_PREFIX}${month}|${period}|${custom}`;
+}
+function saveBrowserSnapshot(snap){
+  try{
+    if(!snap?.ok||!snap?.month_key)return;
+    localStorage.setItem(browserCacheKey(snap.month_key,snap.period||"month"),JSON.stringify({saved_at:Date.now(),snapshot:snap}));
+  }catch(e){}
+}
+function readBrowserSnapshot(month,period){
+  try{
+    const raw=localStorage.getItem(browserCacheKey(month,period));
+    if(!raw)return null;
+    const x=JSON.parse(raw);
+    const snap=x?.snapshot;
+    if(!snap?.ok||snap.month_key!==month||(snap.period||"month")!==period)return null;
+    return {snapshot:snap,saved_at:Number(x.saved_at||0)};
+  }catch(e){return null}
+}
 let expandedSalesWeek=null;
 let trafficTargetGroup="";
 let trafficDraft={};
@@ -506,27 +527,58 @@ function rnpBlock(cfg){
   const g=rnpGroup(cfg.key)||{current:{metrics:{},weeks:{},days:{}},previous:{metrics:{}},total:{metrics:{}}};
   const c=g.current.metrics||{},p=g.previous.metrics||{},t=g.total.metrics||{};
   const plan=getPlan("sales","sales_amount","source_group",cfg.key);
-  return `<section class="rnp-block ${cfg.cls}">
-    <div class="rnp-block-head">
-      <div><div class="eyebrow">РНП · ${esc(cfg.title)}</div><h2>${esc(cfg.title)}</h2></div>
-      <button type="button" class="rnp-plan-btn" data-rnp-plan="${attr(cfg.key)}">Изменить план</button>
+
+  return `<details class="rnp-block ${cfg.cls}">
+    <summary class="rnp-block-summary">
+      <div class="rnp-summary-head">
+        <div>
+          <h2>${esc(cfg.title)}</h2>
+        </div>
+        <div class="rnp-summary-actions">
+          <button type="button" class="rnp-plan-btn" data-rnp-plan="${attr(cfg.key)}">Изменить план</button>
+          <span class="rnp-chevron">⌄</span>
+        </div>
+      </div>
+
+      <div class="rnp-result-strip rnp-summary-strip">
+        <div>
+          <span>Отчётный период</span>
+          <strong>${money(c.sales_amount||0)}</strong>
+          <small>${fmt(c.sales||0)} продаж</small>
+        </div>
+        <div>
+          <span>Предыдущий период / хвост</span>
+          <strong>${money(p.sales_amount||0)}</strong>
+          <small>${fmt(p.sales||0)} продаж</small>
+        </div>
+        <div class="rnp-total">
+          <span>Итого продажи месяца</span>
+          <strong>${money(t.sales_amount||0)}</strong>
+          <small>${fmt(t.sales||0)} продаж</small>
+        </div>
+        <div>
+          <span>План выручки</span>
+          <strong>${plan?money(plan):"—"}</strong>
+          <small>${plan?pct((t.sales_amount||0)/plan*100):"не заполнен"}</small>
+        </div>
+      </div>
+    </summary>
+
+    <div class="rnp-block-expanded">
+      ${rnpMonthlyTable(cfg,g)}
+      <details class="rnp-subdetails">
+        <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
+        ${rnpWeekTable(cfg,g)}
+      </details>
+      ${rnpSourceList(cfg)}
     </div>
-    <div class="rnp-result-strip">
-      <div><span>Отчётный период</span><strong>${money(c.sales_amount||0)}</strong><small>${fmt(c.sales||0)} продаж</small></div>
-      <div><span>Предыдущий период / хвост</span><strong>${money(p.sales_amount||0)}</strong><small>${fmt(p.sales||0)} продаж</small></div>
-      <div class="rnp-total"><span>Итого продажи месяца</span><strong>${money(t.sales_amount||0)}</strong><small>${fmt(t.sales||0)} продаж</small></div>
-      <div><span>План выручки</span><strong>${plan?money(plan):"—"}</strong><small>${plan?pct((c.sales_amount||0)/plan*100):"не заполнен"}</small></div>
-    </div>
-    ${rnpMonthlyTable(cfg,g)}
-    <details class="rnp-subdetails"><summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>${rnpWeekTable(cfg,g)}</details>
-    ${rnpSourceList(cfg)}
-  </section>`;
+  </details>`;
 }
 
 function rnpManagerMatrix(){
   return managers().map(m=>{
     const groups=RNP_GROUPS.map(cfg=>({cfg,g:(m.groups||[]).find(x=>x.name===cfg.key)}));
-    return `<details class="rnp-manager"><summary><div><strong>${esc(m.name)}</strong><span>разбивка по трём блокам РНП</span></div><div><b>${money(m.total.metrics.sales_amount)}</b><span>${fmt(m.total.metrics.sales)} продаж</span></div></summary>
+    return `<details class="rnp-manager"><summary><div><strong>${esc(m.name)}</strong><span>разбивка по трём блокам продаж</span></div><div><b>${money(m.total.metrics.sales_amount)}</b><span>${fmt(m.total.metrics.sales)} продаж</span></div></summary>
       <div class="rnp-manager-body">${groups.map(({cfg,g})=>{
         const c=g?.current?.metrics||{},p=g?.previous?.metrics||{};
         const sources=(m.sources||[]).filter(x=>x.group===cfg.key).sort((a,b)=>(b.total.metrics.sales_amount||0)-(a.total.metrics.sales_amount||0));
@@ -546,7 +598,7 @@ function renderSales(){
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
   $("#sales").innerHTML=`
     <div class="toolbar dept-toolbar rnp-toolbar">
-      <div><div class="eyebrow">РНП · ОТДЕЛ ПРОДАЖ</div><div class="muted">Структура повторяет вкладку 09.2026: три блока → месяц → недели → дни → источники</div></div>
+      <div><div class="eyebrow">ОТДЕЛ ПРОДАЖ</div><div class="muted">Три блока продаж → план/факт → недели → дни → источники</div></div>
       <div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Все планы</button></div>
     </div>
 
@@ -556,7 +608,6 @@ function renderSales(){
       <div><span>Средний чек</span><strong>${money(x.average_check)}</strong></div>
       <div><span>Сделки создано</span><strong>${fmt(x.deals)}</strong><small>${money(x.deal_amount)}</small></div>
     </div>
-    <div class="rnp-rule"><strong>Продажи:</strong> дата завершения в выбранном месяце + стадии ${esc(stageText)}. <strong>Сделки:</strong> созданы в выбранном месяце.</div>
 
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
 
@@ -775,27 +826,50 @@ async function load(){
   if(loadTimer){clearTimeout(loadTimer);loadTimer=null}
   if(loadController)loadController.abort();
   loadController=new AbortController();
-  // При переключении месяца никогда не блокируем контролы.
-  if(!state || state.month_key!==month || state.period!==period){
-    $("#overview").innerHTML=loadingView(month);
-    $("#liveDot").className="";
-    $("#liveText").textContent="СИНХРОНИЗАЦИЯ В ФОНЕ";
+
+  const sameState=state&&state.month_key===month&&(state.period||"month")===period;
+  if(!sameState){
+    const cached=readBrowserSnapshot(month,period);
+    if(cached){
+      state=cached.snapshot;
+      renderAll();
+      $("#liveDot").className="";
+      const ageMin=Math.max(0,Math.round((Date.now()-cached.saved_at)/60000));
+      $("#liveText").textContent=`ПОКАЗАН КЕШ БРАУЗЕРА${ageMin?` · ${ageMin} мин назад`:""} · обновляю Bitrix`;
+    }else{
+      $("#overview").innerHTML=loadingView(month);
+      $("#liveDot").className="";
+      $("#liveText").textContent="СИНХРОНИЗАЦИЯ В ФОНЕ";
+    }
   }
+
   try{
     const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}${customQueryParams()}`,{cache:"no-store",signal:loadController.signal});
     if(r.status===401){location.href="/login";return}
     const j=await r.json();
+
     if(r.status===202 || j.loading){
-      $("#liveDot").className="";$("#liveText").textContent="BITRIX · ПЕРВИЧНАЯ СИНХРОНИЗАЦИЯ";
-      loadTimer=setTimeout(load,1800);
+      $("#liveDot").className="";
+      $("#liveText").textContent=state&&state.month_key===month
+        ?"ПОКАЗАНЫ ПОСЛЕДНИЕ ДАННЫЕ · Bitrix обновляется в фоне"
+        :"BITRIX · ПЕРВИЧНАЯ СИНХРОНИЗАЦИЯ";
+      loadTimer=setTimeout(load,2500);
       return;
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
-    state=j;renderAll();
-    if(j.syncing){$("#liveText").textContent=j.cached_snapshot?"ПОКАЗАН ПОСЛЕДНИЙ SNAPSHOT · обновляю Bitrix в фоне":"BITRIX ONLINE · обновляю в фоне"}
+
+    state=j;
+    saveBrowserSnapshot(j);
+    renderAll();
+    if(j.syncing){
+      $("#liveText").textContent=j.cached_snapshot
+        ?"ПОКАЗАН ПОСЛЕДНИЙ SNAPSHOT · обновляю Bitrix в фоне"
+        :"BITRIX ONLINE · обновляю в фоне";
+    }
   }catch(e){
     if(e.name==='AbortError')return;
-    $("#liveDot").className="bad";$("#liveText").textContent="НЕТ СВЯЗИ";
+    $("#liveDot").className="bad";
+    $("#liveText").textContent=state?"ПОКАЗАН КЕШ · Bitrix временно недоступен":"НЕТ СВЯЗИ";
     if(!state)$("#overview").innerHTML=`<div class="error">${esc(e.message)}</div>`;
   }
 }
@@ -949,7 +1023,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.9.0";
+    b.textContent="v2.9.2";
     top.appendChild(b);
   }
 });

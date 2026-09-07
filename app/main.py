@@ -154,9 +154,11 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
             cache[key] = snap
             detail_cache[key] = details
             cache_time[key] = time.monotonic()
-            last_error = None
             pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
-            asyncio.create_task(asyncio.to_thread(storage.set_snapshot_cache,pkey,copy.deepcopy(snap)))
+            # A full Bitrix sync is expensive. Persist the result before
+            # returning success so a Render restart cannot throw it away.
+            await asyncio.to_thread(storage.set_snapshot_cache,pkey,copy.deepcopy(snap))
+            last_error = None
             return snap
         except Exception as e:
             last_error = str(e)
@@ -230,7 +232,7 @@ async def lifespan(app: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="MAVIS Operational Dashboard", version="2.9.0", lifespan=lifespan)
+app = FastAPI(title="MAVIS Operational Dashboard", version="2.9.2", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -289,7 +291,15 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "bitrix_configured": bool(settings.bitrix_webhook), "last_error": last_error, "version": "2.9.0", "storage": storage.backend_name}
+    return {
+        "ok": True,
+        "bitrix_configured": bool(settings.bitrix_webhook),
+        "last_error": last_error,
+        "version": "2.9.2",
+        "storage": storage.backend_name,
+        "supabase_configured": bool(settings.supabase_url and settings.supabase_key),
+        "storage_error": storage.last_remote_error or "",
+    }
 
 
 @app.get("/api/snapshot")

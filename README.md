@@ -97,7 +97,7 @@
 - Redundant long weekly/source/manager reports removed from the main sales page.
 - Traffic editing remains available as a compact strip.
 
-## v2.9.0 — RNP 09.2026
+## v2.9.2 — RNP 09.2026
 - Sales tab rebuilt around the actual 09.2026 RNP structure.
 - Three primary blocks: Cold / Incoming / Repeat sales.
 - Exact RNP metrics added, including lost deals and two sale-conversion variants.
@@ -107,3 +107,16 @@
 - Managers and product breakdowns remain.
 - Product conversion is explicitly defined as cohort product sales; tail is excluded.
 - Traffic auto-classification updated to the exact business rules agreed in chat.
+
+## v2.9.2 — FAST CACHE
+- Last successful month snapshot is stored in browser localStorage.
+- Dashboard renders the browser snapshot immediately after deploy/reload and refreshes Bitrix in background.
+- Full server snapshot is persisted before sync is considered successful.
+- /health shows whether Supabase credentials are really configured and the latest storage error.
+
+## v2.9.2
+- Removed technical blue sales filter hint from UI.
+- Removed visible RNP labels.
+- Cold / Incoming / Repeat sales are compact collapsed blocks by default.
+- Each collapsed block shows: current period, previous/tail, total month sales, revenue plan.
+- Click the block to expand plan/fact, weekly/daily dynamics and sources.
