@@ -97,9 +97,9 @@ async def load_clean_revenue(month: str):
         return {"status": "unavailable", "value": None}
 
 
-async def load_jarvis_operations(resource: str):
+async def load_jarvis_operations(resource: str, params: dict[str, str] | None = None):
     """Proxy a bounded read-only Jarvis payload so its token never reaches the browser."""
-    allowed = {"sales-calls", "crm-audit"}
+    allowed = {"sales-calls", "crm-audit", "marketing"}
     if resource not in allowed:
         return {"ok": False, "status": "invalid_resource"}
     if not settings.jarvis_operations_url or not settings.jarvis_operations_token:
@@ -107,14 +107,15 @@ async def load_jarvis_operations(resource: str):
     target = urlparse(settings.jarvis_operations_url)
     if target.scheme != "https" or not target.netloc:
         return {"ok": False, "status": "invalid_configuration"}
-    cached = jarvis_operations_cache.get(resource)
-    if cached and time.monotonic() - jarvis_operations_cache_time.get(resource, 0) < 60:
+    cache_key = resource + ":" + json.dumps(params or {}, sort_keys=True)
+    cached = jarvis_operations_cache.get(cache_key)
+    if cached and time.monotonic() - jarvis_operations_cache_time.get(cache_key, 0) < 60:
         return cached
     try:
         url = settings.jarvis_operations_url.rstrip("/") + f"/api/integrations/operations/{resource}"
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as session:
             async with session.stream(
-                "GET", url, headers={"Authorization": f"Bearer {settings.jarvis_operations_token}", "Accept": "application/json"}
+                "GET", url, params=params or {}, headers={"Authorization": f"Bearer {settings.jarvis_operations_token}", "Accept": "application/json"}
             ) as response:
                 if response.status_code != 200 or int(response.headers.get("Content-Length") or 0) > 2 * 1024 * 1024:
                     raise ValueError("invalid Jarvis response")
@@ -127,11 +128,11 @@ async def load_jarvis_operations(resource: str):
         if not isinstance(payload, dict) or not payload.get("ok"):
             raise ValueError("invalid Jarvis payload")
         result = {"ok": True, "status": "online", "data": payload}
-        jarvis_operations_cache[resource] = result
-        jarvis_operations_cache_time[resource] = time.monotonic()
+        jarvis_operations_cache[cache_key] = result
+        jarvis_operations_cache_time[cache_key] = time.monotonic()
         return result
     except Exception:
-        previous = jarvis_operations_cache.get(resource)
+        previous = jarvis_operations_cache.get(cache_key)
         if previous:
             return {**previous, "status": "stale"}
         return {"ok": False, "status": "unavailable"}
@@ -488,6 +489,11 @@ async def api_jarvis():
 @app.get("/api/crm-audit")
 async def api_crm_audit():
     return await load_jarvis_operations("crm-audit")
+
+
+@app.get("/api/marketing")
+async def api_marketing(month: str = ""):
+    return await load_jarvis_operations("marketing", {"month": month or current_month()})
 
 
 @app.get("/api/drilldown")
