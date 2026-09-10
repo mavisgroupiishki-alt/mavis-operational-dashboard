@@ -475,6 +475,16 @@ async def api_sales_calls():
     return await load_jarvis_operations("sales-calls")
 
 
+@app.get("/api/jarvis")
+async def api_jarvis():
+    """Expose only Jarvis's public HTTPS origin; the shared token stays server-side."""
+    base_url = settings.jarvis_operations_url.rstrip("/")
+    target = urlparse(base_url)
+    if not base_url or target.scheme != "https" or not target.netloc:
+        return JSONResponse({"ok": False, "status": "not_configured"}, status_code=503)
+    return {"ok": True, "url": base_url}
+
+
 @app.get("/api/crm-audit")
 async def api_crm_audit():
     return await load_jarvis_operations("crm-audit")

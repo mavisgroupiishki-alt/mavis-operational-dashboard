@@ -9,6 +9,7 @@ let drillTotal=0;
 let commentTarget=null;
 let teamTargetRole="expert";
 let npsTarget=null;
+let crmAuditData=null;
 const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v2:";
 function browserCacheKey(month,period){
   const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
@@ -137,16 +138,19 @@ function renderCallsPlaceholder(){
   $("#sales-calls").innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">Здесь появятся показатели Jarvis по последнему дню звонков.</p><div class="integration-state">Загрузка данных Jarvis…</div></div>`;
   $("#expert-calls").innerHTML=`<div class="section-page"><h2>Звонки эксперты</h2><p class="section-page-lead">Данные и правила оценки ещё не настроены. Раздел оставлен пустым намеренно — показатели появятся после подключения источника.</p><div class="integration-state">Нет подключённых данных</div></div>`;
 }
+async function loadJarvisExperience(){
+  const target=$("#sales-calls");if(!target)return;
+  target.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Открываю Jarvis</div><div class="muted">Загружаю полный интерфейс звонков: записи, расшифровки и рекомендации.</div></div></div>`;
+  try{const response=await fetch("/api/jarvis",{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok){target.innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">${esc(integrationState(payload.status))}.</p></div>`;return}target.innerHTML=`<section class="jarvis-embed"><header><div><h2>Звонки продаж</h2><p>Полный интерфейс Jarvis: карточки звонков, записи, расшифровки, оценка и рекомендации.</p></div><a class="btn ghost" href="${attr(payload.url)}" target="_blank" rel="noopener noreferrer">Открыть Jarvis отдельно</a></header><iframe title="Jarvis — звонки продаж" src="${attr(payload.url)}" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin"></iframe></section>`}catch(e){target.innerHTML=`<div class="error">Jarvis временно недоступен. Повтори загрузку через несколько секунд.</div>`}}
 function callsSummaryCard(label,value,note=""){return `<div class="call-summary-card"><span>${esc(label)}</span><strong>${fmt(value)}</strong>${note?`<small>${esc(note)}</small>`:""}</div>`}
 function renderSalesCalls(data){
   const summary=data.summary||{},calls=(data.calls||[]).slice(0,50),managers=(data.managers||[]).slice(0,8);
   $("#sales-calls").innerHTML=`<div class="calls-page"><div class="toolbar"><div><div class="eyebrow">JARVIS · ПРОДАЖИ</div><h2>Звонки продаж</h2><div class="muted">Последний день с данными: ${esc(data.sourceDate||"нет данных")}</div></div></div><div class="call-summary-grid">${callsSummaryCard("Звонки",summary.calls)}${callsSummaryCard("Разобрано",summary.analyzed)}${callsSummaryCard("Критичные",summary.critical)}${callsSummaryCard("Низкая оценка",summary.attention)}${callsSummaryCard("Нужна проверка",summary.review+summary.reanalysis)}</div><div class="grid-2">${panel("Команда",`<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Звонки</th><th class="num">Средняя оценка</th><th class="num">Критичные</th><th class="num">Низкая оценка</th></tr></thead><tbody>${managers.map(item=>`<tr><td>${esc(item.name)}</td><td class="num">${fmt(item.calls)}</td><td class="num">${item.average===null?"—":fmt(item.average)}</td><td class="num">${fmt(item.critical)}</td><td class="num">${fmt(item.attention)}</td></tr>`).join("")||"<tr><td colspan='5'>Нет данных</td></tr>"}</tbody></table></div>`)}${panel("Последние звонки",`<div class="scroll-x"><table><thead><tr><th>Время</th><th>Менеджер</th><th>Звонок</th><th>Стадия</th><th class="num">Оценка</th><th>Статус</th></tr></thead><tbody>${calls.map(item=>`<tr><td>${esc(item.created)}</td><td>${esc(item.manager)}</td><td>${esc(item.activityId||"—")}</td><td>${esc(item.stage||"—")}</td><td class="num">${item.score===null?"—":fmt(item.score)}</td><td>${esc(item.reason||item.status||"—")}</td></tr>`).join("")||"<tr><td colspan='6'>Нет звонков за последний день</td></tr>"}</tbody></table></div>`,"Показаны последние 50 из текущего дня")}</div></div>`;
 }
-function auditIssueName(code){return ({inactive_or_missing_owner:"Нет активного ответственного",missing_product:"Нет продукта или услуги",missing_next_activity:"Нет следующего дела",missing_last_communication:"Нет CRM-коммуникации",stage_age:"Стадия дольше нормы",stage_age_severe:"Стадия существенно просрочена"})[code]||code}
-function renderCrmAudit(data){
-  const summary=data.summary||{},details=(data.details||[]).slice(0,50),issues=(data.issues||[]);
-  $("#crm-audit").innerHTML=`<div class="calls-page"><div class="toolbar"><div><div class="eyebrow">CRM HEALTH · READ ONLY</div><h2>Аудит CRM</h2><div class="muted">Последний расчёт: ${esc(data.sync?.happenedAt||"нет данных")} · ${esc(data.sync?.status||"неизвестно")}</div></div></div><div class="call-summary-grid">${callsSummaryCard("Активные сделки",summary.total)}${callsSummaryCard("Красная зона",summary.red)}${callsSummaryCard("Жёлтая зона",summary.yellow)}${callsSummaryCard("Зелёная зона",summary.green)}${callsSummaryCard("Неполные данные",summary.incomplete)}</div><div class="grid-2">${panel("Частые риски",`<div class="status-list">${issues.map(item=>`<div class="status-item"><span>${esc(auditIssueName(item.code))}</span><strong>${fmt(item.count)}</strong></div>`).join("")||"<div class='empty'>Рисков нет</div>"}</div>`)}${panel("Сделки, требующие внимания",`<div class="scroll-x"><table><thead><tr><th>Зона</th><th>Сделка</th><th>Стадия</th><th>Причины</th><th class="num">Score</th></tr></thead><tbody>${details.map(item=>`<tr><td>${esc(item.zone)}</td><td>${item.url?`<a href="${attr(item.url)}" target="_blank" rel="noopener noreferrer">Сделка №${esc(item.dealId)}</a>`:esc(item.dealId||"—")}</td><td>${esc(item.stage||"—")}</td><td>${esc((item.issues||[]).map(auditIssueName).join(", ")||"—")}</td><td class="num">${item.score===null?"—":fmt(item.score)}</td></tr>`).join("")||"<tr><td colspan='5'>Нет сделок в зоне внимания</td></tr>"}</tbody></table></div>`,"Показаны первые 50; детальный отчёт обновляется еженедельно")}</div></div>`;
-}
+const CRM_AUDIT_METRICS=[["activeDeals","Активные сделки"],["missingSource","Без источника"],["missingLastCommunication","Без последней коммуникации"],["stalledFunnelDeals","В воронке «Зависшие»"],["missingClient","Без контакта и компании"],["inactiveOwner","Неактивный владелец"],["openLeadsMissingClient","Открытые лиды без клиента"],["requiredDealFields","Обязательные поля сделок"]];
+function auditDate(value){const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?date.toLocaleString("ru-RU",{dateStyle:"medium",timeStyle:"short"}):"нет успешного среза"}
+function renderCrmAuditRows(){const target=$("#crmAuditRows");if(!target||!crmAuditData)return;const issue=$("#crmAuditIssue")?.value||"",priority=$("#crmAuditPriority")?.value||"",funnel=$("#crmAuditFunnel")?.value||"",rows=(crmAuditData.details||[]).filter(row=>(!issue||row.issue===issue)&&(!priority||row.priority===priority)&&(!funnel||row.funnel===funnel));$("#crmAuditCount").textContent=`${fmt(rows.length)} из ${fmt((crmAuditData.details||[]).length)} строк`;target.innerHTML=rows.length?rows.map(row=>`<tr><td>${esc(row.observedOn||"—")}</td><td>${esc(row.issue||"—")}</td><td><span class="audit-priority ${attr(String(row.priority||"").toLowerCase())}">${esc(row.priority||"—")}</span></td><td>${esc(row.funnel||"—")}</td><td>${esc(row.entityType||"—")}</td><td>${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noopener noreferrer">${esc(row.entityId||"—")}</a>`:esc(row.entityId||"—")}</td></tr>`).join(""):'<tr><td colspan="6" class="empty">По выбранным фильтрам карточек нет</td></tr>'}
+function renderCrmAudit(data){crmAuditData=data||{};const summary=crmAuditData.summary||{},funnels=crmAuditData.funnelBreakdown||[],details=crmAuditData.details||[],values=(key)=>[...new Set(details.map(item=>String(item[key]||"")).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ru")),options=(items,label)=>`<option value="">${esc(label)}</option>${items.map(item=>`<option value="${attr(item)}">${esc(item)}</option>`).join("")}`;$("#crm-audit").innerHTML=`<section class="audit-workspace"><header class="audit-head"><div><h2>Аудит CRM</h2><p>Ежедневная проверка всех воронок и открытых лидов. Одна строка — одна причина для разбора карточки.</p></div><div class="audit-freshness">Последний срез<strong>${esc(auditDate(crmAuditData.generatedAt))}</strong></div></header><div class="audit-summary-grid">${CRM_AUDIT_METRICS.map(([key,label])=>`<div class="audit-metric"><span>${esc(label)}</span><strong>${fmt(summary[key])}</strong></div>`).join("")}</div><div class="audit-split"><section class="audit-funnels"><h3>Активные сделки по воронкам</h3><div class="audit-funnel-list">${funnels.map(item=>`<div><span>${esc(item.name||"Не указана")}</span><strong>${fmt(item.activeDeals)}</strong></div>`).join("")||'<div class="empty">Нет данных по воронкам</div>'}</div></section><section class="audit-table-panel"><div class="audit-table-head"><div><h3>Карточки для проверки</h3><span id="crmAuditCount" class="muted"></span></div><div class="audit-filters"><select id="crmAuditIssue" data-audit-filter="issue">${options(values("issue"),"Все проблемы")}</select><select id="crmAuditPriority" data-audit-filter="priority">${options(values("priority"),"Все приоритеты")}</select><select id="crmAuditFunnel" data-audit-filter="funnel">${options(values("funnel"),"Все воронки")}</select></div></div><div class="scroll-x"><table><thead><tr><th>Дата среза</th><th>Проблема</th><th>Приоритет</th><th>Воронка</th><th>Тип</th><th>ID</th></tr></thead><tbody id="crmAuditRows"></tbody></table></div></section></div></section>`;renderCrmAuditRows()}
 async function loadOperationsSection(resource){
   const target=resource==="sales-calls"?$("#sales-calls"):$("#crm-audit");
   if(!target)return;
@@ -880,7 +884,7 @@ function openView(view,updateHistory=true){
   $("#sectionNavTitle").textContent=VIEW_TITLES[view]||"";
   if(view==="dynamics")renderDynamics();
   if(view==="forecast")renderForecast();
-  if(view==="sales-calls")loadOperationsSection("sales-calls");
+  if(view==="sales-calls")loadJarvisExperience();
   if(view==="crm-audit")loadOperationsSection("crm-audit");
   if(updateHistory){history.pushState(null,"",view==="hub"?location.pathname:`#${view}`);window.scrollTo({top:0,behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 }
@@ -1130,6 +1134,7 @@ function init(){
     const rem=e.target.closest('[data-team-remove]');if(rem){removeTeam(rem.dataset.role,rem.dataset.name);return}
     const x=e.target.closest('[data-drill="1"]');if(x)openDrill(x)
   });
+  document.body.addEventListener('change',e=>{if(e.target.matches('[data-audit-filter]'))renderCrmAuditRows()});
   $("#closeDrill").addEventListener('click',()=>$("#drillDialog").close());$("#drillSearch").addEventListener('input',renderDrillRows);
   $("#closePlan").addEventListener('click',()=>$("#planDialog").close());$("#planScope").addEventListener('change',()=>{updatePlanContextTypes();updatePlanKey()});$("#planContextType").addEventListener('change',updatePlanKey);$("#planContextKey").addEventListener('change',buildPlanForm);$("#savePlan").addEventListener('click',savePlan);
 
@@ -1156,7 +1161,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v2.9.4";
+    b.textContent="v3.0.1";
     top.appendChild(b);
   }
 });
