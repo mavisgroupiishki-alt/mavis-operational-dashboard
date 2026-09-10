@@ -123,15 +123,22 @@ function salesRevenueHero(s){
 }
 function renderHub(){
   const s=state.sales.overall.total.metrics,p=state.production.kpi;
-  $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда"><header class="directory-intro"><h2>Работа отделов</h2><p>Выберите направление, чтобы открыть детали и расшифровки.</p></header><div class="department-directory-grid">
-    <button type="button" class="department-entry sales-entry" data-open-view="sales"><span>Продажи</span><strong>${money(s.sales_amount)}</strong><small>${esc(cleanRevenueCaption())} · ${fmt(s.sales)} продаж</small></button>
-    <button type="button" class="department-entry experts-entry" data-open-view="department-experts"><span>Эксперты</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто · производство и эксперты</small></button>
-    <button type="button" class="department-entry calls-entry" data-open-view="sales-calls"><span>Звонки продажи</span><strong>Jarvis</strong><small>Разбор звонков, сценарии и контроль работы РОПа</small></button>
-    <button type="button" class="department-entry muted-entry" data-open-view="expert-calls"><span>Звонки эксперты</span><strong>Подготовка</strong><small>Данные ещё не подключены</small></button>
-    <button type="button" class="department-entry muted-entry" data-open-view="marketing"><span>Маркетинг</span><strong>Подготовка</strong><small>Ждём правила расчёта и источники данных</small></button>
-    <button type="button" class="department-entry overview-entry" data-open-view="overview"><span>Общий краткий свод</span><strong>${fmt(s.sales)} продаж</strong><small>Продажи, производство, риски и оперативные сигналы</small></button>
-    <button type="button" class="department-entry audit-entry" data-open-view="crm-audit"><span>Аудит CRM</span><strong>Контроль</strong><small>Ежедневный свод и еженедельная детализация сделок</small></button>
-  </div></section>`;
+  $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда">
+    <header class="operations-hero">
+      <div class="operations-hero-copy"><div class="eyebrow">MAVIS GROUP · ОПЕРАЦИОННЫЙ ЦЕНТР</div><h2>Пульс бизнеса</h2><p>Главные результаты месяца и быстрый вход в рабочие контуры команды.</p></div>
+      <div class="operations-hero-stats"><div><span>Продажи</span><strong>${money(s.sales_amount)}</strong><small>${fmt(s.sales)} продаж</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Финансовая база</span><strong>Чистая выручка</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
+    </header>
+    <div class="directory-heading"><div><div class="eyebrow">КОНТУРЫ УПРАВЛЕНИЯ</div><h3>Работа отделов</h3></div><p>Открывайте раздел — показатели, первичные данные и расшифровки остаются внутри одного контура.</p></div>
+    <div class="department-directory-grid">
+      <button type="button" class="department-entry sales-entry" data-open-view="sales"><span class="entry-kicker">01 · Коммерция</span><strong>Продажи</strong><b>${money(s.sales_amount)}</b><small>${esc(cleanRevenueCaption())} · ${fmt(s.sales)} продаж</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry experts-entry" data-open-view="department-experts"><span class="entry-kicker">02 · Исполнение</span><strong>Эксперты</strong><b>${money(p.closed_amount)}</b><small>${fmt(p.closed_count)} закрыто · производство и эксперты</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry calls-entry" data-open-view="sales-calls"><span class="entry-kicker">03 · Контроль качества</span><strong>Звонки продаж</strong><b>Jarvis</b><small>Записи, расшифровки, оценка и рекомендации РОПу</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry overview-entry" data-open-view="overview"><span class="entry-kicker">04 · Руководителю</span><strong>Общий краткий свод</strong><b>${fmt(s.sales)} продаж</b><small>Продажи, производство, риски и оперативные сигналы</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry marketing-entry" data-open-view="marketing"><span class="entry-kicker">05 · Привлечение</span><strong>Маркетинг</strong><b>Bitrix24</b><small>Лиды, источники, конверсия и экономика кампаний</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry audit-entry" data-open-view="crm-audit"><span class="entry-kicker">06 · Качество данных</span><strong>Аудит CRM</strong><b>Контроль</b><small>Ежедневный свод и карточки сделок для разбора</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry muted-entry" data-open-view="expert-calls"><span class="entry-kicker">07 · В разработке</span><strong>Звонки экспертов</strong><b>Скоро</b><small>Контур оставлен пустым до подключения данных</small><i>Открыть →</i></button>
+    </div>
+  </section>`;
 }
 function integrationState(status){return ({not_configured:"Интеграция ещё не настроена",invalid_configuration:"Некорректная настройка интеграции",unavailable:"Источник временно недоступен",stale:"Показаны последние полученные данные"})[status]||"Данные обновляются"}
 function renderCallsPlaceholder(){
@@ -156,7 +163,10 @@ async function loadOperationsSection(resource){
   if(!target)return;
   target.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю данные</div><div class="muted">Получаю только read-only агрегаты из внутреннего источника.</div></div></div>`;
   try{const response=await fetch(resource==="sales-calls"?"/api/sales-calls":"/api/crm-audit",{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok){target.innerHTML=`<div class="section-page"><h2>${resource==="sales-calls"?"Звонки продажи":"Аудит CRM"}</h2><p class="section-page-lead">${esc(integrationState(payload.status))}.</p></div>`;return}if(resource==="sales-calls")renderSalesCalls(payload.data);else renderCrmAudit(payload.data)}catch(e){target.innerHTML=`<div class="error">Источник временно недоступен. Повтори загрузку через несколько секунд.</div>`}}
-function renderMarketingPlaceholder(){ $("#marketing").innerHTML=`<div class="section-page"><h2>Маркетинг</h2><p class="section-page-lead">Раздел подготовлен для переноса вашего приложения Bitrix24 в общий визуальный язык дашборда. Сначала нужны правила расчёта показателей и источники данных.</p><div class="integration-state">Ожидаются данные по маркетингу</div></div>`; }
+function renderMarketingPlaceholder(){
+  const marketingUrl="https://mavisgroup.bitrix24.by/marketplace/app/122/";
+  $("#marketing").innerHTML=`<section class="marketing-embed"><header><div><div class="eyebrow">BITRIX24 · МАРКЕТИНГ</div><h2>Маркетинг</h2><p>Рабочее приложение с живыми лидами, источниками, воронкой, конверсией и экономикой. Расчёты остаются теми же, что в Bitrix24.</p></div><a class="btn ghost" href="${attr(marketingUrl)}" target="_blank" rel="noopener noreferrer">Открыть в Bitrix24</a></header><iframe title="Маркетинг Mavis Group в Bitrix24" src="${attr(marketingUrl)}" referrerpolicy="strict-origin-when-cross-origin"></iframe></section>`;
+}
 function renderCrmAuditPlaceholder(){ $("#crm-audit").innerHTML=`<div class="section-page"><h2>Аудит CRM</h2><p class="section-page-lead">Здесь будут два режима: ежедневный общий свод качества CRM и еженедельная детализация по сделкам с исходными ссылками. Отчёт останется read-only.</p><div class="integration-state">Подключаем контур аудита CRM</div></div>`; }
 
 function renderOverview(){
