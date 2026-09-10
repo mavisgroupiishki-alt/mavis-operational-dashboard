@@ -84,7 +84,9 @@ async def load_clean_revenue(month: str):
         except ValueError:
             return {"status": "unavailable", "value": None, "reason": "source_invalid_json"}
         if response.status_code != 200:
-            return {"status": "unavailable", "value": None, "reason": f"source_http_{response.status_code}"}
+            source_reason = str(payload.get("reason") or "")
+            safe_suffix = f"_{source_reason.lower()}" if source_reason in {"RuntimeError", "HTTPError", "ConnectionError", "Timeout"} else ""
+            return {"status": "unavailable", "value": None, "reason": f"source_http_{response.status_code}{safe_suffix}"}
         if not isinstance(payload, dict):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         value = float(payload.get("cleanRevenue"))
