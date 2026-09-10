@@ -554,27 +554,30 @@ function rnpMonthlyTable(cfg,g){
     ${cfg.metrics.map(([k,label,type])=>`<div class="rnp-month-row"><span>${esc(label)}</span>${rnpPlanCell(cfg.key,k,type,m[k]||0)}</div>`).join("")}
   </div>`;
 }
-function rnpDailyTable(cfg,g,week){
-  const d=g?.current?.days||{};
+function rnpDailyTable(cfg,g,week,periodType="current",metrics=cfg.metrics){
+  const d=g?.[periodType]?.days||{};
   const rows=[];
   for(let day=week.start;day<=week.end;day++){
-    const active=cfg.metrics.some(([k])=>Number(d?.[k]?.[day-1]||0)!==0);
+    const active=metrics.some(([k])=>Number(d?.[k]?.[day-1]||0)!==0);
     if(!active)continue;
-    rows.push(`<tr><td>${monthDateLabel(day)}</td>${cfg.metrics.map(([k,l,t])=>`<td class="num">${tdLink(d?.[k]?.[day-1]||0,"sales",k,t,{group:cfg.key,period_type:"current",day,week:week.index})}</td>`).join("")}</tr>`);
+    rows.push(`<tr><td>${monthDateLabel(day)}</td>${metrics.map(([k,l,t])=>`<td class="num">${tdLink(d?.[k]?.[day-1]||0,"sales",k,t,{group:cfg.key,period_type:periodType,day,week:week.index})}</td>`).join("")}</tr>`);
   }
-  return `<div class="scroll-x"><table class="rnp-daily-table"><thead><tr><th>Дата</th>${cfg.metrics.map(x=>`<th class="num">${esc(x[1])}</th>`).join("")}</tr></thead><tbody>${rows.join("")||`<tr><td colspan="${cfg.metrics.length+1}" class="empty-day">Нет движения</td></tr>`}</tbody></table></div>`;
+  return `<div class="scroll-x"><table class="rnp-daily-table"><thead><tr><th>Дата</th>${metrics.map(x=>`<th class="num">${esc(x[1])}</th>`).join("")}</tr></thead><tbody>${rows.join("")||`<tr><td colspan="${metrics.length+1}" class="empty-day">Нет движения</td></tr>`}</tbody></table></div>`;
 }
-function rnpWeekTable(cfg,g){
-  const weeks=g?.current?.weeks||{},ranges=rnpWeekRanges();
+function rnpWeekTable(cfg,g,periodType="current"){
+  const metrics=periodType==="previous"
+    ? [["sales","Продажи","num"],["sales_amount","Выручка","money"],["average_check","Средний чек","money"]]
+    : cfg.metrics;
+  const weeks=g?.[periodType]?.weeks||{},ranges=rnpWeekRanges();
   return `<div class="rnp-weeks">${ranges.map(w=>{
     const revenue=weeks.sales_amount?.[w.index]||0,sales=weeks.sales?.[w.index]||0;
     return `<details class="rnp-week"><summary><div><strong>${w.index+1} неделя</strong><span>${w.label}</span></div><div><b>${money(revenue)}</b><span>${fmt(sales)} продаж</span></div></summary>
       <div class="rnp-week-body">
-        <div class="rnp-week-facts">${cfg.metrics.map(([k,label,type])=>{
-          const fact=weeks[k]?.[w.index]||0,plan=rnpWeekPlan(cfg.key,k,w.index);
+        <div class="rnp-week-facts">${metrics.map(([k,label,type])=>{
+          const fact=weeks[k]?.[w.index]||0,plan=periodType==="current"?rnpWeekPlan(cfg.key,k,w.index):0;
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
-        ${rnpDailyTable(cfg,g,w)}
+        ${rnpDailyTable(cfg,g,w,periodType,metrics)}
       </div>
     </details>`;
   }).join("")}</div>`;
@@ -631,7 +634,15 @@ function rnpBlock(cfg){
       ${rnpMonthlyTable(cfg,g)}
       <details class="rnp-subdetails">
         <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
-        ${rnpWeekTable(cfg,g)}
+        <section class="rnp-week-section">
+          <div class="rnp-week-section-head"><strong>Отчётный период</strong><span>${money(c.sales_amount||0)} · ${fmt(c.sales||0)} продаж</span></div>
+          ${rnpWeekTable(cfg,g)}
+        </section>
+        <section class="rnp-week-section rnp-tail-week-section">
+          <div class="rnp-week-section-head"><strong>Хвост — оплаты по неделям</strong><span>${money(p.sales_amount||0)} · ${fmt(p.sales||0)} продаж</span></div>
+          <p>Сделки, созданные раньше выбранного месяца; распределены по неделе фактического закрытия/оплаты.</p>
+          ${rnpWeekTable(cfg,g,"previous")}
+        </section>
       </details>
       ${rnpSourceList(cfg)}
     </div>
