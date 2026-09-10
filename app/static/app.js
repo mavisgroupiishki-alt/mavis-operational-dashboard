@@ -574,7 +574,7 @@ function rnpWeekTable(cfg,g,periodType="current"){
     return `<details class="rnp-week"><summary><div><strong>${w.index+1} неделя</strong><span>${w.label}</span></div><div><b>${money(revenue)}</b><span>${fmt(sales)} продаж</span></div></summary>
       <div class="rnp-week-body">
         <div class="rnp-week-facts">${metrics.map(([k,label,type])=>{
-          const fact=weeks[k]?.[w.index]||0,plan=periodType==="current"?rnpWeekPlan(cfg.key,k,w.index):0;
+          const fact=weeks[k]?.[w.index]||0,plan=periodType==="previous"?0:rnpWeekPlan(cfg.key,k,w.index);
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
         ${rnpDailyTable(cfg,g,w,periodType,metrics)}
@@ -634,15 +634,7 @@ function rnpBlock(cfg){
       ${rnpMonthlyTable(cfg,g)}
       <details class="rnp-subdetails">
         <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
-        <section class="rnp-week-section">
-          <div class="rnp-week-section-head"><strong>Отчётный период</strong><span>${money(c.sales_amount||0)} · ${fmt(c.sales||0)} продаж</span></div>
-          ${rnpWeekTable(cfg,g)}
-        </section>
-        <section class="rnp-week-section rnp-tail-week-section">
-          <div class="rnp-week-section-head"><strong>Хвост — оплаты по неделям</strong><span>${money(p.sales_amount||0)} · ${fmt(p.sales||0)} продаж</span></div>
-          <p>Сделки, созданные раньше выбранного месяца; распределены по неделе фактического закрытия/оплаты.</p>
-          ${rnpWeekTable(cfg,g,"previous")}
-        </section>
+        ${rnpWeekTable(cfg,g,"total")}
       </details>
       ${rnpSourceList(cfg)}
     </div>

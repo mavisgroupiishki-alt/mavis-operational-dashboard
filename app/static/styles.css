@@ -512,11 +512,6 @@ td{padding:11px 9px}
 }
 .rnp-subdetails>summary::-webkit-details-marker{display:none}
 .rnp-subdetails[open]>summary{color:var(--rnp-accent);font-weight:700}
-.rnp-week-section{padding:8px 10px 12px}
-.rnp-tail-week-section{border-top:1px dashed #cbdbe5;background:#f8fbfd}
-.rnp-week-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:4px 0 2px;font-size:12px;color:#365c7c}
-.rnp-week-section-head span{font-size:11px;color:#6f8495;white-space:nowrap}
-.rnp-tail-week-section p{margin:2px 0 5px;font-size:10px;line-height:1.4;color:#718797}
 .rnp-weeks{padding:8px 10px 12px}
 .rnp-week{border:1px solid #d9e4eb;border-radius:10px;margin:7px 0;overflow:hidden}
 .rnp-week>summary{
