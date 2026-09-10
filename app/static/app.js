@@ -791,7 +791,7 @@ function renderProduction(){
   <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
-  ${panel("Разбивка по продуктам",prodProductTable(),"нажми на показатель → эксперт → продукт → компания")}
+  <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div></summary>${prodProductTable()}</details>
   <div class="grid-2">${panel("Эксперты",expertTable(false),"состав можно менять прямо здесь")}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
   $("#openPlanProd")?.addEventListener("click",()=>openPlanDialog("production"));
 }
