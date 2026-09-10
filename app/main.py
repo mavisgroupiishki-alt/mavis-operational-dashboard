@@ -85,7 +85,12 @@ async def load_clean_revenue(month: str):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_json"}
         if response.status_code != 200:
             source_reason = str(payload.get("reason") or "")
-            safe_suffix = f"_{source_reason.lower()}" if source_reason in {"RuntimeError", "HTTPError", "ConnectionError", "Timeout"} else ""
+            source_method = str(payload.get("method") or "")
+            safe_methods = {"batch", "crm.category.list", "crm.deal.list", "crm.stagehistory.list", "entity.item.get"}
+            if source_reason == "BitrixCallError" and source_method in safe_methods:
+                safe_suffix = f"_bitrix_{source_method.replace('.', '_')}"
+            else:
+                safe_suffix = f"_{source_reason.lower()}" if source_reason in {"RuntimeError", "HTTPError", "ConnectionError", "Timeout"} else ""
             return {"status": "unavailable", "value": None, "reason": f"source_http_{response.status_code}{safe_suffix}"}
         if not isinstance(payload, dict):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
