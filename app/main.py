@@ -79,10 +79,17 @@ async def load_clean_revenue(month: str):
                 params={"date_from": date_from, "date_to": date_to},
                 headers={"Authorization": f"Bearer {settings.clean_revenue_token}", "Accept": "application/json"},
             )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError:
+            return {"status": "unavailable", "value": None, "reason": "source_invalid_json"}
+        if response.status_code != 200:
+            return {"status": "unavailable", "value": None, "reason": f"source_http_{response.status_code}"}
+        if not isinstance(payload, dict):
+            return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         value = float(payload.get("cleanRevenue"))
-        if response.status_code != 200 or not payload.get("ok") or not math.isfinite(value):
-            raise ValueError("invalid clean revenue response")
+        if not payload.get("ok") or not math.isfinite(value):
+            return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         result = {
             "status": "online",
             "value": round(value, 2),
@@ -93,11 +100,17 @@ async def load_clean_revenue(month: str):
         clean_revenue_cache[month] = result
         clean_revenue_cache_time[month] = time.monotonic()
         return result
+    except httpx.TimeoutException:
+        return {"status": "unavailable", "value": None, "reason": "source_timeout"}
+    except httpx.HTTPError:
+        return {"status": "unavailable", "value": None, "reason": "source_network_error"}
+    except (TypeError, ValueError):
+        return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
     except Exception:
         previous = clean_revenue_cache.get(month)
         if previous:
             return {**previous, "status": "stale"}
-        return {"status": "unavailable", "value": None}
+        return {"status": "unavailable", "value": None, "reason": "source_unexpected_error"}
 
 
 async def load_jarvis_operations(resource: str, params: dict[str, str] | None = None):
