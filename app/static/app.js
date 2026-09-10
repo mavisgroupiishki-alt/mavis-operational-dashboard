@@ -109,15 +109,61 @@ function signalCard(kind,title,value,type,scope,metric,note="",extra={}){return 
 function panel(title,body,note=""){return `<div class="panel"><div class="panel-head"><div class="panel-title">${esc(title)}</div><div class="muted">${esc(note)}</div></div>${body}</div>`}
 function tdLink(value,scope,metric,type,extra={}){return `<span class="cell-link" ${drillAttrs(scope,metric,extra)}>${format(value,type)}</span>`}
 
+function cleanRevenueCaption(){
+  const finance=state?.clean_revenue||{};
+  if(finance.status==="online")return "Чистая выручка из «Графика платежей»";
+  if(finance.status==="stale")return "Последняя подтверждённая чистая выручка; источник обновляется";
+  if(finance.status==="not_configured")return "Источник чистой выручки ещё не подключён";
+  return "Чистая выручка временно недоступна";
+}
+function salesRevenueHero(s){
+  const plan=getPlan("sales","sales_amount"),percent=plan?Number(s.sales_amount||0)/plan*100:0;
+  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">${esc(cleanRevenueCaption())}</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(s.sales_amount)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(s.average_check)}</strong></div></div></div>`;
+}
+function renderHub(){
+  const s=state.sales.overall.total.metrics,p=state.production.kpi;
+  $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда"><header class="directory-intro"><h2>Работа отделов</h2><p>Выберите направление, чтобы открыть детали и расшифровки.</p></header><div class="department-directory-grid">
+    <button type="button" class="department-entry sales-entry" data-open-view="sales"><span>Продажи</span><strong>${money(s.sales_amount)}</strong><small>${esc(cleanRevenueCaption())} · ${fmt(s.sales)} продаж</small></button>
+    <button type="button" class="department-entry experts-entry" data-open-view="department-experts"><span>Эксперты</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто · производство и эксперты</small></button>
+    <button type="button" class="department-entry calls-entry" data-open-view="sales-calls"><span>Звонки продажи</span><strong>Jarvis</strong><small>Разбор звонков, сценарии и контроль работы РОПа</small></button>
+    <button type="button" class="department-entry muted-entry" data-open-view="expert-calls"><span>Звонки эксперты</span><strong>Подготовка</strong><small>Данные ещё не подключены</small></button>
+    <button type="button" class="department-entry muted-entry" data-open-view="marketing"><span>Маркетинг</span><strong>Подготовка</strong><small>Ждём правила расчёта и источники данных</small></button>
+    <button type="button" class="department-entry overview-entry" data-open-view="overview"><span>Общий краткий свод</span><strong>${fmt(s.sales)} продаж</strong><small>Продажи, производство, риски и оперативные сигналы</small></button>
+    <button type="button" class="department-entry audit-entry" data-open-view="crm-audit"><span>Аудит CRM</span><strong>Контроль</strong><small>Ежедневный свод и еженедельная детализация сделок</small></button>
+  </div></section>`;
+}
+function integrationState(status){return ({not_configured:"Интеграция ещё не настроена",invalid_configuration:"Некорректная настройка интеграции",unavailable:"Источник временно недоступен",stale:"Показаны последние полученные данные"})[status]||"Данные обновляются"}
+function renderCallsPlaceholder(){
+  $("#sales-calls").innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">Здесь появятся показатели Jarvis по последнему дню звонков.</p><div class="integration-state">Загрузка данных Jarvis…</div></div>`;
+  $("#expert-calls").innerHTML=`<div class="section-page"><h2>Звонки эксперты</h2><p class="section-page-lead">Данные и правила оценки ещё не настроены. Раздел оставлен пустым намеренно — показатели появятся после подключения источника.</p><div class="integration-state">Нет подключённых данных</div></div>`;
+}
+function callsSummaryCard(label,value,note=""){return `<div class="call-summary-card"><span>${esc(label)}</span><strong>${fmt(value)}</strong>${note?`<small>${esc(note)}</small>`:""}</div>`}
+function renderSalesCalls(data){
+  const summary=data.summary||{},calls=(data.calls||[]).slice(0,50),managers=(data.managers||[]).slice(0,8);
+  $("#sales-calls").innerHTML=`<div class="calls-page"><div class="toolbar"><div><div class="eyebrow">JARVIS · ПРОДАЖИ</div><h2>Звонки продаж</h2><div class="muted">Последний день с данными: ${esc(data.sourceDate||"нет данных")}</div></div></div><div class="call-summary-grid">${callsSummaryCard("Звонки",summary.calls)}${callsSummaryCard("Разобрано",summary.analyzed)}${callsSummaryCard("Критичные",summary.critical)}${callsSummaryCard("Низкая оценка",summary.attention)}${callsSummaryCard("Нужна проверка",summary.review+summary.reanalysis)}</div><div class="grid-2">${panel("Команда",`<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Звонки</th><th class="num">Средняя оценка</th><th class="num">Критичные</th><th class="num">Низкая оценка</th></tr></thead><tbody>${managers.map(item=>`<tr><td>${esc(item.name)}</td><td class="num">${fmt(item.calls)}</td><td class="num">${item.average===null?"—":fmt(item.average)}</td><td class="num">${fmt(item.critical)}</td><td class="num">${fmt(item.attention)}</td></tr>`).join("")||"<tr><td colspan='5'>Нет данных</td></tr>"}</tbody></table></div>`)}${panel("Последние звонки",`<div class="scroll-x"><table><thead><tr><th>Время</th><th>Менеджер</th><th>Звонок</th><th>Стадия</th><th class="num">Оценка</th><th>Статус</th></tr></thead><tbody>${calls.map(item=>`<tr><td>${esc(item.created)}</td><td>${esc(item.manager)}</td><td>${esc(item.activityId||"—")}</td><td>${esc(item.stage||"—")}</td><td class="num">${item.score===null?"—":fmt(item.score)}</td><td>${esc(item.reason||item.status||"—")}</td></tr>`).join("")||"<tr><td colspan='6'>Нет звонков за последний день</td></tr>"}</tbody></table></div>`,"Показаны последние 50 из текущего дня")}</div></div>`;
+}
+function auditIssueName(code){return ({inactive_or_missing_owner:"Нет активного ответственного",missing_product:"Нет продукта или услуги",missing_next_activity:"Нет следующего дела",missing_last_communication:"Нет CRM-коммуникации",stage_age:"Стадия дольше нормы",stage_age_severe:"Стадия существенно просрочена"})[code]||code}
+function renderCrmAudit(data){
+  const summary=data.summary||{},details=(data.details||[]).slice(0,50),issues=(data.issues||[]);
+  $("#crm-audit").innerHTML=`<div class="calls-page"><div class="toolbar"><div><div class="eyebrow">CRM HEALTH · READ ONLY</div><h2>Аудит CRM</h2><div class="muted">Последний расчёт: ${esc(data.sync?.happenedAt||"нет данных")} · ${esc(data.sync?.status||"неизвестно")}</div></div></div><div class="call-summary-grid">${callsSummaryCard("Активные сделки",summary.total)}${callsSummaryCard("Красная зона",summary.red)}${callsSummaryCard("Жёлтая зона",summary.yellow)}${callsSummaryCard("Зелёная зона",summary.green)}${callsSummaryCard("Неполные данные",summary.incomplete)}</div><div class="grid-2">${panel("Частые риски",`<div class="status-list">${issues.map(item=>`<div class="status-item"><span>${esc(auditIssueName(item.code))}</span><strong>${fmt(item.count)}</strong></div>`).join("")||"<div class='empty'>Рисков нет</div>"}</div>`)}${panel("Сделки, требующие внимания",`<div class="scroll-x"><table><thead><tr><th>Зона</th><th>Сделка</th><th>Стадия</th><th>Причины</th><th class="num">Score</th></tr></thead><tbody>${details.map(item=>`<tr><td>${esc(item.zone)}</td><td>${item.url?`<a href="${attr(item.url)}" target="_blank" rel="noopener noreferrer">Сделка №${esc(item.dealId)}</a>`:esc(item.dealId||"—")}</td><td>${esc(item.stage||"—")}</td><td>${esc((item.issues||[]).map(auditIssueName).join(", ")||"—")}</td><td class="num">${item.score===null?"—":fmt(item.score)}</td></tr>`).join("")||"<tr><td colspan='5'>Нет сделок в зоне внимания</td></tr>"}</tbody></table></div>`,"Показаны первые 50; детальный отчёт обновляется еженедельно")}</div></div>`;
+}
+async function loadOperationsSection(resource){
+  const target=resource==="sales-calls"?$("#sales-calls"):$("#crm-audit");
+  if(!target)return;
+  target.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю данные</div><div class="muted">Получаю только read-only агрегаты из внутреннего источника.</div></div></div>`;
+  try{const response=await fetch(resource==="sales-calls"?"/api/sales-calls":"/api/crm-audit",{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok){target.innerHTML=`<div class="section-page"><h2>${resource==="sales-calls"?"Звонки продажи":"Аудит CRM"}</h2><p class="section-page-lead">${esc(integrationState(payload.status))}.</p></div>`;return}if(resource==="sales-calls")renderSalesCalls(payload.data);else renderCrmAudit(payload.data)}catch(e){target.innerHTML=`<div class="error">Источник временно недоступен. Повтори загрузку через несколько секунд.</div>`}}
+function renderMarketingPlaceholder(){ $("#marketing").innerHTML=`<div class="section-page"><h2>Маркетинг</h2><p class="section-page-lead">Раздел подготовлен для переноса вашего приложения Bitrix24 в общий визуальный язык дашборда. Сначала нужны правила расчёта показателей и источники данных.</p><div class="integration-state">Ожидаются данные по маркетингу</div></div>`; }
+function renderCrmAuditPlaceholder(){ $("#crm-audit").innerHTML=`<div class="section-page"><h2>Аудит CRM</h2><p class="section-page-lead">Здесь будут два режима: ежедневный общий свод качества CRM и еженедельная детализация по сделкам с исходными ссылками. Отчёт останется read-only.</p><div class="integration-state">Подключаем контур аудита CRM</div></div>`; }
+
 function renderOverview(){
   const s=state.sales.overall.total.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
   $("#overview").innerHTML=`
   <div class="overview-layout">
     <div class="overview-primary">
-      ${deptHero({kind:'sales',title:'Продажи',eyebrow:'ОТДЕЛ ПРОДАЖ',value:s.sales_amount,valueType:'money',scope:'sales',metric:'sales_amount',extra:{period_type:'total'},substats:[{label:'Продажи',value:s.sales},{label:'Сделки',value:s.deals},{label:'Средний чек',value:s.average_check,type:'money'}]})}
+      ${salesRevenueHero(s)}
       <div class="department-mini-row">
-        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Предоплата + успешная продажа</span><strong>${money(s.sales_amount)}</strong></div>
-        <div class="mini-metric clickable" ${drillAttrs('sales','net_revenue',{period_type:'total'})}><span>Чистая выручка</span><strong>${money(s.net_revenue)}</strong></div>
+        <div class="mini-metric"><span>Чистая выручка</span><strong>${money(s.sales_amount)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Валовая выручка Bitrix</span><strong>${money(s.gross_sales_amount||0)}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'total'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
       </div>
     </div>
@@ -137,7 +183,7 @@ function renderOverview(){
       <div class="section-accent-head"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><h3>Эксперты и результат</h3></div><button class="btn soft-action" data-open-team="expert">+ Эксперт</button></div>
       ${expertTable(true)}
     </div>
-  </div>`;
+  </div><div class="overview-tools"><button type="button" class="btn ghost" data-open-view="risks">Риски</button><button type="button" class="btn ghost" data-open-view="dynamics">Динамика</button><button type="button" class="btn ghost" data-open-view="forecast">Прогноз</button><button type="button" class="btn ghost" data-open-view="plans">Планы и настройки</button></div>`;
 }
 
 function salesPeriodSelector(){return ``}
@@ -603,14 +649,15 @@ function renderSales(){
     </div>
 
     <div class="rnp-overall-strip">
-      <div><span>Выручка месяца</span><strong>${money(x.sales_amount)}</strong></div>
+      <div><span>Чистая выручка месяца</span><strong>${money(x.sales_amount)}</strong></div>
       <div><span>Продажи месяца</span><strong>${fmt(x.sales)}</strong></div>
       <div><span>Средний чек</span><strong>${money(x.average_check)}</strong></div>
-      <div><span>Сделки создано</span><strong>${fmt(x.deals)}</strong><small>${money(x.deal_amount)}</small></div>
+      <div><span>Валовая выручка Bitrix</span><strong>${money(x.gross_sales_amount||0)}</strong><small>${fmt(x.deals)} сделок создано</small></div>
     </div>
 
+    <div class="sales-semantics-note"><strong>Чистая выручка:</strong> ${esc(cleanRevenueCaption())}. Разрезы по менеджерам, источникам и дням ниже пока показывают валовую сумму Bitrix: фактические подрядчики в источнике учитываются только агрегатом и не могут быть достоверно отнесены к конкретному менеджеру или источнику.</div>
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
-    <div class="sales-semantics-note"><strong>Важно:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и «Выручка» — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
+    <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и валовая выручка Bitrix — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>
@@ -621,6 +668,13 @@ function renderSales(){
     </section>
   `;
   $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
+}
+
+function renderExpertsDepartment(){
+  const production=$("#production").innerHTML;
+  const expertsView=$("#experts").innerHTML;
+  $("#department-experts").innerHTML=`<div class="combined-department"><div class="combined-department-section">${production}</div><div class="combined-department-section">${expertsView}</div></div>`;
+  $("#department-experts #openPlanProd")?.addEventListener("click",()=>openPlanDialog("production"));
 }
 function prodProductTable(){
   const rows=state.production.products.map(r=>{
@@ -808,8 +862,27 @@ function renderPlans(){renderPlanInline()}
 
 function renderAll(){
   if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);return}
-  renderOverview();renderSales();renderProduction();renderExperts();renderRisks();renderForecast();renderPlans();
+  renderOverview();renderSales();renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();openView(requestedView(),false);
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
+}
+
+const VIEW_TITLES={
+  hub:"Все разделы", overview:"Общий краткий свод", sales:"Продажи", "department-experts":"Эксперты",
+  "sales-calls":"Звонки продажи", "expert-calls":"Звонки эксперты", marketing:"Маркетинг", "crm-audit":"Аудит CRM",
+  risks:"Риски", dynamics:"Динамика", forecast:"Прогноз", plans:"Планы и настройки"
+};
+function requestedView(){const value=location.hash.slice(1);return VIEW_TITLES[value]?value:"hub"}
+function openView(view,updateHistory=true){
+  if(!$("#"+view))return;
+  $$(".view").forEach(item=>item.classList.toggle("active",item.id===view));
+  const isHub=view==="hub";
+  $("#sectionNav").classList.toggle("hidden",isHub);
+  $("#sectionNavTitle").textContent=VIEW_TITLES[view]||"";
+  if(view==="dynamics")renderDynamics();
+  if(view==="forecast")renderForecast();
+  if(view==="sales-calls")loadOperationsSection("sales-calls");
+  if(view==="crm-audit")loadOperationsSection("crm-audit");
+  if(updateHistory){history.pushState(null,"",view==="hub"?location.pathname:`#${view}`);window.scrollTo({top:0,behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 }
 
 function loadingView(month){
@@ -838,7 +911,7 @@ async function load(){
       const ageMin=Math.max(0,Math.round((Date.now()-cached.saved_at)/60000));
       $("#liveText").textContent=`ПОКАЗАН КЕШ БРАУЗЕРА${ageMin?` · ${ageMin} мин назад`:""} · обновляю Bitrix`;
     }else{
-      $("#overview").innerHTML=loadingView(month);
+      $("#hub").innerHTML=loadingView(month);
       $("#liveDot").className="";
       $("#liveText").textContent="СИНХРОНИЗАЦИЯ В ФОНЕ";
     }
@@ -871,7 +944,7 @@ async function load(){
     if(e.name==='AbortError')return;
     $("#liveDot").className="bad";
     $("#liveText").textContent=state?"ПОКАЗАН КЕШ · Bitrix временно недоступен":"НЕТ СВЯЗИ";
-    if(!state)$("#overview").innerHTML=`<div class="error">${esc(e.message)}</div>`;
+    if(!state)$("#hub").innerHTML=`<div class="error">${esc(e.message)}</div>`;
   }
 }
 
@@ -1037,8 +1110,9 @@ function fillMonths(){
 function init(){
   fillMonths();
   $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{const custom=$("#period").value==="custom";$("#customPeriod").classList.toggle("hidden",!custom);if(custom){const m=$("#month").value+"-01";if(!$("#customStart").value)$("#customStart").value=m;if(!$("#customEnd").value){const [y,mo]=$("#month").value.split('-').map(Number);$("#customEnd").value=new Date(y,mo,0).toISOString().slice(0,10)}}state=null;load()});$("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
-  $("#tabs").addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;$$('.tab').forEach(x=>x.classList.remove('active'));$$('.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.view).classList.add('active');if(b.dataset.view==='dynamics')renderDynamics();if(b.dataset.view==='forecast')renderForecast()});
+  window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
+    const view=e.target.closest('[data-open-view],[data-view]');if(view){openView(view.dataset.openView||view.dataset.view);return}
     const cb=e.target.closest('[data-comment-scope]');if(cb){e.stopPropagation();commentTarget={scope:cb.dataset.commentScope,metric:cb.dataset.commentMetric,title:cb.dataset.commentTitle};$('#commentTitle').textContent=commentTarget.title;$('#commentText').value=getComment(commentTarget.scope,commentTarget.metric);$('#commentDialog').showModal();return}
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}

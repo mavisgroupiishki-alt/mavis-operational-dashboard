@@ -24,3 +24,11 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: CLEAN_REVENUE_URL
+        sync: false
+      - key: CLEAN_REVENUE_TOKEN
+        sync: false
+      - key: JARVIS_OPERATIONS_URL
+        sync: false
+      - key: JARVIS_OPERATIONS_TOKEN
+        sync: false

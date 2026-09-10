@@ -2,15 +2,18 @@ import asyncio
 import hashlib
 import json
 import copy
+import math
 import secrets
 import time
+from calendar import monthrange
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
+import httpx
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,10 +38,103 @@ last_error = None
 sync_tasks = {}
 trend_cache = {}
 trend_cache_time = {}
+clean_revenue_cache = {}
+clean_revenue_cache_time = {}
+jarvis_operations_cache = {}
+jarvis_operations_cache_time = {}
 
 
 def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+def clean_revenue_period(month: str):
+    try:
+        year, number = (int(part) for part in month.split("-", 1))
+        return f"{year:04d}-{number:02d}-01", f"{year:04d}-{number:02d}-{monthrange(year, number)[1]:02d}"
+    except (TypeError, ValueError):
+        return "", ""
+
+
+async def load_clean_revenue(month: str):
+    """Fetch the single financial source of truth without exposing it to the browser."""
+    if not settings.clean_revenue_url or not settings.clean_revenue_token:
+        return {"status": "not_configured", "value": None}
+    target = urlparse(settings.clean_revenue_url)
+    if target.scheme != "https" or not target.netloc:
+        return {"status": "invalid_configuration", "value": None}
+    date_from, date_to = clean_revenue_period(month)
+    if not date_from:
+        return {"status": "invalid_period", "value": None}
+    cached = clean_revenue_cache.get(month)
+    if cached and time.monotonic() - clean_revenue_cache_time.get(month, 0) < 60:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as session:
+            response = await session.get(
+                settings.clean_revenue_url,
+                params={"date_from": date_from, "date_to": date_to},
+                headers={"Authorization": f"Bearer {settings.clean_revenue_token}", "Accept": "application/json"},
+            )
+        payload = response.json()
+        value = float(payload.get("cleanRevenue"))
+        if response.status_code != 200 or not payload.get("ok") or not math.isfinite(value):
+            raise ValueError("invalid clean revenue response")
+        result = {
+            "status": "online",
+            "value": round(value, 2),
+            "date_from": str(payload.get("dateFrom") or date_from),
+            "date_to": str(payload.get("dateTo") or date_to),
+            "generated_at": str(payload.get("generatedAt") or ""),
+        }
+        clean_revenue_cache[month] = result
+        clean_revenue_cache_time[month] = time.monotonic()
+        return result
+    except Exception:
+        previous = clean_revenue_cache.get(month)
+        if previous:
+            return {**previous, "status": "stale"}
+        return {"status": "unavailable", "value": None}
+
+
+async def load_jarvis_operations(resource: str):
+    """Proxy a bounded read-only Jarvis payload so its token never reaches the browser."""
+    allowed = {"sales-calls", "crm-audit"}
+    if resource not in allowed:
+        return {"ok": False, "status": "invalid_resource"}
+    if not settings.jarvis_operations_url or not settings.jarvis_operations_token:
+        return {"ok": False, "status": "not_configured"}
+    target = urlparse(settings.jarvis_operations_url)
+    if target.scheme != "https" or not target.netloc:
+        return {"ok": False, "status": "invalid_configuration"}
+    cached = jarvis_operations_cache.get(resource)
+    if cached and time.monotonic() - jarvis_operations_cache_time.get(resource, 0) < 60:
+        return cached
+    try:
+        url = settings.jarvis_operations_url.rstrip("/") + f"/api/integrations/operations/{resource}"
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as session:
+            async with session.stream(
+                "GET", url, headers={"Authorization": f"Bearer {settings.jarvis_operations_token}", "Accept": "application/json"}
+            ) as response:
+                if response.status_code != 200 or int(response.headers.get("Content-Length") or 0) > 2 * 1024 * 1024:
+                    raise ValueError("invalid Jarvis response")
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise ValueError("Jarvis response too large")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise ValueError("invalid Jarvis payload")
+        result = {"ok": True, "status": "online", "data": payload}
+        jarvis_operations_cache[resource] = result
+        jarvis_operations_cache_time[resource] = time.monotonic()
+        return result
+    except Exception:
+        previous = jarvis_operations_cache.get(resource)
+        if previous:
+            return {**previous, "status": "stale"}
+        return {"ok": False, "status": "unavailable"}
 
 
 def persistent_snapshot_key(month: str, period: str, custom_start: str = "", custom_end: str = ""):
@@ -151,6 +247,22 @@ def _apply_runtime(snap, details, month):
     for r in rows:
         for reason in r.get('stuck_reasons') or []:acc[reason]+=1
     p['dormant']['reasons']=[{'name':a,'count':b,'pct':round(b/len(rows)*100,1) if rows else 0} for a,b in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
+    return x
+
+
+async def operational_snapshot(snap, details, month):
+    x = _apply_runtime(snap, details, month)
+    clean = await load_clean_revenue(month)
+    x["clean_revenue"] = clean
+    value = clean.get("value")
+    metrics = ((x.get("sales") or {}).get("overall") or {}).get("total", {}).get("metrics")
+    if value is not None and isinstance(metrics, dict):
+        gross = float(metrics.get("sales_amount") or 0)
+        sales = float(metrics.get("sales") or 0)
+        metrics["gross_sales_amount"] = gross
+        metrics["sales_amount"] = value
+        metrics["net_revenue"] = value
+        metrics["average_check"] = round(value / sales, 2) if sales else 0.0
     return x
 
 
@@ -344,18 +456,28 @@ async def api_snapshot(
         stale=time.monotonic()-cache_time.get(key,0)>=ttl
         if stale:
             schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
-        return {**_apply_runtime(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+        return {**await operational_snapshot(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
     # Render memory is empty after restart/redeploy. Try durable Supabase snapshot
     # first and refresh Bitrix in background.
     if await warm_snapshot_from_storage(month,period,custom_start,custom_end):
         schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
-        return {**_apply_runtime(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
+        return {**await operational_snapshot(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
 
     schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
     return JSONResponse({
         "ok": False, "loading": True, "month_key": month, "period": period,
         "message": "Первичная синхронизация Bitrix выполняется в фоне"
     }, status_code=202)
+
+
+@app.get("/api/sales-calls")
+async def api_sales_calls():
+    return await load_jarvis_operations("sales-calls")
+
+
+@app.get("/api/crm-audit")
+async def api_crm_audit():
+    return await load_jarvis_operations("crm-audit")
 
 
 @app.get("/api/drilldown")

@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#eef4f8">
   <title>MAVIS · Операционный дашборд</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2.9.3">
+  <link rel="stylesheet" href="/static/styles.css?v=3.0.0">
 </head>
 <body>
+<a class="skip-link" href="#mainContent">К содержимому</a>
 <div class="app-shell">
   <header class="topbar">
     <div class="brand"><div class="eyebrow">MAVIS GROUP · LIVE</div><h1>Операционный дашборд</h1></div>
@@ -17,26 +18,26 @@
       <div id="customPeriod" class="custom-period hidden"><label class="compact">С<input id="customStart" type="date"></label><label class="compact">По<input id="customEnd" type="date"></label></div>
       <button id="refreshBtn" class="btn ghost">Обновить</button>
       <button id="tvBtn" class="btn ghost">TV</button>
-      <div class="live"><span id="liveDot"></span><span id="liveText">Загрузка…</span></div>
+      <div class="live" aria-live="polite"><span id="liveDot"></span><span id="liveText">Загрузка…</span></div>
     </div>
   </header>
 
-  <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="overview">Общий экран</button>
-    <button class="tab" data-view="sales">Продажи</button>
-    <button class="tab" data-view="production">Производство</button>
-    <button class="tab" data-view="experts">Эксперты</button>
-    <button class="tab" data-view="risks">Зависшие / риски</button>
-    <button class="tab" data-view="dynamics">Динамика</button>
-    <button class="tab" data-view="forecast">Прогноз месяца</button>
-    <button class="tab" data-view="plans">Планы / настройки</button>
+  <nav class="section-nav hidden" id="sectionNav" aria-label="Навигация по разделам">
+    <button class="section-nav-home" data-view="hub">Все разделы</button>
+    <span id="sectionNavTitle" class="section-nav-title"></span>
   </nav>
 
-  <main>
-    <section id="overview" class="view active"></section>
+  <main id="mainContent">
+    <section id="hub" class="view active"></section>
+    <section id="overview" class="view"></section>
     <section id="sales" class="view"></section>
     <section id="production" class="view"></section>
     <section id="experts" class="view"></section>
+    <section id="department-experts" class="view"></section>
+    <section id="sales-calls" class="view"></section>
+    <section id="expert-calls" class="view"></section>
+    <section id="marketing" class="view"></section>
+    <section id="crm-audit" class="view"></section>
     <section id="risks" class="view"></section>
     <section id="dynamics" class="view"></section>
     <section id="forecast" class="view"></section>

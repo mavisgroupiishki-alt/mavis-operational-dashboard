@@ -17,6 +17,10 @@ class Settings:
     demo_mode: bool = os.getenv("DEMO_MODE","false").lower() in {"1","true","yes","y"}
     supabase_url: str = os.getenv("SUPABASE_URL","").strip()
     supabase_key: str = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY","")).strip()
+    clean_revenue_url: str = os.getenv("CLEAN_REVENUE_URL", "").strip()
+    clean_revenue_token: str = os.getenv("CLEAN_REVENUE_TOKEN", "").strip()
+    jarvis_operations_url: str = os.getenv("JARVIS_OPERATIONS_URL", "").strip()
+    jarvis_operations_token: str = os.getenv("JARVIS_OPERATIONS_TOKEN", "").strip()
 
 settings=Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
