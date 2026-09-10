@@ -70,7 +70,10 @@ async def load_clean_revenue(month: str):
     if cached and time.monotonic() - clean_revenue_cache_time.get(month, 0) < 60:
         return cached
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as session:
+        # The payment ledger reconciles stage history and contractor allocations.
+        # It is materially heavier than the regular KPI snapshot, but its result
+        # is cached below, so allow the first monthly calculation to finish.
+        async with httpx.AsyncClient(timeout=75.0, follow_redirects=False) as session:
             response = await session.get(
                 settings.clean_revenue_url,
                 params={"date_from": date_from, "date_to": date_to},
