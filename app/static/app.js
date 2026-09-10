@@ -10,7 +10,7 @@ let commentTarget=null;
 let teamTargetRole="expert";
 let npsTarget=null;
 let crmAuditData=null;
-const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v2:";
+const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v3:";
 function browserCacheKey(month,period){
   const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
   return `${BROWSER_CACHE_PREFIX}${month}|${period}|${custom}`;
@@ -117,20 +117,30 @@ function cleanRevenueCaption(){
   if(finance.status==="not_configured")return "Источник чистой выручки ещё не подключён";
   return "Чистая выручка временно недоступна";
 }
+function financeAmount(key){
+  const finance=state?.clean_revenue||{},value=Number(finance[key]);
+  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?money(value):"—";
+}
+function contractorCaption(){
+  const finance=state?.clean_revenue||{};
+  if(finance.status==="online")return "Учтено в чистой выручке";
+  if(finance.status==="stale")return "Последнее подтверждённое значение";
+  return cleanRevenueCaption();
+}
 function salesRevenueHero(s){
   const plan=getPlan("sales","sales_amount"),percent=plan?Number(s.sales_amount||0)/plan*100:0;
-  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">${esc(cleanRevenueCaption())}</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(s.sales_amount)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(s.average_check)}</strong></div></div></div>`;
+  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">ОБЩАЯ СУММА ПОСТУПЛЕНИЙ</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(s.sales_amount)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(s.average_check)}</strong></div></div></div>`;
 }
 function renderHub(){
   const s=state.sales.overall.total.metrics,p=state.production.kpi;
   $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда">
     <header class="operations-hero">
       <div class="operations-hero-copy"><div class="eyebrow">MAVIS GROUP · ОПЕРАЦИОННЫЙ ЦЕНТР</div><h2>Пульс бизнеса</h2><p>Главные результаты месяца и быстрый вход в рабочие контуры команды.</p></div>
-      <div class="operations-hero-stats"><div><span>Продажи</span><strong>${money(s.sales_amount)}</strong><small>${fmt(s.sales)} продаж</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Финансовая база</span><strong>Чистая выручка</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
+      <div class="operations-hero-stats"><div><span>Поступления</span><strong>${money(s.sales_amount)}</strong><small>${fmt(s.sales)} продаж</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
     </header>
     <div class="directory-heading"><div><div class="eyebrow">КОНТУРЫ УПРАВЛЕНИЯ</div><h3>Работа отделов</h3></div><p>Открывайте раздел — показатели, первичные данные и расшифровки остаются внутри одного контура.</p></div>
     <div class="department-directory-grid">
-      <button type="button" class="department-entry sales-entry" data-open-view="sales"><span class="entry-kicker">01 · Коммерция</span><strong>Продажи</strong><b>${money(s.sales_amount)}</b><small>${esc(cleanRevenueCaption())} · ${fmt(s.sales)} продаж</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry sales-entry" data-open-view="sales"><span class="entry-kicker">01 · Коммерция</span><strong>Продажи</strong><b>${money(s.sales_amount)}</b><small>Общая сумма поступлений · ${fmt(s.sales)} продаж</small><i>Открыть →</i></button>
       <button type="button" class="department-entry experts-entry" data-open-view="department-experts"><span class="entry-kicker">02 · Исполнение</span><strong>Эксперты</strong><b>${money(p.closed_amount)}</b><small>${fmt(p.closed_count)} закрыто · производство и эксперты</small><i>Открыть →</i></button>
       <button type="button" class="department-entry calls-entry" data-open-view="sales-calls"><span class="entry-kicker">03 · Контроль качества</span><strong>Звонки продаж</strong><b>Jarvis</b><small>Записи, расшифровки, оценка и рекомендации РОПу</small><i>Открыть →</i></button>
       <button type="button" class="department-entry overview-entry" data-open-view="overview"><span class="entry-kicker">04 · Руководителю</span><strong>Общий краткий свод</strong><b>${fmt(s.sales)} продаж</b><small>Продажи, производство, риски и оперативные сигналы</small><i>Открыть →</i></button>
@@ -179,8 +189,9 @@ function renderOverview(){
     <div class="overview-primary">
       ${salesRevenueHero(s)}
       <div class="department-mini-row">
-        <div class="mini-metric"><span>Чистая выручка</span><strong>${money(s.sales_amount)}</strong></div>
-        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Валовая выручка Bitrix</span><strong>${money(s.gross_sales_amount||0)}</strong></div>
+        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Общая сумма поступлений</span><strong>${money(s.sales_amount)}</strong></div>
+        <div class="mini-metric"><span>Чистая выручка</span><strong>${financeAmount("value")}</strong></div>
+        <div class="mini-metric"><span>Подрядчики</span><strong>${financeAmount("contractor_amount")}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'total'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
       </div>
     </div>
@@ -669,15 +680,16 @@ function renderSales(){
     </div>
 
     <div class="rnp-overall-strip">
-      <div><span>Чистая выручка месяца</span><strong>${money(x.sales_amount)}</strong></div>
+      <div><span>Общая сумма поступлений</span><strong>${money(x.sales_amount)}</strong></div>
+      <div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div>
+      <div><span>Подрядчики</span><strong>${financeAmount("contractor_amount")}</strong><small>${esc(contractorCaption())}</small></div>
       <div><span>Продажи месяца</span><strong>${fmt(x.sales)}</strong></div>
       <div><span>Средний чек</span><strong>${money(x.average_check)}</strong></div>
-      <div><span>Валовая выручка Bitrix</span><strong>${money(x.gross_sales_amount||0)}</strong><small>${fmt(x.deals)} сделок создано</small></div>
     </div>
 
-    <div class="sales-semantics-note"><strong>Чистая выручка:</strong> ${esc(cleanRevenueCaption())}. Разрезы по менеджерам, источникам и дням ниже пока показывают валовую сумму Bitrix: фактические подрядчики в источнике учитываются только агрегатом и не могут быть достоверно отнесены к конкретному менеджеру или источнику.</div>
+    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений берётся из продаж Bitrix. Чистая выручка и подрядчики — отдельные агрегаты из приложения «Чистая выручка»; подрядчики не распределяются по конкретному менеджеру или источнику.</div>
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
-    <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и валовая выручка Bitrix — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
+    <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>

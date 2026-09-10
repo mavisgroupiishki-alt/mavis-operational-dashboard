@@ -136,7 +136,7 @@ tr:hover td{background:#f5f9fc}
 .production .dept-ring{background:conic-gradient(var(--green) var(--ring),rgba(123,159,184,.18) 0)}
 .dept-ring:before{content:'';grid-area:1/1;width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,.94)}
 .dept-ring span{grid-area:1/1;position:relative;font-size:13px;font-weight:700}
-.department-mini-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.department-mini-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
 .mini-metric{background:rgba(255,255,255,.88);border:1px solid var(--line);border-radius:15px;padding:13px 15px;cursor:pointer;box-shadow:0 6px 18px rgba(43,65,84,.045)}
 .mini-metric:hover{border-color:#b8cad7}
 .mini-metric span{display:block;color:#758696;font-size:10px;margin-bottom:5px}

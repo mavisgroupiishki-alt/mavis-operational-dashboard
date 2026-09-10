@@ -95,11 +95,13 @@ async def load_clean_revenue(month: str):
         if not isinstance(payload, dict):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         value = float(payload.get("cleanRevenue"))
-        if not payload.get("ok") or not math.isfinite(value):
+        contractor_amount = float(payload.get("contractorAmount"))
+        if not payload.get("ok") or not math.isfinite(value) or not math.isfinite(contractor_amount):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         result = {
             "status": "online",
             "value": round(value, 2),
+            "contractor_amount": round(contractor_amount, 2),
             "date_from": str(payload.get("dateFrom") or date_from),
             "date_to": str(payload.get("dateTo") or date_to),
             "generated_at": str(payload.get("generatedAt") or ""),
@@ -282,17 +284,9 @@ def _apply_runtime(snap, details, month):
 
 async def operational_snapshot(snap, details, month):
     x = _apply_runtime(snap, details, month)
-    clean = await load_clean_revenue(month)
-    x["clean_revenue"] = clean
-    value = clean.get("value")
-    metrics = ((x.get("sales") or {}).get("overall") or {}).get("total", {}).get("metrics")
-    if value is not None and isinstance(metrics, dict):
-        gross = float(metrics.get("sales_amount") or 0)
-        sales = float(metrics.get("sales") or 0)
-        metrics["gross_sales_amount"] = gross
-        metrics["sales_amount"] = value
-        metrics["net_revenue"] = value
-        metrics["average_check"] = round(value / sales, 2) if sales else 0.0
+    # Sales KPIs remain the total incoming payments from Bitrix. Net revenue
+    # and contractor costs are displayed separately from the payment app.
+    x["clean_revenue"] = await load_clean_revenue(month)
     return x
 
 
