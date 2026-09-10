@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
-from .metrics import build_snapshot, build_trends_light, filter_prod_details, filter_sales_details
+from .metrics import build_snapshot, build_trends_light, filter_prod_details, filter_sales_details, month_bounds, parse_dt, production_weekly_dynamics, week_of_month
 from .demo import demo_snapshot
 from .settings import settings
 from .storage import Storage
@@ -232,12 +232,18 @@ def _apply_runtime(snap, details, month):
     selected=_dormant_stages(available)
     x['dormant_config']={'selected_stages':selected,'available_stages':available}
     prod_details=(details or {}).get('production') or {}
+    p=x.get('production',{});k=p.get('kpi',{})
+    # Old persisted snapshots predate the weekly production block. Rebuild it
+    # from their detail rows so a redeploy does not show an empty weekly view.
+    month_start=month_bounds(month,settings.timezone)[0]
+    for row in prod_details.get('closed') or []:
+        row.setdefault('close_week',week_of_month(parse_dt(row.get('close'),month_start.tzinfo),month_start))
+    p['weekly']=production_weekly_dynamics(list(prod_details.get('closed') or []),month_start)
     all_rows=list(prod_details.get('dormant') or [])
     # Управленческий показатель «Зависшие» считается только из карточек,
     # чья предполагаемая дата закрытия попадает в выбранный период.
     expected_rows=list(prod_details.get('dormant_expected') or [])
     rows=[r for r in expected_rows if not selected or r.get('stage') in selected]
-    p=x.get('production',{});k=p.get('kpi',{})
     k['dormant_all_count']=len(all_rows);k['dormant_all_amount']=round(sum(float(r.get('amount') or 0) for r in all_rows),2)
     k['dormant_count']=len(rows);k['dormant_amount']=round(sum(float(r.get('amount') or 0) for r in rows),2)
     k['dormant_expected_count']=len(rows)
@@ -519,7 +525,7 @@ async def drilldown(
     if scope == "sales":
         rows=filter_sales_details(details.get("sales",{}), metric, period_type, manager, group, source, product, week, stage, day)
     elif scope == "production":
-        rows=filter_prod_details(details.get("production",{}), metric, expert, product, stage, reason)
+        rows=filter_prod_details(details.get("production",{}), metric, expert, product, stage, reason, week, day)
         if metric.startswith('dormant') or metric=='dormant_count':
             selected=_dormant_stages((cache.get(key,{}) or {}).get('available_dormant_stages') or [])
             if selected:rows=[r for r in rows if r.get('stage') in selected]

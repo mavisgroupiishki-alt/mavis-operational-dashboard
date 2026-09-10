@@ -742,6 +742,43 @@ function expertTable(compact=false){
   return `<div class="scroll-x"><table><thead><tr><th>Эксперт</th><th class="num">Закрыто</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th>${compact?"":"<th class='num'>План BYN</th><th class='num'>% плана</th><th class='num'>NPS вручную</th><th class='num'>Активно</th><th class='num'>Возвраты</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function prodStages(){return `<table><thead><tr><th>Стадия</th><th class="num">Кол-во</th><th class="num">Сумма</th></tr></thead><tbody>${state.production.stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"production","active","num",{stage:r.name})}</td><td class="num">${tdLink(r.amount,"production","active","money",{stage:r.name})}</td></tr>`).join("")}</tbody></table>`}
+const PROD_WEEKLY_METRICS=[
+  ["closed_count","Закрыто продуктов","num"],
+  ["closed_amount","Сумма закрытых","money"],
+  ["avg_check","Средний чек","money"],
+  ["avg_production_days","Срок производства","days"],
+  ["within_norm_pct","В нормативе","pct"]
+];
+function prodWeekPlan(metric,weekIndex){
+  const plan=getPlan("production",metric);
+  if(!plan||!["closed_count","closed_amount"].includes(metric))return 0;
+  const week=rnpWeekRanges()[weekIndex];
+  return week?plan*week.workdays/rnpTotalWorkdays():0;
+}
+function prodDailyTable(week){
+  const data=state.production.weekly?.days||{};
+  const rows=[];
+  for(let day=week.start;day<=week.end;day++){
+    if(!PROD_WEEKLY_METRICS.some(([key])=>Number(data?.[key]?.[day-1]||0)!==0))continue;
+    rows.push(`<tr><td>${monthDateLabel(day)}</td>${PROD_WEEKLY_METRICS.map(([key,label,type])=>`<td class="num">${tdLink(data?.[key]?.[day-1]||0,"production",key,type,{week:week.index,day})}</td>`).join("")}</tr>`);
+  }
+  return `<div class="scroll-x"><table class="rnp-daily-table"><thead><tr><th>Дата</th>${PROD_WEEKLY_METRICS.map(([,label])=>`<th class="num">${esc(label)}</th>`).join("")}</tr></thead><tbody>${rows.join("")||`<tr><td colspan="${PROD_WEEKLY_METRICS.length+1}" class="empty-day">Нет закрытых продуктов</td></tr>`}</tbody></table></div>`;
+}
+function productionWeeklyDynamics(){
+  const weeks=state.production.weekly?.weeks||{},ranges=rnpWeekRanges();
+  return `<details class="rnp-subdetails production-weekly-dynamics">
+    <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
+    <div class="rnp-weeks">${ranges.map(week=>{
+      const amount=weeks.closed_amount?.[week.index]||0,count=weeks.closed_count?.[week.index]||0;
+      return `<details class="rnp-week"><summary><div><strong>${week.index+1} неделя</strong><span>${week.label}</span></div><div><b>${money(amount)}</b><span>${fmt(count)} закрыто</span></div></summary>
+        <div class="rnp-week-body"><div class="rnp-week-facts">${PROD_WEEKLY_METRICS.map(([key,label,type])=>{
+          const fact=weeks[key]?.[week.index]||0,plan=prodWeekPlan(key,week.index);
+          return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
+        }).join("")}</div>${prodDailyTable(week)}</div>
+      </details>`;
+    }).join("")}</div>
+  </details>`;
+}
 function renderProduction(){
   const npsMeta=overallManualNpsMeta();
   const p={...state.production.kpi,nps_avg:npsMeta.value};
@@ -749,6 +786,7 @@ function renderProduction(){
   <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,npsMeta.count)}</div>
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
+  ${productionWeeklyDynamics()}
   <div class="section-title">Поток выбранного периода</div>
   <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>

@@ -953,7 +953,7 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
         "category": product_category(str(service)), "expert": user_name(meta, d.get("ASSIGNED_BY_ID")),
         "stage": stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE_28" if role == "production" else "DEAL_STAGE_30"), "stage_id": d.get("STAGE_ID"), "amount": round(money(d), 2),
         "created": created.isoformat() if created else None, "modified": modified.isoformat() if modified else None,
-        "close": close.isoformat() if close else None, "prod_start": prod_start.isoformat() if prod_start else None,
+        "close": close.isoformat() if close else None, "close_week": week_of_month(close, month_start), "prod_start": prod_start.isoformat() if prod_start else None,
         "expected_close": expected.isoformat() if expected else None, "prod_days": prod_days, "full_cycle_days": full_days,
         "in_norm": in_norm, "deviation_days": round((prod_days or 0) - norm_days, 1) if prod_days is not None and norm_days else None,
         "nps": num(d.get(F_NPS)), "act": enum_label(meta, F_ACT, d.get(F_ACT)),
@@ -979,6 +979,38 @@ def aggregate_prod_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "nps_avg": 0,
         "act_share_pct": pct(len(acts), len(closed)),
     }
+
+
+def production_weekly_dynamics(closed: List[Dict[str, Any]], month_start: datetime) -> Dict[str, Dict[str, List[float]]]:
+    """Closed production results grouped into the five RNP work weeks."""
+    day_count = calendar.monthrange(month_start.year, month_start.month)[1]
+    keys = ["closed_count", "closed_amount", "avg_check", "avg_production_days", "within_norm_pct"]
+    weeks = {key: [0.0] * 5 for key in keys}
+    days_map = {key: [0.0] * day_count for key in keys}
+    week_rows = [[] for _ in range(5)]
+    day_rows = [[] for _ in range(day_count)]
+
+    for row in closed:
+        closed_at = parse_dt(row.get("close"), month_start.tzinfo)
+        if not closed_at or closed_at.year != month_start.year or closed_at.month != month_start.month:
+            continue
+        week = week_of_month(closed_at, month_start)
+        day = closed_at.day - 1
+        if week < 0 or day < 0:
+            continue
+        week_rows[week].append(row)
+        day_rows[day].append(row)
+
+    def fill(target: Dict[str, List[float]], index: int, rows: List[Dict[str, Any]]):
+        stats = aggregate_prod_rows(rows)
+        for key in keys:
+            target[key][index] = stats[key]
+
+    for index, rows in enumerate(week_rows):
+        fill(weeks, index, rows)
+    for index, rows in enumerate(day_rows):
+        fill(days_map, index, rows)
+    return {"weeks": weeks, "days": days_map}
 
 
 async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str, custom_start: str = "", custom_end: str = ""):
@@ -1049,6 +1081,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     closed_without_act = [r for r in closed if norm_text(r.get("act")) != "да"]
 
     closed_stats = aggregate_prod_rows(closed)
+    weekly = production_weekly_dynamics(closed, month_start)
     kpi = {
         **closed_stats,
         "closed_amount": closed_stats["closed_amount"], "closed_count": closed_stats["closed_count"],
@@ -1145,7 +1178,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "period_label": period_label,
         "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
-        "kpi": kpi, "products": products, "experts": experts, "stages": stages,
+        "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
         "dormant": {"reasons": reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
         "return_reasons": return_reasons,
         "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
@@ -1241,7 +1274,7 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
     return rows
 
 
-def filter_prod_details(details, metric, expert=None, product=None, stage=None, reason=None):
+def filter_prod_details(details, metric, expert=None, product=None, stage=None, reason=None, week=None, day=None):
     metric_map={
         "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
@@ -1257,6 +1290,11 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
     if stage: rows=[r for r in rows if r.get("stage")==stage]
     if reason:
         rows=[r for r in rows if reason in (r.get("stuck_reasons") or []) or r.get("return_reason")==reason]
+    if metric in {"closed_count", "closed_amount", "avg_check", "avg_production_days", "avg_deviation_days", "within_norm_pct"}:
+        if week is not None:
+            rows=[r for r in rows if r.get("close_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (closed_at:=parse_dt(r.get("close"))) and closed_at.day==int(day)]
     return rows
 
 
