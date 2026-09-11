@@ -960,6 +960,9 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
     reasons = list(dict.fromkeys(reasons))
     return {
         "kind": role, "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
+        # Для переходов между воронками история хранит только исходную
+        # воронку. Текущая нужна, чтобы подтвердить целевую воронку сделки.
+        "funnel_id": str(d.get("CATEGORY_ID") or ""),
         "service": str(service), "norm_name": norm_name, "complexity": (norm_spec or {}).get("complexity"),
         "base_bonus": num((norm_spec or {}).get("base_bonus")), "norm_days": norm_days,
         "category": product_category(str(service)), "expert": user_name(meta, d.get("ASSIGNED_BY_ID")),
@@ -1065,23 +1068,19 @@ def direct_dormant_to_production_history(rows, production_stage_labels):
 
     Bitrix writes a TYPE_ID=5 record when a card is moved between funnels
     without opening the «Завершить сделку» dialog.  The record remains in the
-    source funnel's history, while STAGE_ID points to a stage in the target
-    funnel.  This is a real move to production and must be counted together
-    with the dialog result, but only once per deal.
+    source funnel's history. In this portal its STAGE_ID is also the source
+    stage, therefore the target funnel is confirmed after the deal card is
+    hydrated. This function deliberately returns candidates only.
     """
-    production_stage_ids = {str(stage_id) for stage_id in production_stage_labels}
     direct = []
     for row in rows:
         if str(row.get("TYPE_ID") or "") != "5":
             continue
         if str(row.get("CATEGORY_ID") or "") != str(DORMANT_CATEGORY):
             continue
-        stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
-        if stage_id not in production_stage_ids:
-            continue
         direct.append({
             "id": str(row.get("OWNER_ID") or ""),
-            "stage": production_stage_labels.get(stage_id) or "Производство",
+            "stage": "Прямой перенос",
             "history": row,
         })
     return direct
@@ -1183,9 +1182,8 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
     completed_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
     direct_to_production_history = direct_dormant_to_production_history(completed_dormant_flow_raw, production_stage_labels)
-    dormant_to_production_history = unique_history_rows_by_owner(
-        completed_to_production_history + direct_to_production_history
-    )
+    completed_to_production_history = unique_history_rows_by_owner(completed_to_production_history)
+    direct_to_production_history = unique_history_rows_by_owner(direct_to_production_history)
 
     async def hydrate_completion_rows(history_rows):
         ids = history_owner_ids(history_rows)
@@ -1205,11 +1203,17 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
             out.append(row)
         return out
 
-    returned, dormant_to_production, dormant_to_return = await asyncio.gather(
+    returned, completed_to_production, direct_to_production, dormant_to_return = await asyncio.gather(
         hydrate_completion_rows(returned_history),
-        hydrate_completion_rows(dormant_to_production_history),
+        hydrate_completion_rows(completed_to_production_history),
+        hydrate_completion_rows(direct_to_production_history),
         hydrate_completion_rows(dormant_to_return_history),
     )
+    # TYPE_ID=5 only says that a transfer happened out of «Зависших». Its
+    # target is verified from the hydrated current card, so moves to another
+    # funnel are not accidentally counted as production.
+    direct_to_production = [row for row in direct_to_production if row.get("funnel_id") == str(PROD_CATEGORY)]
+    dormant_to_production = unique_history_rows_by_owner(completed_to_production + direct_to_production)
 
     closed_ids = {r["id"] for r in closed}
     new_ids = {r["id"] for r in new}

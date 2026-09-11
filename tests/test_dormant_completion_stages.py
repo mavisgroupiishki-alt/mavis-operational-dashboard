@@ -46,15 +46,17 @@ class DormantCompletionStageTests(unittest.TestCase):
 
     def test_counts_direct_move_from_dormant_to_production(self):
         rows = [
-            {"OWNER_ID": "25238", "CATEGORY_ID": 30, "TYPE_ID": 5, "STAGE_ID": "C28:NEW"},
-            {"OWNER_ID": "25239", "CATEGORY_ID": 30, "TYPE_ID": 5, "STAGE_ID": "C20:NEW"},
+            # Bitrix keeps the source stage in stage history for a funnel
+            # transfer, so the target production stage is not available here.
+            {"OWNER_ID": "25238", "CATEGORY_ID": 30, "TYPE_ID": 5, "STAGE_ID": "C30:NEW"},
+            {"OWNER_ID": "25239", "CATEGORY_ID": 20, "TYPE_ID": 5, "STAGE_ID": "C20:NEW"},
             {"OWNER_ID": "25240", "CATEGORY_ID": 30, "TYPE_ID": 3, "STAGE_ID": "C30:WON"},
         ]
 
         direct = direct_dormant_to_production_history(rows, {"C28:NEW": "Не распределенные"})
 
         self.assertEqual([row["id"] for row in direct], ["25238"])
-        self.assertEqual(direct[0]["stage"], "Не распределенные")
+        self.assertEqual(direct[0]["stage"], "Прямой перенос")
 
     def test_all_dormant_reason_metric_opens_dormant_cards_not_production(self):
         details = {
