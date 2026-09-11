@@ -1,6 +1,6 @@
 import unittest
 
-from app.metrics import split_dormant_completions, split_dormant_completion_history
+from app.metrics import dormant_funnel_entries, split_dormant_completions, split_dormant_completion_history
 
 
 class DormantCompletionStageTests(unittest.TestCase):
@@ -28,6 +28,15 @@ class DormantCompletionStageTests(unittest.TestCase):
 
         self.assertEqual([row["id"] for row in to_production], ["101"])
         self.assertEqual([row["id"] for row in to_returns], ["102"])
+
+    def test_selects_only_funnel_entries_to_dormant(self):
+        history = [
+            {"OWNER_ID": "1", "CATEGORY_ID": 30, "TYPE_ID": 5},
+            {"OWNER_ID": "2", "CATEGORY_ID": 30, "TYPE_ID": 2},
+            {"OWNER_ID": "3", "CATEGORY_ID": 28, "TYPE_ID": 5},
+        ]
+
+        self.assertEqual([row["OWNER_ID"] for row in dormant_funnel_entries(history)], ["1"])
 
 
 if __name__ == "__main__":

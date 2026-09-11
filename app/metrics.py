@@ -1064,6 +1064,14 @@ def history_owner_ids(rows):
     return list(dict.fromkeys(str(row.get("OWNER_ID") or row.get("id") or "") for row in rows if row.get("OWNER_ID") or row.get("id")))
 
 
+def dormant_funnel_entries(rows):
+    """History events that moved a deal into the «Зависшие» funnel."""
+    return [
+        row for row in rows
+        if str(row.get("TYPE_ID") or "") == "5" and str(row.get("CATEGORY_ID") or "") == str(DORMANT_CATEGORY)
+    ]
+
+
 async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str, custom_start: str = "", custom_end: str = ""):
     month_start, next_start, _, _ = month_bounds(month_key, tz_name)
     range_start, range_end, period_label = period_bounds(month_key, period, tz_name, custom_start, custom_end)
@@ -1132,6 +1140,8 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
     dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
+    dormant_entry_ids = set(history_owner_ids(dormant_funnel_entries(completed_dormant_flow_raw)))
+    dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
     dormant_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
 
@@ -1289,6 +1299,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         },
         "_records": {"new":new,"closed":closed,"period_closed":period_closed,"active":active,"returns":returns,
                      "capacity":capacity,"dormant":dormant,"returned":returned,"dormant_to_production":dormant_to_production,"dormant_to_return":dormant_to_return,"overdue":overdue,
+                     "dormant_entered_since_month_start":dormant_entered_since_month_start,
                      "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue,
                      "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
                      "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
@@ -1384,7 +1395,7 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
         "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
         "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
-        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
         "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
         "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
         "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"
