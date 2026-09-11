@@ -11,6 +11,9 @@ let teamTargetRole="expert";
 let npsTarget=null;
 let crmAuditData=null;
 const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v3:";
+const OPERATION_CACHE_TTL=5*60*1000;
+const operationsCache=new Map();
+const operationsRequests=new Map();
 function browserCacheKey(month,period){
   const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
   return `${BROWSER_CACHE_PREFIX}${month}|${period}|${custom}`;
@@ -168,19 +171,50 @@ const CRM_AUDIT_METRICS=[["activeDeals","Активные сделки"],["missi
 function auditDate(value){const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?date.toLocaleString("ru-RU",{dateStyle:"medium",timeStyle:"short"}):"нет успешного среза"}
 function renderCrmAuditRows(){const target=$("#crmAuditRows");if(!target||!crmAuditData)return;const issue=$("#crmAuditIssue")?.value||"",priority=$("#crmAuditPriority")?.value||"",funnel=$("#crmAuditFunnel")?.value||"",rows=(crmAuditData.details||[]).filter(row=>(!issue||row.issue===issue)&&(!priority||row.priority===priority)&&(!funnel||row.funnel===funnel));$("#crmAuditCount").textContent=`${fmt(rows.length)} из ${fmt((crmAuditData.details||[]).length)} строк`;target.innerHTML=rows.length?rows.map(row=>`<tr><td>${esc(row.observedOn||"—")}</td><td>${esc(row.issue||"—")}</td><td><span class="audit-priority ${attr(String(row.priority||"").toLowerCase())}">${esc(row.priority||"—")}</span></td><td>${esc(row.funnel||"—")}</td><td>${esc(row.entityType||"—")}</td><td>${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noopener noreferrer">${esc(row.entityId||"—")}</a>`:esc(row.entityId||"—")}</td></tr>`).join(""):'<tr><td colspan="6" class="empty">По выбранным фильтрам карточек нет</td></tr>'}
 function renderCrmAudit(data){crmAuditData=data||{};const summary=crmAuditData.summary||{},funnels=crmAuditData.funnelBreakdown||[],details=crmAuditData.details||[],values=(key)=>[...new Set(details.map(item=>String(item[key]||"")).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ru")),options=(items,label)=>`<option value="">${esc(label)}</option>${items.map(item=>`<option value="${attr(item)}">${esc(item)}</option>`).join("")}`;$("#crm-audit").innerHTML=`<section class="audit-workspace"><header class="audit-head"><div><h2>Аудит CRM</h2><p>Ежедневная проверка всех воронок и открытых лидов. Одна строка — одна причина для разбора карточки.</p></div><div class="audit-freshness">Последний срез<strong>${esc(auditDate(crmAuditData.generatedAt))}</strong></div></header><div class="audit-summary-grid">${CRM_AUDIT_METRICS.map(([key,label])=>`<div class="audit-metric"><span>${esc(label)}</span><strong>${fmt(summary[key])}</strong></div>`).join("")}</div><div class="audit-split"><section class="audit-funnels"><h3>Активные сделки по воронкам</h3><div class="audit-funnel-list">${funnels.map(item=>`<div><span>${esc(item.name||"Не указана")}</span><strong>${fmt(item.activeDeals)}</strong></div>`).join("")||'<div class="empty">Нет данных по воронкам</div>'}</div></section><section class="audit-table-panel"><div class="audit-table-head"><div><h3>Карточки для проверки</h3><span id="crmAuditCount" class="muted"></span></div><div class="audit-filters"><select id="crmAuditIssue" data-audit-filter="issue">${options(values("issue"),"Все проблемы")}</select><select id="crmAuditPriority" data-audit-filter="priority">${options(values("priority"),"Все приоритеты")}</select><select id="crmAuditFunnel" data-audit-filter="funnel">${options(values("funnel"),"Все воронки")}</select></div></div><div class="scroll-x"><table><thead><tr><th>Дата среза</th><th>Проблема</th><th>Приоритет</th><th>Воронка</th><th>Тип</th><th>ID</th></tr></thead><tbody id="crmAuditRows"></tbody></table></div></section></div></section>`;renderCrmAuditRows()}
+function operationsMonth(){return state?.month_key||$("#month")?.value||""}
+function operationsCacheKey(resource){return `${resource}:${resource==="marketing"?operationsMonth():"current"}`}
+function operationsEndpoint(resource){return resource==="sales-calls"?"/api/sales-calls":resource==="marketing"?`/api/marketing?month=${encodeURIComponent(operationsMonth())}`:"/api/crm-audit"}
+function renderOperationsData(resource,data){if(resource==="sales-calls")renderSalesCalls(data);else if(resource==="marketing")renderMarketing(data);else renderCrmAudit(data)}
+function renderOperationsShell(resource){
+  const target=resource==="sales-calls"?$("#sales-calls"):resource==="marketing"?$("#marketing"):$("#crm-audit");
+  if(!target)return;
+  const title=resource==="marketing"?"Маркетинг":"Аудит CRM";
+  const description=resource==="marketing"?"Лиды, источники, конверсия и экономика кампаний.":"Ежедневный контроль воронок и карточек сделок.";
+  target.innerHTML=`<section class="operations-shell"><div><h2>${title}</h2><p>${description}</p></div><span class="operations-refresh" role="status">Обновляю данные в фоне</span></section>`;
+}
+function cachedOperations(resource){
+  const cached=operationsCache.get(operationsCacheKey(resource));
+  return cached&&Date.now()-cached.savedAt<OPERATION_CACHE_TTL?cached.data:null;
+}
+function requestOperations(resource,force=false){
+  const key=operationsCacheKey(resource),cached=operationsCache.get(key);
+  if(!force&&cached&&Date.now()-cached.savedAt<OPERATION_CACHE_TTL)return Promise.resolve(cached.data);
+  if(operationsRequests.has(key))return operationsRequests.get(key);
+  const request=fetch(operationsEndpoint(resource),{cache:"no-store"}).then(async response=>{
+    const payload=await response.json();
+    if(!response.ok||!payload.ok)throw new Error(payload.status||"unavailable");
+    operationsCache.set(key,{data:payload.data,savedAt:Date.now()});
+    return payload.data;
+  }).finally(()=>operationsRequests.delete(key));
+  operationsRequests.set(key,request);
+  return request;
+}
+function warmOperationsSections(){["marketing","crm-audit"].forEach(resource=>requestOperations(resource).catch(()=>{}))}
 async function loadOperationsSection(resource){
   const target=resource==="sales-calls"?$("#sales-calls"):resource==="marketing"?$("#marketing"):$("#crm-audit");
   if(!target)return;
-  target.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю данные</div><div class="muted">Получаю только read-only агрегаты из внутреннего источника.</div></div></div>`;
-  const endpoint=resource==="sales-calls"?"/api/sales-calls":resource==="marketing"?`/api/marketing?month=${encodeURIComponent(state?.month_key||$("#month")?.value||"")}`:"/api/crm-audit",title=resource==="sales-calls"?"Звонки продажи":resource==="marketing"?"Маркетинг":"Аудит CRM";
-  try{const response=await fetch(endpoint,{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok){target.innerHTML=`<div class="section-page"><h2>${title}</h2><p class="section-page-lead">${esc(integrationState(payload.status))}.</p></div>`;return}if(resource==="sales-calls")renderSalesCalls(payload.data);else if(resource==="marketing")renderMarketing(payload.data);else renderCrmAudit(payload.data)}catch(e){target.innerHTML=`<div class="error">Источник временно недоступен. Повтори загрузку через несколько секунд.</div>`}}
+  const key=operationsCacheKey(resource);
+  const cached=cachedOperations(resource);
+  if(cached)renderOperationsData(resource,cached);else renderOperationsShell(resource);
+  try{const data=await requestOperations(resource);if(target.classList.contains("active")&&key===operationsCacheKey(resource))renderOperationsData(resource,data)}catch(e){if(!cached&&target.classList.contains("active")&&key===operationsCacheKey(resource)){const title=resource==="sales-calls"?"Звонки продажи":resource==="marketing"?"Маркетинг":"Аудит CRM";target.innerHTML=`<div class="section-page"><h2>${title}</h2><p class="section-page-lead">${esc(integrationState(e.message))}.</p></div>`}}
+}
 function marketingMetric(label,value,type="num"){return `<div class="marketing-metric"><span>${esc(label)}</span><strong>${format(value,type)}</strong></div>`}
 function renderMarketing(data){
   const m=data||{},summary=m.summary||{},segments=m.segments||[],sources=m.sources||[],funnel=m.funnel||[],marketingUrl="https://mavisgroup.bitrix24.by/marketplace/app/122/",sourceRows=sources.map(row=>{const x=row.metrics||{},conversion=x.targetLeads?x.sales/x.targetLeads:0,check=x.sales?x.salesAmount/x.sales:0;return `<tr><td>${esc(row.label||"—")}</td><td>${esc(row.bucket==="existing"?"Действующие":"Новые")}</td><td class="num">${fmt(x.leads)}</td><td class="num">${fmt(x.targetLeads)}</td><td class="num">${fmt(x.sales)}</td><td class="num">${money(x.salesAmount)}</td><td class="num">${pct(conversion*100)}</td><td class="num">${money(check)}</td></tr>`}).join("");
   $("#marketing").innerHTML=`<section class="marketing-workspace"><header class="marketing-head"><div><div class="eyebrow">BITRIX24 · МАРКЕТИНГ</div><h2>Маркетинг</h2><p>Фактические данные пересчитываются по правилам вашего приложения v7: лиды и сделки выбранного месяца, продажи по успешной стадии и дате перехода.</p></div><div class="marketing-head-actions"><div class="audit-freshness">Срез<strong>${esc(auditDate(m.generatedAt))}</strong></div><a class="btn ghost" href="${attr(marketingUrl)}" target="_blank" rel="noopener noreferrer">Планы в Bitrix24</a></div></header><section class="marketing-summary">${marketingMetric("Лиды",summary.leads)}${marketingMetric("Квал. лиды",summary.targetLeads)}${marketingMetric("Продажи",summary.sales)}${marketingMetric("Выручка",summary.salesAmount,"money")}${marketingMetric("Конверсия квал. лид → продажа",(summary.conversion||0)*100,"pct")}${marketingMetric("Средний чек",summary.averageCheck,"money")}</section><div class="marketing-segments">${segments.map(segment=>{const x=segment.metrics||{};return `<article><div class="eyebrow">${esc(segment.label)}</div><div class="segment-revenue">${money(x.salesAmount)}</div><div class="segment-stats"><span>${fmt(x.leads)} лидов</span><span>${fmt(x.targetLeads)} квал.</span><span>${fmt(x.sales)} продаж</span></div></article>`}).join("")}</div><div class="marketing-data-grid"><section class="marketing-funnel"><div class="panel-head"><div class="panel-title">Текущее состояние воронки</div><div class="muted">Сделки, созданные в месяце</div></div><div class="marketing-funnel-list">${funnel.map(item=>`<div><span>${esc(item.label)}</span><strong>${fmt(item.value)}</strong></div>`).join("")}</div></section><section class="marketing-source-panel"><div class="panel-head"><div class="panel-title">Источники и результат</div><div class="muted">Только распознанные каналы</div></div><div class="scroll-x"><table><thead><tr><th>Источник</th><th>Сегмент</th><th class="num">Лиды</th><th class="num">Квал.</th><th class="num">Продажи</th><th class="num">Выручка</th><th class="num">Конверсия</th><th class="num">Средний чек</th></tr></thead><tbody>${sourceRows||'<tr><td colspan="8" class="empty">За выбранный месяц нет распознанных источников</td></tr>'}</tbody></table></div></section></div></section>`;
 }
-function renderMarketingPlaceholder(){ $("#marketing").innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Загружаю маркетинг</div><div class="muted">Получаю фактические данные и источники из Bitrix24.</div></div></div>`; }
-function renderCrmAuditPlaceholder(){ $("#crm-audit").innerHTML=`<div class="section-page"><h2>Аудит CRM</h2><p class="section-page-lead">Здесь будут два режима: ежедневный общий свод качества CRM и еженедельная детализация по сделкам с исходными ссылками. Отчёт останется read-only.</p><div class="integration-state">Подключаем контур аудита CRM</div></div>`; }
+function renderMarketingPlaceholder(){const cached=cachedOperations("marketing");if(cached)renderMarketing(cached);else renderOperationsShell("marketing")}
+function renderCrmAuditPlaceholder(){const cached=cachedOperations("crm-audit");if(cached)renderCrmAudit(cached);else renderOperationsShell("crm-audit")}
 
 function renderOverview(){
   const s=state.sales.overall.total.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
@@ -932,7 +966,7 @@ function renderPlans(){renderPlanInline()}
 
 function renderAll(){
   if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);return}
-  renderOverview();renderSales();renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();openView(requestedView(),false);
+  renderOverview();renderSales();renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();warmOperationsSections();openView(requestedView(),false);
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
 }
 
