@@ -1,3 +1,4 @@
+import re
 import unittest
 
 from fastapi.testclient import TestClient
@@ -27,7 +28,14 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('"display": "standalone"', manifest.text)
         self.assertEqual(worker.status_code, 200)
         self.assertEqual(worker.headers["service-worker-allowed"], "/")
-        self.assertIn("mavis-operational-v3.1.3", worker.text)
+        script_version = re.search(r'/static/app\.js\?v=([\d.]+)', home.text)
+        style_version = re.search(r'/static/styles\.css\?v=([\d.]+)', home.text)
+        self.assertIsNotNone(script_version)
+        self.assertIsNotNone(style_version)
+        self.assertEqual(script_version.group(1), style_version.group(1))
+        self.assertIn(f"mavis-operational-v{script_version.group(1)}", worker.text)
+        self.assertIn(f"/static/app.js?v={script_version.group(1)}", worker.text)
+        self.assertIn(f"/static/styles.css?v={style_version.group(1)}", worker.text)
 
 
 if __name__ == "__main__":

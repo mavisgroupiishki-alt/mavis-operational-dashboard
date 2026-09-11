@@ -1421,6 +1421,8 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
     if stage:
         rows=[r for r in active if common(r) and r.get("stage")==stage]
         return rows
+    if metric == "active_deals":
+        return [r for r in active if common(r)]
     lead_rows=[r for r in leads if common(r) and (period_type!="previous" and r.get("period_type")=="current")]
     current_deals=[r for r in deals if common(r) and r.get("period_type")=="current"]
     previous_deals=[r for r in deals if common(r) and r.get("period_type")=="previous"]

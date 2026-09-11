@@ -48,6 +48,7 @@ const SALES_LABELS={
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
+const SALES_DRILL_LABELS={active_deals:"Незакрытые сделки"};
 const PROD_LABELS={
   closed_count:["Закрыто продуктов","num"],closed_amount:["Сумма закрытых","money"],avg_check:["Средний чек","money"],
   new_count:["Пришло за период","num"],new_amount:["Сумма пришедших","money"],period_closed_count:["Закрыто из пришедших","num"],period_closed_amount:["Сумма закрытых из пришедших","money"],new_to_success_pct:["Конверсия периода","pct"],
@@ -344,6 +345,39 @@ function salesStructuredSection(title,subtitle,keys,weekDefs,kind){
 function salesStages(){
   const rows=state.sales.stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"sales","deals","num",{period_type:"total",stage:r.name})}</td><td class="num">${tdLink(r.amount,"sales","deal_amount","money",{period_type:"total",stage:r.name})}</td></tr>`).join("");
   return `<table><thead><tr><th>Стадия</th><th class="num">Сделок</th><th class="num">Сумма</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function salesActiveDealsCard(){
+  const count=Number(state.sales.active_deals_count||0);
+  return `<button type="button" class="sales-active-deals" ${drillAttrs("sales","active_deals",{period_type:"total"})}><span>Незакрытые сделки</span><strong>${fmt(count)}</strong><small>Активные сделки основной воронки на момент обновления · открыть список</small></button>`;
+}
+
+function allocatedManagerCleanRevenue(managerSales,totalSales){
+  const finance=state?.clean_revenue||{};
+  if(!["online","stale"].includes(finance.status))return null;
+  const cleanRevenue=Number(finance.value),sales=Number(managerSales||0),total=Number(totalSales||0);
+  if(!Number.isFinite(cleanRevenue)||total<=0)return null;
+  return cleanRevenue*sales/total;
+}
+
+function salesOperationalManagerTable(){
+  const overall=state.sales.overall.total.metrics;
+  const total=Number(overall.sales_amount||0);
+  const team=managers();
+  const rows=team.map(manager=>{
+    const metrics=manager.total.metrics;
+    const cleanRevenue=allocatedManagerCleanRevenue(metrics.sales_amount,total);
+    return `<tr><td>${esc(manager.name)}</td><td class="num">${tdLink(metrics.deals,"sales","deals","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales,"sales","sales","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales_amount,"sales","sales_amount","money",{period_type:"total",manager:manager.name})}</td><td class="num">${cleanRevenue===null?"—":money(cleanRevenue)}</td></tr>`;
+  }).join("");
+  const teamDeals=team.reduce((sum,manager)=>sum+Number(manager.total.metrics.deals||0),0);
+  const teamSales=team.reduce((sum,manager)=>sum+Number(manager.total.metrics.sales||0),0);
+  const teamAmount=team.reduce((sum,manager)=>sum+Number(manager.total.metrics.sales_amount||0),0);
+  const otherDeals=Math.max(0,Number(overall.deals||0)-teamDeals);
+  const otherSales=Math.max(0,Number(overall.sales||0)-teamSales);
+  const otherAmount=Math.max(0,total-teamAmount);
+  const otherCleanRevenue=allocatedManagerCleanRevenue(otherAmount,total);
+  const otherRow=(otherDeals||otherSales||otherAmount)?`<tr class="sales-manager-other"><td>Прочие / не назначены</td><td class="num">${fmt(otherDeals)}</td><td class="num">${fmt(otherSales)}</td><td class="num">${money(otherAmount)}</td><td class="num">${otherCleanRevenue===null?"—":money(otherCleanRevenue)}</td></tr>`:"";
+  return `<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Сумма продаж CRM</th><th class="num">Чистая выручка*</th></tr></thead><tbody>${rows||"<tr><td colspan='5'>Нет выбранных менеджеров</td></tr>"}${otherRow}</tbody></table></div>`;
 }
 
 
@@ -744,6 +778,12 @@ function renderSales(){
     <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «Чистая выручка». Суммы в разбивках по менеджерам, источникам, неделям и дням остаются CRM-расшифровкой: подрядчики не распределяются по конкретному менеджеру, источнику или дню.</div>
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
+
+    <section class="sales-operational-grid" aria-label="Оперативная работа отдела продаж">
+      ${salesActiveDealsCard()}
+      ${panel("Стадии продаж",`<div class="scroll-x">${salesStages()}</div>`,"актуально на момент обновления")}
+    </section>
+    ${panel("Менеджеры продаж",`${salesOperationalManagerTable()}<p class="sales-manager-note">* Чистая выручка распределена пропорционально сумме продаж CRM. Это расчётный показатель: подрядчики не привязаны к конкретному менеджеру в исходных данных. «Прочие / не назначены» — сделки менеджеров вне состава дашборда или без ответственного.</p>`,"продажи и расчётная чистая выручка")}
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>
@@ -1176,7 +1216,7 @@ async function openDrill(el){
   const params=new URLSearchParams({scope:d.scope,metric:d.metric,month:$("#month").value,period:$("#period").value,offset:'0',limit:'500'});
   if($("#period").value==="custom"){params.set("custom_start",$("#customStart").value);params.set("custom_end",$("#customEnd").value);}
   ["periodType","manager","group","source","product","expert","stage","reason","week","day"].forEach(k=>{if(d[k]!==undefined)params.set(k.replace(/[A-Z]/g,m=>'_'+m.toLowerCase()),d[k])});
-  const label=(d.scope==="sales"?SALES_LABELS[d.metric]?.[0]:PROD_LABELS[d.metric]?.[0])||d.metric;
+  const label=(d.scope==="sales"?(SALES_LABELS[d.metric]?.[0]||SALES_DRILL_LABELS[d.metric]):PROD_LABELS[d.metric]?.[0])||d.metric;
   $("#drillTitle").textContent=label;$("#drillSubtitle").textContent="Расшифровка из уже загруженного snapshot";$("#drillBody").innerHTML='<div class="loading">Загрузка…</div>';$("#drillDialog").showModal();
   try{
     $("#drillBody").innerHTML='<div class="loading">Готовлю расшифровку…</div>';
