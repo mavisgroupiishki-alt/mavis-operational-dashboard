@@ -1068,15 +1068,20 @@ def direct_dormant_to_production_history(rows, production_stage_labels):
 
     Bitrix writes a TYPE_ID=5 record when a card is moved between funnels
     without opening the «Завершить сделку» dialog.  The record remains in the
-    source funnel's history. In this portal its STAGE_ID is also the source
-    stage, therefore the target funnel is confirmed after the deal card is
-    hydrated. This function deliberately returns candidates only.
+    source funnel's history. In this portal the transfer can be indexed under
+    either the source or target funnel and its STAGE_ID remains the source
+    stage. The target funnel is confirmed after the deal card is hydrated.
+    This function deliberately returns candidates only.
     """
     direct = []
     for row in rows:
         if str(row.get("TYPE_ID") or "") != "5":
             continue
-        if str(row.get("CATEGORY_ID") or "") != str(DORMANT_CATEGORY):
+        category_id = str(row.get("CATEGORY_ID") or "")
+        stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
+        is_source_event = category_id == str(DORMANT_CATEGORY)
+        is_target_event = category_id == str(PROD_CATEGORY) and stage_id.startswith(f"C{DORMANT_CATEGORY}:")
+        if not (is_source_event or is_target_event):
             continue
         direct.append({
             "id": str(row.get("OWNER_ID") or ""),
@@ -1153,11 +1158,20 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "filter": {"CATEGORY_ID": DORMANT_CATEGORY, ">=CREATED_TIME": iso(month_start), "<CREATED_TIME": iso(dormant_flow_end)},
         "select": history_select,
     })
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw = await asyncio.gather(
-        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, production_at_start_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task
+    # Bitrix can file an inter-funnel transfer under the target funnel even
+    # though STAGE_ID still belongs to «Зависшие». Fetch that narrow second
+    # history stream so direct transfers such as #25238 are not lost.
+    dormant_to_production_target_history_task = client.list_all("crm.stagehistory.list", {
+        "entityTypeId": 2,
+        "order": {"CREATED_TIME": "ASC", "ID": "ASC"},
+        "filter": {"CATEGORY_ID": PROD_CATEGORY, ">=CREATED_TIME": iso(month_start), "<CREATED_TIME": iso(dormant_flow_end)},
+        "select": history_select,
+    })
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = await asyncio.gather(
+        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, production_at_start_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task, dormant_to_production_target_history_task
     )
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw = [
-        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw]
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = [
+        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw]
     ]
     # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
     # дата начала оказания услуг не заполнена — это именно fallback.
@@ -1181,7 +1195,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
     completed_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
-    direct_to_production_history = direct_dormant_to_production_history(completed_dormant_flow_raw, production_stage_labels)
+    direct_to_production_history = direct_dormant_to_production_history(
+        completed_dormant_flow_raw + dormant_to_production_target_history_raw,
+        production_stage_labels,
+    )
     completed_to_production_history = unique_history_rows_by_owner(completed_to_production_history)
     direct_to_production_history = unique_history_rows_by_owner(direct_to_production_history)
 
