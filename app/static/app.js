@@ -11,9 +11,11 @@ let teamTargetRole="expert";
 let npsTarget=null;
 let crmAuditData=null;
 const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v3:";
+const INSTALL_HINT_DISMISSED_KEY="mavis-dashboard-install-hint-dismissed:v1";
 const OPERATION_CACHE_TTL=5*60*1000;
 const operationsCache=new Map();
 const operationsRequests=new Map();
+let deferredInstallPrompt=null;
 function browserCacheKey(month,period){
   const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
   return `${BROWSER_CACHE_PREFIX}${month}|${period}|${custom}`;
@@ -124,6 +126,20 @@ function financeAmount(key){
   const finance=state?.clean_revenue||{},value=Number(finance[key]);
   return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?money(value):"—";
 }
+function financialIncomingAmount(fallback=0){
+  const finance=state?.clean_revenue||{},value=Number(finance.incoming_amount);
+  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?value:Number(fallback||0);
+}
+function financialSalesMetrics(s){
+  const incoming=financialIncomingAmount(s?.sales_amount),sales=Number(s?.sales||0);
+  return {incoming,averageCheck:sales?incoming/sales:0};
+}
+function incomingRevenueCaption(){
+  const finance=state?.clean_revenue||{};
+  if(finance.status==="online")return "Чистая выручка + подрядчики из «Графика платежей»";
+  if(finance.status==="stale")return "Последняя подтверждённая сумма: чистая выручка + подрядчики";
+  return "Сумма CRM до восстановления финансового источника";
+}
 function contractorCaption(){
   const finance=state?.clean_revenue||{};
   if(finance.status==="online")return "Учтено в чистой выручке";
@@ -131,19 +147,19 @@ function contractorCaption(){
   return cleanRevenueCaption();
 }
 function salesRevenueHero(s){
-  const plan=getPlan("sales","sales_amount"),percent=plan?Number(s.sales_amount||0)/plan*100:0;
-  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">ОБЩАЯ СУММА ПОСТУПЛЕНИЙ</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(s.sales_amount)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(s.average_check)}</strong></div></div></div>`;
+  const plan=getPlan("sales","sales_amount"),financial=financialSalesMetrics(s),percent=plan?financial.incoming/plan*100:0;
+  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">ОБЩАЯ СУММА ПОСТУПЛЕНИЙ</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(financial.incoming)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div></div></div>`;
 }
 function renderHub(){
-  const s=state.sales.overall.total.metrics,p=state.production.kpi;
+  const s=state.sales.overall.total.metrics,p=state.production.kpi,financial=financialSalesMetrics(s);
   $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда">
     <header class="operations-hero">
       <div class="operations-hero-copy"><div class="eyebrow">MAVIS GROUP · ОПЕРАЦИОННЫЙ ЦЕНТР</div><h2>Пульс бизнеса</h2><p>Главные результаты месяца и быстрый вход в рабочие контуры команды.</p></div>
-      <div class="operations-hero-stats"><div><span>Поступления</span><strong>${money(s.sales_amount)}</strong><small>${fmt(s.sales)} продаж</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
+      <div class="operations-hero-stats"><div><span>Поступления</span><strong>${money(financial.incoming)}</strong><small>${esc(incomingRevenueCaption())}</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
     </header>
     <div class="directory-heading"><div><div class="eyebrow">КОНТУРЫ УПРАВЛЕНИЯ</div><h3>Работа отделов</h3></div><p>Открывайте раздел — показатели, первичные данные и расшифровки остаются внутри одного контура.</p></div>
     <div class="department-directory-grid">
-      <button type="button" class="department-entry sales-entry" data-open-view="sales"><span class="entry-kicker">01 · Коммерция</span><strong>Продажи</strong><b>${money(s.sales_amount)}</b><small>Общая сумма поступлений · ${fmt(s.sales)} продаж</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry sales-entry" data-open-view="sales"><span class="entry-kicker">01 · Коммерция</span><strong>Продажи</strong><b>${money(financial.incoming)}</b><small>Общая сумма поступлений · ${fmt(s.sales)} продаж</small><i>Открыть →</i></button>
       <button type="button" class="department-entry experts-entry" data-open-view="department-experts"><span class="entry-kicker">02 · Исполнение</span><strong>Эксперты</strong><b>${money(p.closed_amount)}</b><small>${fmt(p.closed_count)} закрыто · производство и эксперты</small><i>Открыть →</i></button>
       <button type="button" class="department-entry calls-entry" data-open-view="sales-calls"><span class="entry-kicker">03 · Контроль качества</span><strong>Звонки продаж</strong><b>Jarvis</b><small>Записи, расшифровки, оценка и рекомендации РОПу</small><i>Открыть →</i></button>
       <button type="button" class="department-entry overview-entry" data-open-view="overview"><span class="entry-kicker">04 · Руководителю</span><strong>Общий краткий свод</strong><b>${fmt(s.sales)} продаж</b><small>Продажи, производство, риски и оперативные сигналы</small><i>Открыть →</i></button>
@@ -217,13 +233,13 @@ function renderMarketingPlaceholder(){const cached=cachedOperations("marketing")
 function renderCrmAuditPlaceholder(){const cached=cachedOperations("crm-audit");if(cached)renderCrmAudit(cached);else renderOperationsShell("crm-audit")}
 
 function renderOverview(){
-  const s=state.sales.overall.total.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value;
+  const s=state.sales.overall.total.metrics,p=state.production.kpi,npsMeta=overallManualNpsMeta(),nps=npsMeta.value,financial=financialSalesMetrics(s);
   $("#overview").innerHTML=`
   <div class="overview-layout">
     <div class="overview-primary">
       ${salesRevenueHero(s)}
       <div class="department-mini-row">
-        <div class="mini-metric clickable" ${drillAttrs('sales','sales_amount',{period_type:'total'})}><span>Общая сумма поступлений</span><strong>${money(s.sales_amount)}</strong></div>
+        <div class="mini-metric"><span>Общая сумма поступлений</span><strong>${money(financial.incoming)}</strong><small>${esc(incomingRevenueCaption())}</small></div>
         <div class="mini-metric"><span>Чистая выручка</span><strong>${financeAmount("value")}</strong></div>
         <div class="mini-metric"><span>Подрядчики</span><strong>${financeAmount("contractor_amount")}</strong></div>
         <div class="mini-metric clickable" ${drillAttrs('sales','sold_products',{period_type:'total'})}><span>Продано продуктов</span><strong>${fmt(s.sold_products)}</strong></div>
@@ -704,7 +720,7 @@ function rnpManagerMatrix(){
   }).join("");
 }
 function renderSales(){
-  const x=state.sales.overall.total.metrics;
+  const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
   $("#sales").innerHTML=`
@@ -714,14 +730,14 @@ function renderSales(){
     </div>
 
     <div class="rnp-overall-strip">
-      <div><span>Общая сумма поступлений</span><strong>${money(x.sales_amount)}</strong></div>
+      <div><span>Общая сумма поступлений</span><strong>${money(financial.incoming)}</strong><small>${esc(incomingRevenueCaption())}</small></div>
       <div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div>
       <div><span>Подрядчики</span><strong>${financeAmount("contractor_amount")}</strong><small>${esc(contractorCaption())}</small></div>
       <div><span>Продажи месяца</span><strong>${fmt(x.sales)}</strong></div>
-      <div><span>Средний чек</span><strong>${money(x.average_check)}</strong></div>
+      <div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div>
     </div>
 
-    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений берётся из продаж Bitrix. Чистая выручка и подрядчики — отдельные агрегаты из приложения «Чистая выручка»; подрядчики не распределяются по конкретному менеджеру или источнику.</div>
+    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «Чистая выручка». Суммы в разбивках по менеджерам, источникам, неделям и дням остаются CRM-расшифровкой: подрядчики не распределяются по конкретному менеджеру, источнику или дню.</div>
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
@@ -915,11 +931,11 @@ function forecastCard(title,fact,plan,type="money"){
 }
 function qualityCard(title,value,metric,note="") {return `<div class="quality-card clickable" ${drillAttrs("production",metric)}><div class="kpi-label">${esc(title)}</div><div class="quality-value">${fmt(value)}</div><div class="muted">${esc(note)}</div></div>`}
 function renderForecast(){
-  if(!state)return;const el=$("#forecast");const s=state.sales.overall.total.metrics,p=state.production.kpi;
+  if(!state)return;const el=$("#forecast");const s=state.sales.overall.total.metrics,p=state.production.kpi,financial=financialSalesMetrics(s);
   const currentMonth=new Date().toISOString().slice(0,7);const isCurrent=$("#month").value===currentMonth && $("#period").value==="month";
   el.innerHTML=`<div class="toolbar"><div><div class="eyebrow">ПРОГНОЗ МЕСЯЦА</div><div class="muted">Прогноз по темпу рабочих дней + контроль качества данных</div></div></div>
   ${!isCurrent?`<div class="criteria-box">Прогноз темпа корректнее смотреть для текущего месяца в режиме «Месяц». Сейчас показан ориентир на основе выбранного месяца.</div>`:""}
-  <div class="grid-2">${forecastCard("Выручка ОП",s.sales_amount,getPlan("sales","sales_amount"),"money")}${forecastCard("Сумма закрытых",p.closed_amount,getPlan("production","closed_amount"),"money")}${forecastCard("Продажи",s.sales,getPlan("sales","sales"),"num")}${forecastCard("Закрытые продукты",p.closed_count,getPlan("production","closed_count"),"num")}</div>
+  <div class="grid-2">${forecastCard("Поступления",financial.incoming,getPlan("sales","sales_amount"),"money")}${forecastCard("Сумма закрытых",p.closed_amount,getPlan("production","closed_amount"),"money")}${forecastCard("Продажи",s.sales,getPlan("sales","sales"),"num")}${forecastCard("Закрытые продукты",p.closed_count,getPlan("production","closed_count"),"num")}</div>
   <div class="section-title">Контроль качества данных</div>
   <div class="kpi-grid">${qualityCard("Активные без предполагаемой даты",p.active_missing_expected_count||0,"active_missing_expected_count","не попадают в ёмкость")}${qualityCard("Зависшие без причины",p.dormant_without_reason_count||0,"dormant_count","из ожидаемой даты выбранного периода")}${qualityCard("Активные без продукта",p.active_missing_service_count||0,"active_missing_service_count")}${qualityCard("Активные без эксперта",p.active_missing_expert_count||0,"active_missing_expert_count")}</div>`;
 }
@@ -1026,6 +1042,7 @@ async function load(){
     const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}${customQueryParams()}`,{cache:"no-store",signal:loadController.signal});
     if(r.status===401){location.href="/login";return}
     const j=await r.json();
+    const offlineSnapshot=r.headers.get("X-Mavis-Cache")==="offline";
 
     if(r.status===202 || j.loading){
       $("#liveDot").className="";
@@ -1040,7 +1057,10 @@ async function load(){
     state=j;
     saveBrowserSnapshot(j);
     renderAll();
-    if(j.syncing){
+    if(offlineSnapshot){
+      $("#liveDot").className="bad";
+      $("#liveText").textContent="ПОКАЗАНА ПОСЛЕДНЯЯ ВЕРСИЯ · НЕТ СЕТИ";
+    }else if(j.syncing){
       $("#liveText").textContent=j.cached_snapshot
         ?"ПОКАЗАН ПОСЛЕДНИЙ SNAPSHOT · обновляю Bitrix в фоне"
         :"BITRIX ONLINE · обновляю в фоне";
@@ -1212,8 +1232,41 @@ function fillMonths(){
   sel.value=cur;
 }
 
+function isIos(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
+function isStandalone(){return window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true}
+function setInstallHint({title,text,actionLabel,action}={}){
+  const hint=$("#installHint");if(!hint)return;
+  $("#installHintTitle").textContent=title||"Установите дашборд";
+  $("#installHintText").textContent=text||"";
+  const button=$("#installAction");button.textContent=actionLabel||"Установить";
+  button.onclick=action||null;
+  button.classList.toggle("hidden",!action);
+  hint.classList.remove("hidden");
+}
+function initializeInstallExperience(){
+  const hint=$("#installHint");
+  if(!hint||isStandalone())return;
+  $("#dismissInstallHint").addEventListener("click",()=>{try{localStorage.setItem(INSTALL_HINT_DISMISSED_KEY,"1")}catch(e){}hint.classList.add("hidden")});
+  window.addEventListener("beforeinstallprompt",event=>{
+    event.preventDefault();deferredInstallPrompt=event;
+    let dismissed=false;try{dismissed=localStorage.getItem(INSTALL_HINT_DISMISSED_KEY)==="1"}catch(e){}
+    if(!dismissed)setInstallHint({title:"Установите дашборд",text:"Откроется как отдельное приложение.",actionLabel:"Установить",action:async()=>{
+      if(!deferredInstallPrompt)return;
+      deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;hint.classList.add("hidden");
+    }});
+  });
+  let dismissed=false;try{dismissed=localStorage.getItem(INSTALL_HINT_DISMISSED_KEY)==="1"}catch(e){}
+  if(isIos()&&!dismissed)setInstallHint({title:"Добавьте на экран «Домой»",text:"В Safari: «Поделиться» → «На экран Домой».",actionLabel:"",action:null});
+}
+function registerServiceWorker(){
+  if(!("serviceWorker" in navigator)||!window.isSecureContext)return;
+  window.addEventListener("load",()=>navigator.serviceWorker.register("/service-worker.js").catch(()=>{}),{once:true});
+}
+
 function init(){
   fillMonths();
+  initializeInstallExperience();
+  registerServiceWorker();
   $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{const custom=$("#period").value==="custom";$("#customPeriod").classList.toggle("hidden",!custom);if(custom){const m=$("#month").value+"-01";if(!$("#customStart").value)$("#customStart").value=m;if(!$("#customEnd").value){const [y,mo]=$("#month").value.split('-').map(Number);$("#customEnd").value=new Date(y,mo,0).toISOString().slice(0,10)}}state=null;load()});$("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
   window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
@@ -1250,6 +1303,8 @@ function init(){
   $("#saveTrafficGroup").addEventListener('click',saveTrafficGroupDialog);
   $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
   const es=new EventSource('/events');es.addEventListener('update',()=>load());es.onerror=()=>{$("#liveDot").className='bad'};
+  window.addEventListener("offline",()=>{if(state){$("#liveDot").className="bad";$("#liveText").textContent="ПОКАЗАНА ПОСЛЕДНЯЯ ВЕРСИЯ · НЕТ СЕТИ"}});
+  window.addEventListener("online",()=>load());
   load();setInterval(load,120000);
 }
 init();
@@ -1262,7 +1317,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.0.1";
+    b.textContent="v3.1.0";
     top.appendChild(b);
   }
 });

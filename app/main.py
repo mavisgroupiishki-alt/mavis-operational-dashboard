@@ -103,6 +103,11 @@ async def load_clean_revenue(month: str):
             "status": "online",
             "value": round(value, 2),
             "contractor_amount": round(contractor_amount, 2),
+            # The confirmed incoming amount is deliberately derived from the
+            # same ledger values shown to the user: clean revenue already has
+            # the contractor reserve deducted, so adding it back reconciles
+            # the two financial cards exactly.
+            "incoming_amount": round(value + contractor_amount, 2),
             "date_from": str(payload.get("dateFrom") or date_from),
             "date_to": str(payload.get("dateTo") or date_to),
             "generated_at": str(payload.get("generatedAt") or ""),
@@ -209,7 +214,7 @@ def auth_hash():
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/health"} or path.startswith("/static/")
+    return path in {"/login", "/health", "/manifest.webmanifest", "/service-worker.js"} or path.startswith("/static/")
 
 def _default_dormant_stages(available):
     if not available:return []
@@ -285,9 +290,19 @@ def _apply_runtime(snap, details, month):
 
 async def operational_snapshot(snap, details, month):
     x = _apply_runtime(snap, details, month)
-    # Sales KPIs remain the total incoming payments from Bitrix. Net revenue
-    # and contractor costs are displayed separately from the payment app.
-    x["clean_revenue"] = await load_clean_revenue(month)
+    finance = await load_clean_revenue(month)
+    # Keep the dashboard-side contract safe for a cached/source response that
+    # predates incoming_amount. This is the financial total displayed as
+    # "Общая сумма поступлений": clean revenue + contractors.
+    if finance.get("status") in {"online", "stale"}:
+        try:
+            finance.setdefault(
+                "incoming_amount",
+                round(float(finance["value"]) + float(finance["contractor_amount"]), 2),
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    x["clean_revenue"] = finance
     return x
 
 
@@ -448,6 +463,24 @@ async def index():
             "Pragma": "no-cache",
             "Expires": "0",
         },
+    )
+
+
+@app.get("/manifest.webmanifest")
+async def manifest():
+    return FileResponse(
+        STATIC / "manifest.webmanifest",
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/service-worker.js")
+async def service_worker():
+    return FileResponse(
+        STATIC / "service-worker.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
     )
 
 

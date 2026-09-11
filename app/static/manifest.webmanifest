@@ -1,0 +1,14 @@
+{
+  "name": "MAVIS · Операционный дашборд",
+  "short_name": "MAVIS",
+  "description": "Операционный дашборд Mavis Group",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef4f8",
+  "theme_color": "#eef4f8",
+  "icons": [
+    {"src":"/static/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}

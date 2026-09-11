@@ -6,7 +6,7 @@ from app import main
 
 
 class CleanRevenuePresentationTests(unittest.TestCase):
-    def test_operational_snapshot_keeps_incoming_payments_separate_from_net_revenue(self):
+    def test_operational_snapshot_derives_confirmed_incoming_from_finance_ledger(self):
         snap = {
             "sales": {
                 "overall": {
@@ -22,7 +22,7 @@ class CleanRevenuePresentationTests(unittest.TestCase):
         metrics = result["sales"]["overall"]["total"]["metrics"]
         self.assertEqual(metrics["sales_amount"], 44640.0)
         self.assertEqual(metrics["average_check"], 3188.57)
-        self.assertEqual(result["clean_revenue"], finance)
+        self.assertEqual(result["clean_revenue"]["incoming_amount"], 44640.0)
 
 
 if __name__ == "__main__":

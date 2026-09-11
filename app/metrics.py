@@ -15,7 +15,7 @@ REFERENCE = json.loads((BASE_DIR / "reference_data.json").read_text(encoding="ut
 PROD_NORMS = REFERENCE.get("production_norms", {})
 SOURCE_MAP = REFERENCE.get("source_groups", {})
 
-SALES_CATEGORY_IDS = [0, 20]
+SALES_CATEGORY_IDS = [0]
 REANIMATION_CATEGORY_ID = 20
 PROD_CATEGORY = 28
 DORMANT_CATEGORY = 30
