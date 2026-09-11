@@ -95,6 +95,12 @@ def pct(a: float, b: float) -> float:
     return round(a / b * 100, 1) if b else 0.0
 
 
+def observed_period_end(range_end: datetime, now: datetime) -> datetime:
+    """Do not count future arrivals in a period that includes today."""
+    tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
+    return min(range_end, tomorrow)
+
+
 def parse_dt(v: Any, tz: Optional[ZoneInfo] = None) -> Optional[datetime]:
     if not v:
         return None
@@ -1018,18 +1024,20 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     range_start, range_end, period_label = period_bounds(month_key, period, tz_name, custom_start, custom_end)
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
+    arrival_end = observed_period_end(range_end, now)
 
     # "Пришло в производство" = дата начала оказания услуг / передачи в производство.
     # Для старых карточек, где это поле не заполнено, используем DATE_CREATE как fallback.
+    # Это фактический показатель: будущие даты текущего периода не учитываются.
     new_by_start_task = client.deal_list({
         "CATEGORY_ID": PROD_CATEGORY,
         f">={F_PROD_START}": iso(range_start),
-        f"<{F_PROD_START}": iso(range_end),
+        f"<{F_PROD_START}": iso(arrival_end),
     }, DEAL_SELECT)
     new_by_created_task = client.deal_list({
         "CATEGORY_ID": PROD_CATEGORY,
         ">=DATE_CREATE": iso(range_start),
-        "<DATE_CREATE": iso(range_end),
+        "<DATE_CREATE": iso(arrival_end),
     }, DEAL_SELECT)
     closed_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_WON, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     returns_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_RETURN, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
