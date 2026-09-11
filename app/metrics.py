@@ -23,8 +23,6 @@ DORMANT_CATEGORY = 30
 SALES_WON = "WON"
 PROD_WON = "C28:WON"
 PROD_RETURN = "C28:APOLOGY"
-DORMANT_TO_PROD = "C30:WON"
-DORMANT_RETURN = "C30:APOLOGY"
 
 F_SERVICE = "UF_CRM_1765113071"
 F_EXPECTED_CLOSE = "UF_CRM_1765875991647"
@@ -1020,6 +1018,22 @@ def production_weekly_dynamics(closed: List[Dict[str, Any]], month_start: dateti
     return {"weeks": weeks, "days": days_map}
 
 
+def split_dormant_completions(rows):
+    """Classify category-30 completions by the actual button/stage name.
+
+    Category-specific Bitrix stage IDs are portal configuration, so generic
+    WON/APOLOGY IDs cannot reliably mean "В производство" or "Возврат".
+    """
+    to_production, to_returns = [], []
+    for row in rows:
+        stage = norm_text(row.get("stage"))
+        if "в производство" in stage:
+            to_production.append(row)
+        elif "возврат" in stage and "потенциаль" not in stage:
+            to_returns.append(row)
+    return to_production, to_returns
+
+
 async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str, custom_start: str = "", custom_end: str = ""):
     month_start, next_start, _, _ = month_bounds(month_key, tz_name)
     range_start, range_end, period_label = period_bounds(month_key, period, tz_name, custom_start, custom_end)
@@ -1044,17 +1058,16 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     returns_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_RETURN, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     active_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
-    returned_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_TO_PROD, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
+    completed_dormant_period_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "Y", ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     # The "Зависшие" block always compares with the first day of the selected
     # month, independently of the report-period filter.
     dormant_flow_end = observed_period_end(next_start, now)
-    dormant_to_production_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_TO_PROD, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(dormant_flow_end)}, DEAL_SELECT)
-    dormant_to_return_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_RETURN, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(dormant_flow_end)}, DEAL_SELECT)
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw = await asyncio.gather(
-        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, dormant_task, returned_task, dormant_to_production_task, dormant_to_return_task
+    completed_dormant_flow_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "Y", ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(dormant_flow_end)}, DEAL_SELECT)
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw = await asyncio.gather(
+        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task
     )
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw = [
-        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw]
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw = [
+        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw]
     ]
     # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
     # дата начала оказания услуг не заполнена — это именно fallback.
@@ -1072,9 +1085,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     returns = convert(returns_raw)
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
-    returned = convert(returned_raw, role="dormant")
-    dormant_to_production = convert(dormant_to_production_raw, role="dormant")
-    dormant_to_return = convert(dormant_to_return_raw, role="dormant")
+    completed_dormant_period = convert(completed_dormant_period_raw, role="dormant")
+    completed_dormant_flow = convert(completed_dormant_flow_raw, role="dormant")
+    returned, _ = split_dormant_completions(completed_dormant_period)
+    dormant_to_production, dormant_to_return = split_dormant_completions(completed_dormant_flow)
 
     closed_ids = {r["id"] for r in closed}
     new_ids = {r["id"] for r in new}
