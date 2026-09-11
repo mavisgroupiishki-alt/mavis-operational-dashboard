@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon.svg">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=3.1.1">
+  <link rel="stylesheet" href="/static/styles.css?v=3.1.2">
 </head>
 <body>
 <a class="skip-link" href="#mainContent">К содержимому</a>
@@ -20,8 +20,16 @@
   <header class="topbar">
     <div class="brand"><div class="eyebrow">MAVIS GROUP · LIVE</div><h1>Операционный дашборд</h1></div>
     <div class="controls">
-      <label class="compact">Месяц<select id="month" aria-label="Месяц"></select></label>
-      <label class="compact">Период производства<select id="period"><option value="month">Месяц</option><option value="this_week">Текущая неделя</option><option value="last_week">Прошедшая неделя</option><option value="custom">Свой период</option></select></label>
+      <div class="period-filter" aria-label="Период производства">
+        <span class="period-filter-label">Период производства</span>
+        <div class="period-presets" role="group" aria-label="Быстрый выбор периода">
+          <button type="button" class="period-preset active" data-period-preset="current" aria-pressed="true">Текущий месяц</button>
+          <button type="button" class="period-preset" data-period-preset="previous" aria-pressed="false">Предыдущий месяц</button>
+          <button type="button" class="period-preset" data-period-preset="custom" aria-pressed="false">Выбрать даты</button>
+        </div>
+      </div>
+      <select id="month" aria-label="Месяц" hidden></select>
+      <select id="period" aria-label="Период производства" hidden><option value="month">Месяц</option><option value="custom">Свой период</option></select>
       <div id="customPeriod" class="custom-period hidden"><label class="compact">С<input id="customStart" type="date"></label><label class="compact">По<input id="customEnd" type="date"></label></div>
       <button id="refreshBtn" class="btn ghost">Обновить</button>
       <button id="tvBtn" class="btn ghost">TV</button>
@@ -108,7 +116,7 @@
   </div>
 </dialog>
 
-<script src="/static/app.js?v=3.1.2"></script>
+<script src="/static/app.js?v=3.1.3"></script>
 
 </body>
 </html>

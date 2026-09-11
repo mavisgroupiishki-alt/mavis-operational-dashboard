@@ -1007,10 +1007,45 @@ function openView(view,updateHistory=true){
 }
 
 function loadingView(month){
-  const label=$("#month").selectedOptions[0]?.textContent||month;
+  const label=periodDisplayLabel()||month;
   return `<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Синхронизирую ${esc(label)}</div><div class="muted">Интерфейс уже доступен. Первый расчёт Bitrix идёт в фоне; дальше данные будут открываться из кеша сразу.</div></div></div>`;
 }
 
+function monthKey(offset=0){
+  const d=new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth()+offset);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function periodDisplayLabel(){
+  const active=$("[data-period-preset].active");
+  return active?.textContent?.trim()||"";
+}
+function updatePeriodPresets(active){
+  $$('[data-period-preset]').forEach(button=>{
+    const selected=button.dataset.periodPreset===active;
+    button.classList.toggle('active',selected);
+    button.setAttribute('aria-pressed',String(selected));
+  });
+}
+function selectPeriodPreset(preset){
+  const isCustom=preset==='custom';
+  if(preset==='current')$("#month").value=monthKey();
+  if(preset==='previous')$("#month").value=monthKey(-1);
+  $("#period").value=isCustom?'custom':'month';
+  $("#customPeriod").classList.toggle("hidden",!isCustom);
+  if(isCustom){
+    const month=$("#month").value;
+    if(!$("#customStart").value)$("#customStart").value=`${month}-01`;
+    if(!$("#customEnd").value){
+      const [year,monthNumber]=month.split('-').map(Number);
+      $("#customEnd").value=new Date(year,monthNumber,0).toISOString().slice(0,10);
+    }
+  }
+  updatePeriodPresets(preset);
+  state=null;
+  load();
+}
 function customQueryParams(){
   if($("#period").value!=="custom")return "";
   const a=$("#customStart").value,b=$("#customEnd").value;
@@ -1268,7 +1303,8 @@ function init(){
   fillMonths();
   initializeInstallExperience();
   registerServiceWorker();
-  $("#month").addEventListener('change',()=>{state=null;load()});$("#period").addEventListener('change',()=>{const custom=$("#period").value==="custom";$("#customPeriod").classList.toggle("hidden",!custom);if(custom){const m=$("#month").value+"-01";if(!$("#customStart").value)$("#customStart").value=m;if(!$("#customEnd").value){const [y,mo]=$("#month").value.split('-').map(Number);$("#customEnd").value=new Date(y,mo,0).toISOString().slice(0,10)}}state=null;load()});$("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
+  $$('[data-period-preset]').forEach(button=>button.addEventListener('click',()=>selectPeriodPreset(button.dataset.periodPreset)));
+  $("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
   window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
     const view=e.target.closest('[data-open-view],[data-view]');if(view){openView(view.dataset.openView||view.dataset.view);return}

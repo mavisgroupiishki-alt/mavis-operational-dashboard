@@ -15,6 +15,11 @@ class PwaAssetTests(unittest.TestCase):
         worker = self.client.get("/service-worker.js")
 
         self.assertEqual(home.status_code, 200)
+        self.assertIn('data-period-preset="current"', home.text)
+        self.assertIn('data-period-preset="previous"', home.text)
+        self.assertIn('data-period-preset="custom"', home.text)
+        self.assertNotIn('value="this_week"', home.text)
+        self.assertNotIn('value="last_week"', home.text)
         self.assertIn('id="installIosSteps"', home.text)
         self.assertIn("На экран „Домой“", home.text)
         self.assertEqual(manifest.status_code, 200)
@@ -22,7 +27,7 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('"display": "standalone"', manifest.text)
         self.assertEqual(worker.status_code, 200)
         self.assertEqual(worker.headers["service-worker-allowed"], "/")
-        self.assertIn("mavis-operational-v3.1.2", worker.text)
+        self.assertIn("mavis-operational-v3.1.3", worker.text)
 
 
 if __name__ == "__main__":
