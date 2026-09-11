@@ -1060,6 +1060,43 @@ def split_dormant_completion_history(rows, stage_labels):
     )
 
 
+def direct_dormant_to_production_history(rows, production_stage_labels):
+    """Read direct funnel moves out of «Зависшие» into production.
+
+    Bitrix writes a TYPE_ID=5 record when a card is moved between funnels
+    without opening the «Завершить сделку» dialog.  The record remains in the
+    source funnel's history, while STAGE_ID points to a stage in the target
+    funnel.  This is a real move to production and must be counted together
+    with the dialog result, but only once per deal.
+    """
+    production_stage_ids = {str(stage_id) for stage_id in production_stage_labels}
+    direct = []
+    for row in rows:
+        if str(row.get("TYPE_ID") or "") != "5":
+            continue
+        if str(row.get("CATEGORY_ID") or "") != str(DORMANT_CATEGORY):
+            continue
+        stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
+        if stage_id not in production_stage_ids:
+            continue
+        direct.append({
+            "id": str(row.get("OWNER_ID") or ""),
+            "stage": production_stage_labels.get(stage_id) or "Производство",
+            "history": row,
+        })
+    return direct
+
+
+def unique_history_rows_by_owner(rows):
+    """Keep one transition per deal when Bitrix writes companion events."""
+    unique = {}
+    for row in rows:
+        owner_id = str(row.get("id") or row.get("OWNER_ID") or "")
+        if owner_id and owner_id not in unique:
+            unique[owner_id] = row
+    return list(unique.values())
+
+
 def history_owner_ids(rows):
     return list(dict.fromkeys(str(row.get("OWNER_ID") or row.get("id") or "") for row in rows if row.get("OWNER_ID") or row.get("id")))
 
@@ -1140,10 +1177,15 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
     dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
+    production_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_28", {})
     dormant_entry_ids = set(history_owner_ids(dormant_funnel_entries(completed_dormant_flow_raw)))
     dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
-    dormant_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
+    completed_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
+    direct_to_production_history = direct_dormant_to_production_history(completed_dormant_flow_raw, production_stage_labels)
+    dormant_to_production_history = unique_history_rows_by_owner(
+        completed_to_production_history + direct_to_production_history
+    )
 
     async def hydrate_completion_rows(history_rows):
         ids = history_owner_ids(history_rows)
@@ -1395,7 +1437,7 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
         "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
         "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
-        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","dormant_with_reason_count":"dormant_expected","dormant_all_with_reason_count":"dormant","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
         "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
         "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
         "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"

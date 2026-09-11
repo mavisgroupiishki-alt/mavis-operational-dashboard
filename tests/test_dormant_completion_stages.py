@@ -1,6 +1,12 @@
 import unittest
 
-from app.metrics import dormant_funnel_entries, split_dormant_completions, split_dormant_completion_history
+from app.metrics import (
+    direct_dormant_to_production_history,
+    dormant_funnel_entries,
+    filter_prod_details,
+    split_dormant_completions,
+    split_dormant_completion_history,
+)
 
 
 class DormantCompletionStageTests(unittest.TestCase):
@@ -37,6 +43,29 @@ class DormantCompletionStageTests(unittest.TestCase):
         ]
 
         self.assertEqual([row["OWNER_ID"] for row in dormant_funnel_entries(history)], ["1"])
+
+    def test_counts_direct_move_from_dormant_to_production(self):
+        rows = [
+            {"OWNER_ID": "25238", "CATEGORY_ID": 30, "TYPE_ID": 5, "STAGE_ID": "C28:NEW"},
+            {"OWNER_ID": "25239", "CATEGORY_ID": 30, "TYPE_ID": 5, "STAGE_ID": "C20:NEW"},
+            {"OWNER_ID": "25240", "CATEGORY_ID": 30, "TYPE_ID": 3, "STAGE_ID": "C30:WON"},
+        ]
+
+        direct = direct_dormant_to_production_history(rows, {"C28:NEW": "Не распределенные"})
+
+        self.assertEqual([row["id"] for row in direct], ["25238"])
+        self.assertEqual(direct[0]["stage"], "Не распределенные")
+
+    def test_all_dormant_reason_metric_opens_dormant_cards_not_production(self):
+        details = {
+            "dormant": [{"id": "30", "stuck_reasons": ["Нет документов"]}],
+            "dormant_expected": [],
+            "active": [{"id": "28", "stuck_reasons": ["Нет документов"]}],
+        }
+
+        rows = filter_prod_details(details, "dormant_all_with_reason_count", reason="Нет документов")
+
+        self.assertEqual([row["id"] for row in rows], ["30"])
 
 
 if __name__ == "__main__":

@@ -345,16 +345,33 @@ def _apply_runtime(snap, details, month):
     k['dormant_all_count']=len(all_rows);k['dormant_all_amount']=round(sum(float(r.get('amount') or 0) for r in all_rows),2)
     k['dormant_count']=len(rows);k['dormant_amount']=round(sum(float(r.get('amount') or 0) for r in rows),2)
     k['dormant_expected_count']=len(rows)
+    all_with_reason=[r for r in all_rows if r.get('stuck_reasons')]
     with_reason=[r for r in rows if r.get('stuck_reasons')]
     without_reason=[r for r in rows if not r.get('stuck_reasons')]
+    k['dormant_all_with_reason_count']=len(all_with_reason)
+    k['dormant_all_with_reason_amount']=round(sum(float(r.get('amount') or 0) for r in all_with_reason),2)
+    k['dormant_with_reason_count']=len(with_reason)
+    k['dormant_with_reason_amount']=round(sum(float(r.get('amount') or 0) for r in with_reason),2)
     k['dormant_with_reason_pct']=round(len(with_reason)/len(rows)*100,1) if rows else 0
     k['dormant_without_reason_count']=len(without_reason)
-    p.setdefault('dormant',{})['with_reason_count']=len(with_reason);p['dormant']['with_reason_pct']=k['dormant_with_reason_pct']
     from collections import defaultdict
-    acc=defaultdict(int)
-    for r in rows:
-        for reason in r.get('stuck_reasons') or []:acc[reason]+=1
-    p['dormant']['reasons']=[{'name':a,'count':b,'pct':round(b/len(rows)*100,1) if rows else 0} for a,b in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
+    def reason_rows(items):
+        acc=defaultdict(int)
+        for row in items:
+            for reason in row.get('stuck_reasons') or []:
+                acc[reason]+=1
+        total=len(items)
+        return [{'name':name,'count':count,'pct':round(count/total*100,1) if total else 0} for name,count in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
+    p['dormant']={
+        **p.get('dormant',{}),
+        'all_with_reason_count':len(all_with_reason),
+        'all_with_reason_amount':k['dormant_all_with_reason_amount'],
+        'with_reason_count':len(with_reason),
+        'with_reason_amount':k['dormant_with_reason_amount'],
+        'with_reason_pct':k['dormant_with_reason_pct'],
+        'reasons':reason_rows(rows),
+        'all_reasons':reason_rows(all_rows),
+    }
     return x
 
 

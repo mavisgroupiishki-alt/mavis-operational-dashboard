@@ -184,8 +184,14 @@ tr:hover td{background:#f5f9fc}
 .expert-stats span{display:block;color:#7b8a98;font-size:9px;margin-bottom:3px}
 .expert-stats strong{font-size:13px}
 .nested{border-top:1px solid var(--line-soft);padding-top:11px}
-.nested summary{color:#576a7a;font-weight:600;cursor:pointer}
+.nested summary{color:#405b70;font-size:17px;font-weight:700;cursor:pointer}
+.expert-card .nested table{font-size:15px}
+.expert-card .nested th{font-size:12px}
+.expert-card .nested td{padding:12px 9px}
+.expert-card .nested .mini-edit{font-size:12px;font-weight:700}
 .stuck-flow-block{margin-top:22px}.stuck-flow-card{border-top:4px solid #ee8c55}.stuck-flow-delta{margin-top:8px;font-size:12px;font-weight:650;color:#72808c}.stuck-flow-delta.up{color:#bc6940}.stuck-flow-delta.down{color:#25945e}.stuck-flow-summary{border:1px solid #f0d8c6;background:linear-gradient(135deg,#fffaf5,#fff4e9);border-radius:14px;padding:13px 15px;color:#6d5a4b;font-size:12px;line-height:1.45}
+.expert-stuck-reasons{margin-top:24px}.reason-coverage-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:760px){.expert-card .nested table{font-size:14px}.expert-card .nested th{font-size:11px}.reason-coverage-cards{grid-template-columns:1fr}}
 
 /* Расшифровка */
 .drawer-dialog{width:min(1080px,94vw)}
