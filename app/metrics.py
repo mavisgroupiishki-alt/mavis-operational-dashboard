@@ -1075,11 +1075,12 @@ def direct_dormant_to_production_history(rows, production_stage_labels):
     """
     direct = []
     for row in rows:
-        if str(row.get("TYPE_ID") or "") != "5":
-            continue
         category_id = str(row.get("CATEGORY_ID") or "")
         stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
-        is_source_event = category_id == str(DORMANT_CATEGORY)
+        is_source_event = category_id == str(DORMANT_CATEGORY) and str(row.get("TYPE_ID") or "") == "5"
+        # Bitrix uses a different TYPE_ID for some destination-history
+        # records. The C30 prefix is the deterministic proof of the source
+        # funnel, so no type inference is needed in this branch.
         is_target_event = category_id == str(PROD_CATEGORY) and stage_id.startswith(f"C{DORMANT_CATEGORY}:")
         if not (is_source_event or is_target_event):
             continue
