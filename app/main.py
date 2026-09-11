@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import hmac
 import json
 import copy
 import math
@@ -9,7 +10,7 @@ from calendar import monthrange
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -501,12 +502,18 @@ async def api_sales_calls():
 
 @app.get("/api/jarvis")
 async def api_jarvis():
-    """Expose only Jarvis's public HTTPS origin; the shared token stays server-side."""
+    """Build a short-lived signed Jarvis entry URL; the shared token stays server-side."""
     base_url = settings.jarvis_operations_url.rstrip("/")
     target = urlparse(base_url)
-    if not base_url or target.scheme != "https" or not target.netloc:
+    if not base_url or target.scheme != "https" or not target.netloc or not settings.jarvis_operations_token:
         return JSONResponse({"ok": False, "status": "not_configured"}, status_code=503)
-    return {"ok": True, "url": base_url}
+    issued_at = int(time.time())
+    signature = hmac.new(
+        settings.jarvis_operations_token.encode("utf-8"),
+        f"mavis-dashboard-embed:{issued_at}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {"ok": True, "url": f"{base_url}/dashboard-embed?{urlencode({'ts': issued_at, 'sig': signature})}"}
 
 
 @app.get("/api/crm-audit")
