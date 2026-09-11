@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon.svg">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=3.1.0">
+  <link rel="stylesheet" href="/static/styles.css?v=3.1.1">
 </head>
 <body>
 <a class="skip-link" href="#mainContent">К содержимому</a>
@@ -30,7 +30,11 @@
   </header>
 
   <aside id="installHint" class="install-hint hidden" aria-live="polite">
-    <div><strong id="installHintTitle">Установите дашборд</strong><span id="installHintText"></span></div>
+    <div class="install-hint-copy"><strong id="installHintTitle">Установите дашборд</strong><span id="installHintText"></span></div>
+    <ol id="installIosSteps" class="install-ios-steps hidden">
+      <li>Нажмите <span class="install-share-icon" aria-label="Поделиться"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0 4 4m-4-4L8 7M5 11v8h14v-8"/></svg></span> <strong>«Поделиться»</strong> внизу Safari.</li>
+      <li>Прокрутите меню и выберите <strong>«На экран „Домой“»</strong>.</li>
+    </ol>
     <div class="install-hint-actions"><button id="installAction" class="btn primary" type="button">Установить</button><button id="dismissInstallHint" class="btn ghost" type="button">Позже</button></div>
   </aside>
 
@@ -104,7 +108,7 @@
   </div>
 </dialog>
 
-<script src="/static/app.js?v=3.1.1"></script>
+<script src="/static/app.js?v=3.1.2"></script>
 
 </body>
 </html>

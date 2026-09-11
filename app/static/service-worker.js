@@ -1,5 +1,5 @@
-const CACHE_NAME="mavis-operational-v3.1.1";
-const SHELL=["/","/static/styles.css?v=3.1.0","/static/app.js?v=3.1.1","/static/icon.svg","/manifest.webmanifest"];
+const CACHE_NAME="mavis-operational-v3.1.2";
+const SHELL=["/","/static/styles.css?v=3.1.1","/static/app.js?v=3.1.2","/static/icon.svg","/manifest.webmanifest"];
 const SNAPSHOT_PATHS=["/api/snapshot","/api/marketing","/api/crm-audit"];
 
 async function putIfSuccessful(cache,request,response){

@@ -1234,10 +1234,11 @@ function fillMonths(){
 
 function isIos(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
 function isStandalone(){return window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true}
-function setInstallHint({title,text,actionLabel,action}={}){
+function setInstallHint({title,text,actionLabel,action,iosSteps=false}={}){
   const hint=$("#installHint");if(!hint)return;
   $("#installHintTitle").textContent=title||"Установите дашборд";
   $("#installHintText").textContent=text||"";
+  $("#installIosSteps").classList.toggle("hidden",!iosSteps);
   const button=$("#installAction");button.textContent=actionLabel||"Установить";
   button.onclick=action||null;
   button.classList.toggle("hidden",!action);
@@ -1256,7 +1257,7 @@ function initializeInstallExperience(){
     }});
   });
   let dismissed=false;try{dismissed=localStorage.getItem(INSTALL_HINT_DISMISSED_KEY)==="1"}catch(e){}
-  if(isIos()&&!dismissed)setInstallHint({title:"Добавьте на экран «Домой»",text:"В Safari: «Поделиться» → «На экран Домой».",actionLabel:"",action:null});
+  if(isIos()&&!dismissed)setInstallHint({title:"Добавьте дашборд на экран «Домой»",text:"Это займёт два нажатия — после этого он будет открываться как приложение.",actionLabel:"",action:null,iosSteps:true});
 }
 function registerServiceWorker(){
   if(!("serviceWorker" in navigator)||!window.isSecureContext)return;
