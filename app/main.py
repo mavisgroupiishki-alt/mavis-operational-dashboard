@@ -243,6 +243,74 @@ def _dormant_stages(available):
             pass
     return eligible
 
+
+SEPTEMBER_2026_DORMANT_BASELINE = {
+    "baseline_date": "2026-09-01",
+    "count": 298,
+    # The count was confirmed manually after the original first-day card list
+    # had expired with the former temporary storage. Future months retain IDs.
+    "ids": [],
+    "source": "confirmed_manual",
+}
+
+
+def _capture_dormant_baseline(month, details, observed_at=None):
+    """Persist the first-day stuck-deal cohort without overwriting it later."""
+    existing = storage.dormant_baseline(month)
+    if existing:
+        return existing
+    if month == "2026-09":
+        storage.set_dormant_baseline(month, SEPTEMBER_2026_DORMANT_BASELINE)
+        return SEPTEMBER_2026_DORMANT_BASELINE
+    observed_at = observed_at or datetime.now(ZoneInfo(settings.timezone))
+    if month != observed_at.strftime("%Y-%m") or observed_at.day != 1:
+        return {}
+    rows = ((details or {}).get("production") or {}).get("dormant") or []
+    baseline = {
+        "baseline_date": observed_at.date().isoformat(),
+        "count": len(rows),
+        "ids": sorted({str(row.get("id")) for row in rows if row.get("id")}),
+        "source": "automatic_first_day",
+    }
+    storage.set_dormant_baseline(month, baseline)
+    return baseline
+
+
+def _stuck_flow(month, details, observed_at=None):
+    observed_at = observed_at or datetime.now(ZoneInfo(settings.timezone))
+    baseline = storage.dormant_baseline(month)
+    prod = (details or {}).get("production") or {}
+    current_rows = list(prod.get("dormant") or [])
+    baseline_ids = {str(value) for value in (baseline.get("ids") or [])}
+
+    def only_baseline(rows):
+        # September's original list is unavailable, so its confirmed totals use
+        # all completions from the first day. Future cohorts are exact by ID.
+        rows = list(rows or [])
+        return [row for row in rows if str(row.get("id")) in baseline_ids] if baseline_ids else rows
+
+    def delta(value, start):
+        change = int(value) - int(start)
+        return {"value": change, "pct": round(change / start * 100, 1) if start else None}
+
+    current_count = len(current_rows)
+    to_returns = only_baseline(prod.get("dormant_to_return"))
+    to_production = only_baseline(prod.get("dormant_to_production"))
+    base_count = int(baseline.get("count") or 0)
+    return {
+        "available": bool(baseline),
+        "baseline_date": baseline.get("baseline_date") or f"{month}-01",
+        "as_of": observed_at.date().isoformat(),
+        "baseline_count": base_count,
+        "current_count": current_count,
+        "to_returns_count": len(to_returns),
+        "to_production_count": len(to_production),
+        "current_delta": delta(current_count, base_count),
+        "returns_delta": delta(len(to_returns), 0),
+        "production_delta": delta(len(to_production), 0),
+        "exact_cohort": bool(baseline_ids),
+    }
+
 def _apply_runtime(snap, details, month):
     x=copy.deepcopy(snap)
     x['plans']=storage.plan_dict(month)
@@ -269,6 +337,7 @@ def _apply_runtime(snap, details, month):
         row.setdefault('close_week',week_of_month(parse_dt(row.get('close'),month_start.tzinfo),month_start))
     p['weekly']=production_weekly_dynamics(list(prod_details.get('closed') or []),month_start)
     all_rows=list(prod_details.get('dormant') or [])
+    p['stuck_flow'] = _stuck_flow(month, details)
     # Управленческий показатель «Зависшие» считается только из карточек,
     # чья предполагаемая дата закрытия попадает в выбранный период.
     expected_rows=list(prod_details.get('dormant_expected') or [])
@@ -326,6 +395,7 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
                 if not isinstance(source_overrides,dict): source_overrides={}
                 snap = await build_snapshot(client, month, period, settings.timezone, custom_start, custom_end, source_overrides=source_overrides)
                 details = snap.pop("_details", {})
+                _capture_dormant_baseline(month, details)
             cache[key] = snap
             detail_cache[key] = details
             cache_time[key] = time.monotonic()

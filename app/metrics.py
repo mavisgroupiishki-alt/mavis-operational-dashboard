@@ -24,6 +24,7 @@ SALES_WON = "WON"
 PROD_WON = "C28:WON"
 PROD_RETURN = "C28:APOLOGY"
 DORMANT_TO_PROD = "C30:WON"
+DORMANT_RETURN = "C30:APOLOGY"
 
 F_SERVICE = "UF_CRM_1765113071"
 F_EXPECTED_CLOSE = "UF_CRM_1765875991647"
@@ -1044,11 +1045,16 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     active_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     returned_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_TO_PROD, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = await asyncio.gather(
-        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, dormant_task, returned_task
+    # The "Зависшие" block always compares with the first day of the selected
+    # month, independently of the report-period filter.
+    dormant_flow_end = observed_period_end(next_start, now)
+    dormant_to_production_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_TO_PROD, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(dormant_flow_end)}, DEAL_SELECT)
+    dormant_to_return_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "STAGE_ID": DORMANT_RETURN, ">=CLOSEDATE": iso(month_start), "<CLOSEDATE": iso(dormant_flow_end)}, DEAL_SELECT)
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw = await asyncio.gather(
+        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, dormant_task, returned_task, dormant_to_production_task, dormant_to_return_task
     )
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw = [
-        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw]
+    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw = [
+        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, dormant_raw, returned_raw, dormant_to_production_raw, dormant_to_return_raw]
     ]
     # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
     # дата начала оказания услуг не заполнена — это именно fallback.
@@ -1067,13 +1073,15 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
     returned = convert(returned_raw, role="dormant")
+    dormant_to_production = convert(dormant_to_production_raw, role="dormant")
+    dormant_to_return = convert(dormant_to_return_raw, role="dormant")
 
     closed_ids = {r["id"] for r in closed}
     new_ids = {r["id"] for r in new}
     for r in closed:
         r["is_closed_success"] = True
         r["is_new_in_period"] = r["id"] in new_ids
-    for coll in [new, active, returns, dormant, returned]:
+    for coll in [new, active, returns, dormant, returned, dormant_to_production, dormant_to_return]:
         for r in coll:
             r["is_closed_success"] = r["id"] in closed_ids
             r["is_new_in_period"] = r["id"] in new_ids
@@ -1191,7 +1199,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "return_reasons": return_reasons,
         "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
         "_records": {"new":new,"closed":closed,"period_closed":period_closed,"active":active,"returns":returns,
-                     "capacity":capacity,"dormant":dormant,"returned":returned,"overdue":overdue,
+                     "capacity":capacity,"dormant":dormant,"returned":returned,"dormant_to_production":dormant_to_production,"dormant_to_return":dormant_to_return,"overdue":overdue,
                      "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue,
                      "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
                      "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
@@ -1287,7 +1295,7 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
         "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
         "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
-        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","overdue":"overdue",
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
         "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
         "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
         "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"

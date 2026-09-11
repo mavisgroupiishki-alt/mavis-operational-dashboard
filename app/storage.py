@@ -216,6 +216,14 @@ class Storage:
         all_plans[ctx] = current
         self._set(f"plans:{month}", all_plans)
 
+    # ---------- Monthly stuck-deal baselines ----------
+    def dormant_baseline(self, month: str):
+        value = self._get(f"dormant_baseline:{month}", {})
+        return value if isinstance(value, dict) else {}
+
+    def set_dormant_baseline(self, month: str, value: dict):
+        self._set(f"dormant_baseline:{month}", value)
+
     # ---------- Field mappings ----------
     def get_mappings(self):
         value = self._get("mappings", {})
