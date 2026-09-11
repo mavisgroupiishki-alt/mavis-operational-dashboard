@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .metrics import build_snapshot, build_trends_light, filter_prod_details, filter_sales_details, month_bounds, parse_dt, production_weekly_dynamics, week_of_month
+from .recovery import restore_missing_production_plan
 from .demo import demo_snapshot
 from .settings import settings
 from .storage import Storage
@@ -395,6 +396,10 @@ def schedule_snapshot(month: str, period: str, force: bool=False, custom_start: 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # The September production plan was captured before the temporary /tmp
+    # database was wiped. Restore it once on the persistent disk, without ever
+    # replacing a plan subsequently entered through the dashboard.
+    restore_missing_production_plan(storage)
     # Не блокируем запуск сервера тяжелой первой синхронизацией.
     task = asyncio.create_task(refresh_loop())
     refresh_trigger.set()

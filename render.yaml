@@ -11,7 +11,7 @@ services:
       - key: REFRESH_SECONDS
         value: "300"
       - key: DATA_DIR
-        value: /tmp/mavis-dashboard
+        value: /var/data
       - key: BITRIX_WEBHOOK
         sync: false
       - key: BITRIX_EVENT_TOKEN
