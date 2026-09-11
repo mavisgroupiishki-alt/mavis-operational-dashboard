@@ -1077,7 +1077,11 @@ def direct_dormant_to_production_history(rows, production_stage_labels):
     for row in rows:
         category_id = str(row.get("CATEGORY_ID") or "")
         stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
-        is_source_event = category_id == str(DORMANT_CATEGORY) and str(row.get("TYPE_ID") or "") == "5"
+        # In this portal source-history records do not have one stable type.
+        # Their source category plus the hydrated current funnel is the
+        # reliable combination; cards that remain or go elsewhere are filtered
+        # out below.
+        is_source_event = category_id == str(DORMANT_CATEGORY)
         # Bitrix uses a different TYPE_ID for some destination-history
         # records. The C30 prefix is the deterministic proof of the source
         # funnel, so no type inference is needed in this branch.
