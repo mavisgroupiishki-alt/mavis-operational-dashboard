@@ -1,6 +1,6 @@
 import copy
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -68,6 +68,29 @@ class FastStartupTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["sales"], full_sales)
+
+    def test_render_sync_guard_honors_compact_snapshot(self):
+        from app import fixed_main
+
+        key = ("2026-09", "month", "", "")
+        snapshot = {
+            "ok": True,
+            "sales": {
+                "overall": {"total": {"metrics": {"sales": 14}}},
+                "groups": [{"name": "Холодные продажи"}],
+                "managers": [{"name": "Анна", "total": {"metrics": {"sales": 3}}, "groups": [{"name": "Холодные продажи"}]}],
+            },
+        }
+        with (
+            patch.object(main, "cache", {key: {"ok": True}}),
+            patch.object(main, "detail_cache", {key: {}}),
+            patch.object(main, "cache_time", {key: 0}),
+            patch.object(main, "operational_snapshot", new=AsyncMock(return_value=snapshot)),
+        ):
+            response = TestClient(fixed_main.app).get("/api/snapshot?month=2026-09&period=month&compact=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("groups", response.json()["sales"])
 
 
 if __name__ == "__main__":

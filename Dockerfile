@@ -6,4 +6,4 @@ COPY app ./app
 RUN mkdir -p /var/data
 ENV DATA_DIR=/var/data
 ENV TIMEZONE=Europe/Minsk
-CMD ["sh","-c","uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+CMD ["sh","-c","uvicorn app.fixed_main:app --host 0.0.0.0 --port ${PORT:-10000}"]
