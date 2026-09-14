@@ -10,6 +10,9 @@ let commentTarget=null;
 let teamTargetRole="expert";
 let npsTarget=null;
 let crmAuditData=null;
+let activeSnapshotKey="";
+let salesDetailsRequest=null;
+let salesDetailsRetry=null;
 const BROWSER_CACHE_PREFIX="mavis-dashboard-snapshot:v3:";
 const INSTALL_HINT_DISMISSED_KEY="mavis-dashboard-install-hint-dismissed:v1";
 const OPERATION_CACHE_TTL=5*60*1000;
@@ -903,6 +906,7 @@ function renderProduction(){
 }
 
 function renderExperts(){
+  const p=state.production.kpi;
   const flow=state.production?.stuck_flow||{};
   const dateLabel=(value)=>{try{return new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'long'}).format(new Date(`${value}T12:00:00`))}catch(e){return value||'1 число'}};
   const flowDelta=(delta,baseline=0)=>{
@@ -1039,7 +1043,9 @@ function renderPlans(){renderPlanInline()}
 
 function renderAll(){
   if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);return}
-  renderOverview();renderSales();renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();warmOperationsSections();openView(requestedView(),false);
+  renderOverview();
+  if(state.sales?.details_loaded&&state.sales?.details_key===snapshotKey())renderSales();else renderSalesPlaceholder("Откройте раздел, чтобы загрузить детальную разбивку продаж.");
+  renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();openView(requestedView(),false);
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
 }
 
@@ -1057,6 +1063,7 @@ function openView(view,updateHistory=true){
   $("#sectionNavTitle").textContent=VIEW_TITLES[view]||"";
   if(view==="dynamics")renderDynamics();
   if(view==="forecast")renderForecast();
+  if(view==="sales")loadSalesSection();
   if(view==="sales-calls")loadJarvisExperience();
   if(view==="marketing")loadOperationsSection("marketing");
   if(view==="crm-audit")loadOperationsSection("crm-audit");
@@ -1108,17 +1115,51 @@ function customQueryParams(){
   const a=$("#customStart").value,b=$("#customEnd").value;
   return `&custom_start=${encodeURIComponent(a)}&custom_end=${encodeURIComponent(b)}`;
 }
+function snapshotKey(month=$("#month")?.value||"",period=$("#period")?.value||"month"){
+  const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
+  return `${month}|${period}|${custom}`;
+}
+function renderSalesPlaceholder(message="Загружаю детализацию продаж…",retry=false){
+  const target=$("#sales");if(!target)return;
+  target.innerHTML=`<div class="section-page sales-loading"><div class="eyebrow">ОТДЕЛ ПРОДАЖ</div><h2>Продажи</h2><p class="section-page-lead">${esc(message)}</p><div class="integration-state">Основные показатели уже доступны на главном экране. Загружаю расшифровку менеджеров, источников и сделок только для этого раздела.</div>${retry?'<button type="button" class="btn primary" data-retry-sales-section="1">Повторить</button>':''}</div>`;
+}
+async function loadSalesSection(){
+  if(!state?.ok)return;
+  const key=snapshotKey();
+  if(state.sales?.details_loaded&&state.sales?.details_key===key){renderSales();return}
+  if(salesDetailsRequest===key)return;
+  if(salesDetailsRetry){clearTimeout(salesDetailsRetry);salesDetailsRetry=null}
+  salesDetailsRequest=key;
+  renderSalesPlaceholder();
+  try{
+    const response=await fetch(`/api/sales-section?month=${encodeURIComponent($("#month").value)}&period=${encodeURIComponent($("#period").value)}${customQueryParams()}`,{cache:"no-store"});
+    const payload=await response.json();
+    if(key!==snapshotKey()||requestedView()!=="sales")return;
+    if(response.status===202||payload.loading){
+      renderSalesPlaceholder("Детализация готовится в фоне. Повторяю запрос через несколько секунд…");
+      salesDetailsRetry=setTimeout(()=>{salesDetailsRetry=null;loadSalesSection()},2500);
+      return;
+    }
+    if(!response.ok||!payload.ok)throw new Error(payload.detail||payload.error||"Не удалось загрузить детализацию продаж");
+    state.sales={...(state.sales||{}),...(payload.sales||{}),details_loaded:true,details_key:key};
+    renderSales();
+  }catch(error){
+    if(key===snapshotKey()&&requestedView()==="sales")renderSalesPlaceholder(error.message||"Детализация продаж временно недоступна",true);
+  }finally{if(salesDetailsRequest===key)salesDetailsRequest=null}
+}
 async function load(){
   const month=$("#month").value,period=$("#period").value;
   if(loadTimer){clearTimeout(loadTimer);loadTimer=null}
   if(loadController)loadController.abort();
   loadController=new AbortController();
 
-  const sameState=state&&state.month_key===month&&(state.period||"month")===period;
+  const requestKey=snapshotKey(month,period);
+  const sameState=state&&activeSnapshotKey===requestKey;
   if(!sameState){
     const cached=readBrowserSnapshot(month,period);
     if(cached){
       state=cached.snapshot;
+      activeSnapshotKey=requestKey;
       renderAll();
       $("#liveDot").className="";
       const ageMin=Math.max(0,Math.round((Date.now()-cached.saved_at)/60000));
@@ -1131,7 +1172,7 @@ async function load(){
   }
 
   try{
-    const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}${customQueryParams()}`,{cache:"no-store",signal:loadController.signal});
+    const r=await fetch(`/api/snapshot?month=${encodeURIComponent(month)}&period=${encodeURIComponent(period)}${customQueryParams()}&compact=1`,{cache:"no-store",signal:loadController.signal});
     if(r.status===401){location.href="/login";return}
     const j=await r.json();
     const offlineSnapshot=r.headers.get("X-Mavis-Cache")==="offline";
@@ -1147,6 +1188,7 @@ async function load(){
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
 
     state=j;
+    activeSnapshotKey=requestKey;
     saveBrowserSnapshot(j);
     renderAll();
     if(offlineSnapshot){
@@ -1365,6 +1407,7 @@ function init(){
   window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
     const view=e.target.closest('[data-open-view],[data-view]');if(view){openView(view.dataset.openView||view.dataset.view);return}
+    if(e.target.closest('[data-retry-sales-section]')){loadSalesSection();return}
     const cb=e.target.closest('[data-comment-scope]');if(cb){e.stopPropagation();commentTarget={scope:cb.dataset.commentScope,metric:cb.dataset.commentMetric,title:cb.dataset.commentTitle};$('#commentTitle').textContent=commentTarget.title;$('#commentText').value=getComment(commentTarget.scope,commentTarget.metric);$('#commentDialog').showModal();return}
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}

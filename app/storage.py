@@ -33,7 +33,9 @@ class Storage:
 
     @property
     def backend_name(self) -> str:
-        return "Supabase" if self.remote_enabled and not self.last_remote_error else ("Supabase (fallback SQLite)" if self.remote_enabled else "SQLite local")
+        if self.remote_enabled:
+            return "Supabase" if not self.last_remote_error else "Supabase (fallback SQLite)"
+        return "SQLite persistent disk" if str(self.path).startswith("/var/data/") else "SQLite local"
 
     def connect(self):
         c = sqlite3.connect(self.path)

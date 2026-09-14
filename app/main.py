@@ -393,6 +393,33 @@ async def operational_snapshot(snap, details, month):
     return x
 
 
+def compact_snapshot_payload(snapshot):
+    """Keep the first screen small; sales drill-down data is fetched on demand."""
+    result = copy.deepcopy(snapshot)
+    sales = result.get("sales")
+    if not isinstance(sales, dict):
+        return result
+
+    compact = {
+        key: sales[key]
+        for key in ("overall", "stages", "active_deals_count", "sale_filter", "classification", "available_sources")
+        if key in sales
+    }
+    managers = []
+    for manager in sales.get("managers") or []:
+        if not isinstance(manager, dict):
+            continue
+        item = {"name": manager.get("name")}
+        total = manager.get("total")
+        if isinstance(total, dict):
+            item["total"] = {"metrics": copy.deepcopy(total.get("metrics") or {})}
+        managers.append(item)
+    compact["managers"] = managers
+    compact["details_loaded"] = False
+    result["sales"] = compact
+    return result
+
+
 async def ensure_snapshot(month: str, period: str, force=False, custom_start: str = "", custom_end: str = ""):
     global last_error
     key = (month, period, custom_start or "", custom_end or "")
@@ -595,6 +622,7 @@ async def api_snapshot(
     period: str = Query(default="month", pattern="^(month|this_week|last_week|custom)$"),
     custom_start: str = "",
     custom_end: str = "",
+    compact: bool = False,
 ):
     month = month or current_month()
     key=(month,period,custom_start or "",custom_end or "")
@@ -606,18 +634,41 @@ async def api_snapshot(
         stale=time.monotonic()-cache_time.get(key,0)>=ttl
         if stale:
             schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
-        return {**await operational_snapshot(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+        result = {**await operational_snapshot(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+        return compact_snapshot_payload(result) if compact else result
     # Render memory is empty after restart/redeploy. Try durable Supabase snapshot
     # first and refresh Bitrix in background.
     if await warm_snapshot_from_storage(month,period,custom_start,custom_end):
         schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
-        return {**await operational_snapshot(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
+        result = {**await operational_snapshot(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
+        return compact_snapshot_payload(result) if compact else result
 
     schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
     return JSONResponse({
         "ok": False, "loading": True, "month_key": month, "period": period,
         "message": "Первичная синхронизация Bitrix выполняется в фоне"
     }, status_code=202)
+
+
+@app.get("/api/sales-section")
+async def api_sales_section(
+    month: str = Query(default=""),
+    period: str = Query(default="month", pattern="^(month|this_week|last_week|custom)$"),
+    custom_start: str = "",
+    custom_end: str = "",
+):
+    """Return the heavy sales tree only when the user opens the sales section."""
+    month = month or current_month()
+    key = (month, period, custom_start or "", custom_end or "")
+    if period == "custom" and (not custom_start or not custom_end):
+        return JSONResponse({"detail": "Для своего периода укажи дату начала и дату окончания"}, status_code=400)
+    if key not in cache and not await warm_snapshot_from_storage(month, period, custom_start, custom_end):
+        schedule_snapshot(month, period, force=False, custom_start=custom_start, custom_end=custom_end)
+        return JSONResponse({"ok": False, "loading": True, "message": "Детализация продаж готовится в фоне"}, status_code=202)
+    if key not in detail_cache:
+        await warm_details_from_storage(month, period, custom_start, custom_end)
+    sales = _apply_runtime(cache[key], detail_cache.get(key, {}), month).get("sales") or {}
+    return {"ok": True, "month_key": month, "period": period, "sales": sales}
 
 
 @app.get("/api/sales-calls")

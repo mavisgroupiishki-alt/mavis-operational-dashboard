@@ -1,5 +1,6 @@
 import re
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -36,6 +37,17 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn(f"mavis-operational-v{script_version.group(1)}", worker.text)
         self.assertIn(f"/static/app.js?v={script_version.group(1)}", worker.text)
         self.assertIn(f"/static/styles.css?v={style_version.group(1)}", worker.text)
+
+    def test_experts_render_has_production_kpis_in_scope(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        experts_function = re.search(
+            r"function renderExperts\(\)\{(?P<body>.*?)\n\}\n\nfunction reasonTable",
+            script,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(experts_function)
+        self.assertIn("const p=state.production.kpi;", experts_function.group("body"))
 
 
 if __name__ == "__main__":
