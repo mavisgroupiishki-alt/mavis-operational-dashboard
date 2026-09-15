@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import calendar
 import json
 import math
@@ -1377,6 +1378,217 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
                      "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
                      "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
     }
+
+
+def derive_production_period(
+    month_key: str,
+    period: str,
+    tz_name: str,
+    production: Dict[str, Any],
+    details: Dict[str, Any],
+    custom_start: str = "",
+    custom_end: str = "",
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Build an in-month production view from a saved monthly detail snapshot.
+
+    The month snapshot already contains every fact used by the period view.
+    Re-aggregating those rows avoids repeating the expensive Bitrix reads for
+    each calendar selection.  Cross-month ranges deliberately return ``None``
+    so the regular full synchronisation remains the source of truth there.
+    """
+    month_start, next_start, _, _ = month_bounds(month_key, tz_name)
+    range_start, range_end, period_label = period_bounds(
+        month_key, period, tz_name, custom_start, custom_end
+    )
+    if range_start < month_start or range_end > next_start:
+        return None
+
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    arrival_end = observed_period_end(range_end, now)
+    source = details if isinstance(details, dict) else {}
+
+    def copied(name: str) -> List[Dict[str, Any]]:
+        return [copy.deepcopy(row) for row in (source.get(name) or []) if isinstance(row, dict)]
+
+    def between(rows: List[Dict[str, Any]], field: str, end: datetime) -> List[Dict[str, Any]]:
+        return [
+            row for row in rows
+            if (value := parse_dt(row.get(field), tz)) and range_start <= value < end
+        ]
+
+    all_new = copied("new")
+    new = [
+        row for row in all_new
+        if (value := parse_dt(row.get("prod_start"), tz) or parse_dt(row.get("created"), tz))
+        and range_start <= value < arrival_end
+    ]
+    closed = between(copied("closed"), "close", range_end)
+    returns = between(copied("returns"), "close", range_end)
+    active = copied("active")
+    dormant = copied("dormant")
+    returned = between(copied("returned"), "completion_at", range_end)
+
+    # These fields represent the September cohort against the first day of the
+    # month and therefore intentionally do not change with the calendar range.
+    dormant_to_production = copied("dormant_to_production")
+    dormant_to_return = copied("dormant_to_return")
+    dormant_entered_since_month_start = copied("dormant_entered_since_month_start")
+    closed_ids = {str(row.get("id") or "") for row in closed}
+    new_ids = {str(row.get("id") or "") for row in new}
+
+    for row in closed:
+        row["is_closed_success"] = True
+        row["is_new_in_period"] = str(row.get("id") or "") in new_ids
+    for collection in (new, active, returns, dormant, returned, dormant_to_production, dormant_to_return):
+        for row in collection:
+            row["is_closed_success"] = str(row.get("id") or "") in closed_ids
+            row["is_new_in_period"] = str(row.get("id") or "") in new_ids
+
+    period_closed = [row for row in closed if str(row.get("id") or "") in new_ids]
+    capacity = [
+        row for row in active
+        if (value := parse_dt(row.get("expected_close"), tz)) and range_start <= value < range_end
+    ]
+    dormant_expected = [
+        row for row in dormant
+        if (value := parse_dt(row.get("expected_close"), tz)) and range_start <= value < range_end
+    ]
+    dormant_overdue = [
+        row for row in dormant
+        if (value := parse_dt(row.get("expected_close"), tz)) and value.date() < now.date()
+    ]
+    overdue = copied("overdue")
+    active_missing_expected = copied("active_missing_expected")
+    active_missing_service = copied("active_missing_service")
+    active_missing_expert = copied("active_missing_expert")
+    closed_without_act = [row for row in closed if norm_text(row.get("act")) != "да"]
+
+    def amount(rows: List[Dict[str, Any]]) -> float:
+        return round(sum(num(row.get("amount")) for row in rows), 2)
+
+    closed_stats = aggregate_prod_rows(closed)
+    kpi = {
+        **closed_stats,
+        "new_count": len(new), "new_amount": amount(new),
+        "period_closed_count": len(period_closed), "period_closed_amount": amount(period_closed),
+        "new_to_success_pct": pct(len(period_closed), len(new)),
+        "capacity_count": len(capacity), "capacity_amount": amount(capacity),
+        "returns_count": len(returns), "returns_amount": amount(returns),
+        "dormant_count": len(dormant), "dormant_amount": amount(dormant),
+        "returned_to_production": len(returned), "returned_to_production_amount": amount(returned),
+        "dormant_expected_count": len(dormant_expected), "dormant_overdue_count": len(dormant_overdue),
+        "active_missing_expected_count": len(active_missing_expected),
+        "active_missing_service_count": len(active_missing_service),
+        "active_missing_expert_count": len(active_missing_expert),
+        "closed_without_act_count": len(closed_without_act),
+    }
+    with_reason = [row for row in dormant if row.get("stuck_reasons")]
+    kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
+
+    products = []
+    product_names = sorted({str(row.get("service") or "Не указано") for row in new + closed + active + returns})
+    for name in product_names:
+        nr = [row for row in new if str(row.get("service") or "Не указано") == name]
+        cr = [row for row in closed if str(row.get("service") or "Не указано") == name]
+        pr = [row for row in period_closed if str(row.get("service") or "Не указано") == name]
+        ar = [row for row in active if str(row.get("service") or "Не указано") == name]
+        rr = [row for row in returns if str(row.get("service") or "Не указано") == name]
+        cap = [row for row in capacity if str(row.get("service") or "Не указано") == name]
+        _, norm_spec = match_norm_name(name)
+        products.append({
+            "name": name, "category": product_category(name),
+            "complexity": (norm_spec or {}).get("complexity"),
+            "norm_days": num((norm_spec or {}).get("norm_days")),
+            "new_count": len(nr), "new_amount": amount(nr),
+            "closed_count": len(cr), "closed_amount": amount(cr),
+            "period_closed_count": len(pr), "conversion_pct": pct(len(pr), len(nr)),
+            "capacity_count": len(cap), "capacity_amount": amount(cap),
+            "returns_count": len(rr), "returns_amount": amount(rr),
+            "active_count": len(ar), **aggregate_prod_rows(cr),
+        })
+    products.sort(key=lambda row: (-row["closed_amount"], row["name"]))
+
+    experts = []
+    names = sorted({str(row.get("expert") or "Не указан") for row in new + closed + active + returns})
+    for name in names:
+        nr = [row for row in new if str(row.get("expert") or "Не указан") == name]
+        cr = [row for row in closed if str(row.get("expert") or "Не указан") == name]
+        ar = [row for row in active if str(row.get("expert") or "Не указан") == name]
+        rr = [row for row in returns if str(row.get("expert") or "Не указан") == name]
+        breakdown = defaultdict(lambda: {"closed_count": 0, "closed_amount": 0.0, "days": [], "normed": 0, "in_norm": 0})
+        for row in cr:
+            item = breakdown[str(row.get("service") or "Не указано")]
+            item["closed_count"] += 1
+            item["closed_amount"] += num(row.get("amount"))
+            if row.get("prod_days") is not None:
+                item["days"].append(row["prod_days"])
+            if row.get("norm_days"):
+                item["normed"] += 1
+                item["in_norm"] += 1 if row.get("in_norm") else 0
+        expert_products = [
+            {"name": product, "closed_count": value["closed_count"], "closed_amount": round(value["closed_amount"], 2),
+             "avg_days": round(sum(value["days"]) / len(value["days"]), 1) if value["days"] else 0,
+             "within_norm_pct": pct(value["in_norm"], value["normed"])}
+            for product, value in breakdown.items()
+        ]
+        expert_products.sort(key=lambda row: -row["closed_amount"])
+        experts.append({
+            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
+            **aggregate_prod_rows(cr), "products": expert_products,
+        })
+    experts.sort(key=lambda row: (-row["closed_amount"], row["name"]))
+
+    stages = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for row in active:
+        item = stages[str(row.get("stage") or "Не указано")]
+        item["count"] += 1
+        item["amount"] += num(row.get("amount"))
+    stage_rows = [{"name": name, "count": value["count"], "amount": round(value["amount"], 2)} for name, value in stages.items()]
+    stage_rows.sort(key=lambda row: -row["amount"])
+
+    reason_counts = defaultdict(int)
+    for row in dormant:
+        for reason in row.get("stuck_reasons") or []:
+            reason_counts[str(reason)] += 1
+    reasons = [{"name": name, "count": count, "pct": pct(count, len(dormant))} for name, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))]
+
+    return_counts = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for row in returns:
+        item = return_counts[str(row.get("return_reason") or "Не указана")]
+        item["count"] += 1
+        item["amount"] += num(row.get("amount"))
+    return_reasons = [{"name": name, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], len(returns))} for name, value in sorted(return_counts.items(), key=lambda item: -item[1]["count"])]
+
+    buckets = {"1–7 дней": 0, "8–14 дней": 0, "15–30 дней": 0, "30+ дней": 0}
+    for row in overdue:
+        value = parse_dt(row.get("expected_close"), tz)
+        if not value:
+            continue
+        days = (now.date() - value.date()).days
+        buckets["1–7 дней" if days <= 7 else "8–14 дней" if days <= 14 else "15–30 дней" if days <= 30 else "30+ дней"] += 1
+
+    derived_details = {
+        "new": new, "closed": closed, "period_closed": period_closed, "active": active, "returns": returns,
+        "capacity": capacity, "dormant": dormant, "returned": returned,
+        "dormant_to_production": dormant_to_production, "dormant_to_return": dormant_to_return,
+        "overdue": overdue, "dormant_entered_since_month_start": dormant_entered_since_month_start,
+        "dormant_expected": dormant_expected, "dormant_overdue": dormant_overdue,
+        "active_missing_expected": active_missing_expected, "active_missing_service": active_missing_service,
+        "active_missing_expert": active_missing_expert, "closed_without_act": closed_without_act,
+    }
+    derived = {
+        "period_label": period_label,
+        "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
+        "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
+        "experts": experts, "stages": stage_rows,
+        "dormant": {"reasons": reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason), len(dormant))},
+        "return_reasons": return_reasons,
+        "overdue": {"count": len(overdue), "amount": amount(overdue), "buckets": buckets},
+        "production_at_month_start": copy.deepcopy(production.get("production_at_month_start") or {"count": 0, "as_of": month_start.isoformat(), "rule": ""}),
+    }
+    return derived, derived_details
 
 
 def month_pace(month_key: str, tz_name: str):

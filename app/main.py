@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
-from .metrics import build_snapshot, build_trends_light, filter_prod_details, filter_sales_details, month_bounds, parse_dt, production_weekly_dynamics, week_of_month
+from .metrics import build_snapshot, build_trends_light, derive_production_period, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, week_of_month
 from .recovery import restore_missing_production_plan
 from .demo import demo_snapshot
 from .settings import settings
@@ -42,12 +42,30 @@ trend_cache = {}
 trend_cache_time = {}
 clean_revenue_cache = {}
 clean_revenue_cache_time = {}
+clean_revenue_tasks = {}
+clean_revenue_failures = {}
+CLEAN_REVENUE_REFRESH_SECONDS = 300
+CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
+previous_month_refresh_at = 0.0
+PREVIOUS_MONTH_REFRESH_SECONDS = 60 * 60
+DERIVED_RANGE_CACHE_LIMIT = 8
+derived_range_cache_time = {}
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
 
 
 def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+def prewarm_months(month: str) -> list[tuple[str, str]]:
+    """The two periods users can open without a calendar selection."""
+    year, number = (int(part) for part in month.split("-", 1))
+    if number == 1:
+        year, number = year - 1, 12
+    else:
+        number -= 1
+    return [(month, "month"), (f"{year:04d}-{number:02d}", "month")]
 
 
 def clean_revenue_period(month: str):
@@ -129,6 +147,74 @@ async def load_clean_revenue(month: str):
         return {"status": "unavailable", "value": None, "reason": "source_unexpected_error"}
 
 
+def _clean_revenue_storage_key(month: str) -> str:
+    return f"clean_revenue_cache:{month}"
+
+
+def cached_clean_revenue(month: str) -> dict:
+    """Return the last validated finance result without blocking a request."""
+    cached = clean_revenue_cache.get(month)
+    if isinstance(cached, dict) and cached.get("status") in {"online", "stale"}:
+        return dict(cached)
+    return {"status": "updating", "value": None, "contractor_amount": None}
+
+
+def schedule_clean_revenue_refresh(month: str):
+    """Refresh finance once in background; never make an API response wait."""
+    task = clean_revenue_tasks.get(month)
+    if task and not task.done():
+        return task
+    cached_at = clean_revenue_cache_time.get(month, 0)
+    if clean_revenue_cache.get(month) and time.monotonic() - cached_at < CLEAN_REVENUE_REFRESH_SECONDS:
+        return None
+    failure = clean_revenue_failures.get(month)
+    if failure and time.monotonic() - failure["at"] < CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS:
+        return None
+
+    async def runner():
+        try:
+            # Storage uses a synchronous Supabase client. Hydrate it away from
+            # the event loop, then keep serving that last confirmed value while
+            # the financial source recalculates in the background.
+            if month not in clean_revenue_cache:
+                saved = await asyncio.to_thread(storage.get_setting, _clean_revenue_storage_key(month), {})
+                if isinstance(saved, dict) and saved.get("status") == "online":
+                    clean_revenue_cache[month] = {
+                        **{key: value for key, value in saved.items() if key != "saved_at"},
+                        "cached_snapshot": True,
+                    }
+                    clean_revenue_cache_time[month] = 0
+                    await broadcast({"type": "refresh", "month": month})
+            result = await load_clean_revenue(month)
+            if isinstance(result, dict) and result.get("status") == "online":
+                clean_revenue_cache[month] = result
+                clean_revenue_cache_time[month] = time.monotonic()
+                clean_revenue_failures.pop(month, None)
+                await asyncio.to_thread(storage.set_setting, _clean_revenue_storage_key(month), {
+                    **result, "saved_at": datetime.now(ZoneInfo(settings.timezone)).isoformat(),
+                })
+                await broadcast({"type": "refresh", "month": month})
+            else:
+                clean_revenue_failures[month] = {
+                    "at": time.monotonic(),
+                    "reason": str((result or {}).get("reason") or "source_unavailable"),
+                }
+                previous = clean_revenue_cache.get(month)
+                if isinstance(previous, dict) and previous.get("value") is not None:
+                    clean_revenue_cache[month] = {
+                        **previous,
+                        "status": "stale",
+                        "last_attempt": datetime.now(ZoneInfo(settings.timezone)).isoformat(),
+                    }
+                    await broadcast({"type": "refresh", "month": month})
+        finally:
+            clean_revenue_tasks.pop(month, None)
+
+    task = asyncio.create_task(runner())
+    clean_revenue_tasks[month] = task
+    return task
+
+
 async def load_jarvis_operations(resource: str, params: dict[str, str] | None = None):
     """Proxy a bounded read-only Jarvis payload so its token never reaches the browser."""
     allowed = {"sales-calls", "crm-audit", "marketing"}
@@ -208,6 +294,74 @@ async def warm_details_from_storage(month: str, period: str, custom_start: str =
         return False
     detail_cache[key]=details
     return True
+
+
+async def derive_snapshot_from_month_cache(month: str, period: str, custom_start: str = "", custom_end: str = ""):
+    """Populate an in-month range from the ready monthly snapshot.
+
+    A custom period needs no new Bitrix request: sales are monthly by
+    definition and the production reducer works from the persisted monthly
+    detail rows.  Returning ``False`` preserves the existing full-sync path
+    for a missing base snapshot or for cross-month dates.
+    """
+    if period == "month":
+        return False
+    key = (month, period, custom_start or "", custom_end or "")
+    base_key = (month, "month", "", "")
+    if base_key not in cache and not await warm_snapshot_from_storage(month, "month"):
+        return False
+    base_snapshot = cache.get(base_key)
+    base_details = detail_cache.get(base_key)
+    production_details = base_details.get("production") if isinstance(base_details, dict) else None
+    # A legacy KPI-only snapshot cannot be safely reduced to a calendar range.
+    # Fall through to a normal background sync rather than inventing zeroes.
+    if not isinstance(base_snapshot, dict) or not isinstance(production_details, dict) or not production_details:
+        return False
+    derived = derive_production_period(
+        month, period, settings.timezone,
+        base_snapshot.get("production") or {},
+        production_details,
+        custom_start, custom_end,
+    )
+    if derived is None:
+        return False
+    production, production_details = derived
+    period_start, period_end, _ = period_bounds(month, period, settings.timezone, custom_start, custom_end)
+    # Sales are monthly and immutable here; keep their large drill-down tree by
+    # reference instead of cloning it for every calendar click.
+    snapshot = {**base_snapshot, **{
+        "period": period,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "production": production,
+        "sync_seconds": 0.0,
+        "derived_from_month_snapshot": True,
+    }}
+    details = {**base_details, "production": production_details}
+    cache[key] = snapshot
+    detail_cache[key] = details
+    cache_time[key] = cache_time.get(base_key, time.monotonic())
+    derived_range_cache_time[key] = time.monotonic()
+    _trim_derived_range_cache()
+    return True
+
+
+def _trim_derived_range_cache():
+    while len(derived_range_cache_time) > DERIVED_RANGE_CACHE_LIMIT:
+        oldest = min(derived_range_cache_time, key=derived_range_cache_time.get)
+        derived_range_cache_time.pop(oldest, None)
+        cache.pop(oldest, None)
+        detail_cache.pop(oldest, None)
+        cache_time.pop(oldest, None)
+
+
+def invalidate_derived_ranges(month: str):
+    for key in list(derived_range_cache_time):
+        if key[0] == month:
+            derived_range_cache_time.pop(key, None)
+            cache.pop(key, None)
+            detail_cache.pop(key, None)
+            cache_time.pop(key, None)
 
 
 def auth_hash():
@@ -311,8 +465,20 @@ def _stuck_flow(month, details, observed_at=None):
         "exact_cohort": bool(baseline_ids),
     }
 
-def _apply_runtime(snap, details, month):
-    x=copy.deepcopy(snap)
+def _apply_runtime(snap, details, month, compact=False):
+    if compact:
+        # The hub only needs a handful of sales metrics.  Copy just the path
+        # that receives the finance overlay and keep drill-down arrays shared.
+        sales_source = snap.get("sales") or {}
+        sales = dict(sales_source)
+        overall = dict(sales.get("overall") or {})
+        total = dict(overall.get("total") or {})
+        total["metrics"] = dict(total.get("metrics") or {})
+        overall["total"] = total
+        sales["overall"] = overall
+        x = {**snap, "sales": sales, "production": copy.deepcopy(snap.get("production") or {})}
+    else:
+        x=copy.deepcopy(snap)
     x['plans']=storage.plan_dict(month)
     x['team']=storage.team()
     x['comments']=storage.comments(month)
@@ -375,9 +541,13 @@ def _apply_runtime(snap, details, month):
     return x
 
 
-async def operational_snapshot(snap, details, month):
-    x = _apply_runtime(snap, details, month)
-    finance = await load_clean_revenue(month)
+async def operational_snapshot(snap, details, month, compact=False):
+    x = _apply_runtime(snap, details, month, compact=compact)
+    # Finance reconciliation may take much longer than the CRM snapshot.
+    # Always render with the last valid result and update that card in the
+    # background instead of delaying the whole dashboard.
+    finance = cached_clean_revenue(month)
+    schedule_clean_revenue_refresh(month)
     # Keep the dashboard-side contract safe for a cached/source response that
     # predates incoming_amount. This is the financial total displayed as
     # "Общая сумма поступлений": clean revenue + contractors.
@@ -395,10 +565,10 @@ async def operational_snapshot(snap, details, month):
 
 def compact_snapshot_payload(snapshot):
     """Keep the first screen small; sales drill-down data is fetched on demand."""
-    result = copy.deepcopy(snapshot)
-    sales = result.get("sales")
+    result = {key: value for key, value in snapshot.items() if key != "sales"}
+    sales = snapshot.get("sales")
     if not isinstance(sales, dict):
-        return result
+        return {**result, "sales": sales} if "sales" in snapshot else result
 
     compact = {
         key: sales[key]
@@ -443,6 +613,8 @@ async def ensure_snapshot(month: str, period: str, force=False, custom_start: st
             cache[key] = snap
             detail_cache[key] = details
             cache_time[key] = time.monotonic()
+            if period == "month" and not custom_start and not custom_end:
+                invalidate_derived_ranges(month)
             pkey=persistent_snapshot_key(month,period,custom_start,custom_end)
             # Persist both KPI snapshot and drilldown rows. This keeps
             # расшифровки usable immediately after Render redeploy.
@@ -474,6 +646,7 @@ async def broadcast(payload):
 
 
 async def refresh_loop():
+    global previous_month_refresh_at
     # Один стартовый snapshot. Недельные периоды грузятся только по запросу пользователя.
     # Полная страховочная сверка выполняется реже; события Bitrix могут триггерить её раньше.
     while True:
@@ -484,8 +657,18 @@ async def refresh_loop():
         except asyncio.TimeoutError:
             pass
         try:
-            await ensure_snapshot(current_month(), "month", force=True)
-            await broadcast({"type": "refresh", "month": current_month()})
+            month = current_month()
+            current, previous = prewarm_months(month)
+            current_task = schedule_snapshot(*current, force=True)
+            if current_task:
+                await current_task
+            schedule_clean_revenue_refresh(month)
+            if time.monotonic() - previous_month_refresh_at >= PREVIOUS_MONTH_REFRESH_SECONDS:
+                previous_task = schedule_snapshot(*previous, force=True)
+                if previous_task:
+                    await previous_task
+                previous_month_refresh_at = time.monotonic()
+            await broadcast({"type": "refresh", "month": month})
         except Exception:
             pass
 
@@ -662,9 +845,12 @@ async def api_sales_section(
     key = (month, period, custom_start or "", custom_end or "")
     if period == "custom" and (not custom_start or not custom_end):
         return JSONResponse({"detail": "Для своего периода укажи дату начала и дату окончания"}, status_code=400)
-    if key not in cache and not await warm_snapshot_from_storage(month, period, custom_start, custom_end):
-        schedule_snapshot(month, period, force=False, custom_start=custom_start, custom_end=custom_end)
-        return JSONResponse({"ok": False, "loading": True, "message": "Детализация продаж готовится в фоне"}, status_code=202)
+    if key not in cache:
+        derived = await derive_snapshot_from_month_cache(month, period, custom_start, custom_end)
+        warmed = period == "month" and await warm_snapshot_from_storage(month, period, custom_start, custom_end)
+        if not derived and not warmed:
+            schedule_snapshot(month, period, force=False, custom_start=custom_start, custom_end=custom_end)
+            return JSONResponse({"ok": False, "loading": True, "message": "Детализация продаж готовится в фоне"}, status_code=202)
     if key not in detail_cache:
         await warm_details_from_storage(month, period, custom_start, custom_end)
     sales = _apply_runtime(cache[key], detail_cache.get(key, {}), month).get("sales") or {}

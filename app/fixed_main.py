@@ -84,37 +84,55 @@ async def api_snapshot(
     if key in core.cache:
         ttl = 60 if month == core.current_month() else 600
         stale = time.monotonic() - core.cache_time.get(key, 0) >= ttl
+        derived = bool(core.cache[key].get("derived_from_month_snapshot"))
         if stale:
-            schedule_snapshot(
-                month, period, force=True,
-                custom_start=custom_start, custom_end=custom_end
-            )
+            # Calendar ranges are projections of the monthly source snapshot.
+            # Refresh that one source, never start an expensive exact-range
+            # Bitrix job or persist arbitrary date combinations.
+            if derived:
+                schedule_snapshot(month, "month", force=True)
+            else:
+                schedule_snapshot(
+                    month, period, force=True,
+                    custom_start=custom_start, custom_end=custom_end
+                )
         result = {
             **await core.operational_snapshot(
-                core.cache[key], core.detail_cache.get(key, {}), month
+                core.cache[key], core.detail_cache.get(key, {}), month, compact=compact
             ),
-            "syncing": bool(
-                core.sync_tasks.get(key) and not core.sync_tasks[key].done()
-            ),
+            "syncing": bool(core.sync_tasks.get((month, "month", "", "")) and not core.sync_tasks[(month, "month", "", "")].done()) if derived else bool(core.sync_tasks.get(key) and not core.sync_tasks[key].done()),
         }
         return core.compact_snapshot_payload(result) if compact else result
 
     # 2) After Render restart, use persistent snapshot before asking Bitrix.
-    if await core.warm_snapshot_from_storage(month, period, custom_start, custom_end):
+    if period == "month" and await core.warm_snapshot_from_storage(month, period, custom_start, custom_end):
         schedule_snapshot(
             month, period, force=True,
             custom_start=custom_start, custom_end=custom_end
         )
         result = {
             **await core.operational_snapshot(
-                core.cache[key], core.detail_cache.get(key, {}), month
+                core.cache[key], core.detail_cache.get(key, {}), month, compact=compact
             ),
             "syncing": True,
             "cached_snapshot": True,
         }
         return core.compact_snapshot_payload(result) if compact else result
 
-    # 3) Already running: report progress, never create a duplicate task.
+    # 3) A calendar range inside the selected month is derived from the
+    # ready monthly detail snapshot. No additional Bitrix synchronisation is
+    # needed merely because the user changed dates.
+    if await core.derive_snapshot_from_month_cache(month, period, custom_start, custom_end):
+        result = {
+            **await core.operational_snapshot(
+                core.cache[key], core.detail_cache.get(key, {}), month, compact=compact
+            ),
+            "syncing": False,
+            "derived_from_month_snapshot": True,
+        }
+        return core.compact_snapshot_payload(result) if compact else result
+
+    # 4) Already running: report progress, never create a duplicate task.
     task = core.sync_tasks.get(key)
     if task and not task.done():
         started = sync_started.get(key, time.monotonic())
@@ -131,7 +149,7 @@ async def api_snapshot(
             status_code=202,
         )
 
-    # 4) Previous background calculation failed. Show its real error for a
+    # 5) Previous background calculation failed. Show its real error for a
     # cooldown instead of silently restarting the same failed calculation.
     failure = sync_errors.get(key)
     if failure:
