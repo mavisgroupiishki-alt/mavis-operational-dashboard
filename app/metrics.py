@@ -253,7 +253,8 @@ def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[s
         New -> Cold
         Existing -> Repeat
     - Google/Yandex calls and website requests, recommendation,
-      "sources ended", transferred by expert, open-line channels -> Incoming.
+      "sources ended", and open-line channels -> Incoming.
+    - Sources transferred by an expert -> Repeat.
     - Remaining Existing clients -> Repeat.
     - Remaining New/unknown clients -> Incoming.
     """
@@ -289,6 +290,11 @@ def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[s
     if "входящ" in src and "звон" in src and "прям" in src:
         return "Повторные продажи по базе" if existing else "Входящий трафик продажи"
 
+    # "Передан экспертом/экспертам" is a handoff of an existing contact,
+    # so it belongs to repeat sales regardless of how the client type was filled.
+    if re.search(r"передан.*эксперт", src):
+        return "Повторные продажи по базе"
+
     # Explicit incoming channels from RNP logic.
     incoming_patterns = [
         r"google.*реклам", r"google.*органик",
@@ -296,7 +302,6 @@ def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[s
         r"заявк.*сайт.*mavis", r"заявк.*сайт.*мавис",
         r"по рекомендац",
         r"источник.*кончил",
-        r"передан.*эксперт",
         r"telegram|телеграм",
         r"viber|вайбер",
         r"электрон.*почт",
@@ -926,7 +931,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
         },
         "classification": {
             "blocks": sales_blocks,
-            "rule": "РНП: Холодный звонок/Входящий прямой/Реанимация распределяются по типу клиента; Белтехэкспертиза → холодные; Google/Yandex/сайт/рекомендации/передан экспертом → входящие",
+            "rule": "РНП: Холодный звонок/Входящий прямой/Реанимация распределяются по типу клиента; Белтехэкспертиза → холодные; Передан экспертом → повторные; Google/Yandex/сайт/рекомендации → входящие",
             "deal_client_type_field": F_DEAL_CLIENT_TYPE,
             "lead_client_type_field": F_LEAD_CLIENT_TYPE,
         },
