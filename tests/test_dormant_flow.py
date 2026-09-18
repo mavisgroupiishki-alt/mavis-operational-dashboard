@@ -24,8 +24,10 @@ class DormantFlowTests(unittest.TestCase):
             baseline = main._capture_dormant_baseline("2026-09", {"production": {"dormant": [{"id": "1"}]}})
             again = main._capture_dormant_baseline("2026-09", {"production": {"dormant": [{"id": "2"}]}})
 
-        self.assertEqual(baseline["count"], 298)
-        self.assertEqual(again["count"], 298)
+        self.assertEqual(baseline["count"], 320)
+        self.assertEqual(again["count"], 320)
+        self.assertEqual(again["confirmed_to_return_count"], 3)
+        self.assertEqual(again["confirmed_to_production_count"], 7)
         self.assertEqual(again["ids"], [])
 
     def test_future_month_captures_ids_only_on_the_first_day(self):
@@ -48,6 +50,19 @@ class DormantFlowTests(unittest.TestCase):
         self.assertEqual(flow["to_returns_count"], 1)
         self.assertEqual(flow["to_production_count"], 1)
         self.assertEqual(flow["current_delta"], {"value": -1, "pct": -50.0})
+
+    def test_september_uses_confirmed_transition_totals(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage):
+            main._capture_dormant_baseline("2026-09", {"production": {}})
+            flow = main._stuck_flow(
+                "2026-09",
+                {"production": {"dormant": [], "dormant_to_return": [{"id": "1"}], "dormant_to_production": [{"id": "2"}]}},
+                datetime(2026, 9, 17, tzinfo=ZoneInfo("Europe/Minsk")),
+            )
+
+        self.assertEqual(flow["to_returns_count"], 3)
+        self.assertEqual(flow["to_production_count"], 7)
 
 
 if __name__ == "__main__":

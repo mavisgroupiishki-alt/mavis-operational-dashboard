@@ -26,6 +26,19 @@ RECOVERED_VALUES = {
     "dormant_with_reason_pct": 0.0,
 }
 
+# The original 1 September dormant-deal list was not retained. These are the
+# figures confirmed by the operations team and are kept separately from live
+# Bitrix history, which can be incomplete for old cross-funnel transitions.
+SEPTEMBER_2026_DORMANT_BASELINE = {
+    "baseline_date": "2026-09-01",
+    "count": 320,
+    "ids": [],
+    "source": "confirmed_manual",
+    "confirmed_to_return_count": 3,
+    "confirmed_to_production_count": 7,
+    "confirmed_revision": 2,
+}
+
 
 def restore_missing_production_plan(storage):
     """Restore the captured plan only when its exact context is absent.
@@ -42,4 +55,13 @@ def restore_missing_production_plan(storage):
         RECOVERY_CONTEXT_KEY,
         RECOVERED_VALUES,
     )
+    return True
+
+
+def restore_confirmed_september_dormant_baseline(storage):
+    """Apply the corrected, user-confirmed September baseline once."""
+    current = storage.dormant_baseline(RECOVERY_MONTH)
+    if current.get("confirmed_revision") == SEPTEMBER_2026_DORMANT_BASELINE["confirmed_revision"]:
+        return False
+    storage.set_dormant_baseline(RECOVERY_MONTH, SEPTEMBER_2026_DORMANT_BASELINE)
     return True

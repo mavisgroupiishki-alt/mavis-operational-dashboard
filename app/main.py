@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .metrics import build_snapshot, build_trends_light, derive_production_period, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, week_of_month
-from .recovery import restore_missing_production_plan
+from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .settings import settings
 from .storage import Storage
@@ -398,16 +398,6 @@ def _dormant_stages(available):
     return eligible
 
 
-SEPTEMBER_2026_DORMANT_BASELINE = {
-    "baseline_date": "2026-09-01",
-    "count": 298,
-    # The count was confirmed manually after the original first-day card list
-    # had expired with the former temporary storage. Future months retain IDs.
-    "ids": [],
-    "source": "confirmed_manual",
-}
-
-
 def _capture_dormant_baseline(month, details, observed_at=None):
     """Persist the first-day stuck-deal cohort without overwriting it later."""
     existing = storage.dormant_baseline(month)
@@ -451,17 +441,24 @@ def _stuck_flow(month, details, observed_at=None):
     to_returns = only_baseline(prod.get("dormant_to_return"))
     to_production = only_baseline(prod.get("dormant_to_production"))
     base_count = int(baseline.get("count") or 0)
+    confirmed_returns = baseline.get("confirmed_to_return_count")
+    confirmed_production = baseline.get("confirmed_to_production_count")
+    # The September cohort was reconciled manually because its first-day list
+    # is no longer available. Keep those confirmed totals authoritative while
+    # all cohorts with saved deal IDs continue to use live history.
+    returns_count = int(confirmed_returns) if confirmed_returns is not None else len(to_returns)
+    production_count = int(confirmed_production) if confirmed_production is not None else len(to_production)
     return {
         "available": bool(baseline),
         "baseline_date": baseline.get("baseline_date") or f"{month}-01",
         "as_of": observed_at.date().isoformat(),
         "baseline_count": base_count,
         "current_count": current_count,
-        "to_returns_count": len(to_returns),
-        "to_production_count": len(to_production),
+        "to_returns_count": returns_count,
+        "to_production_count": production_count,
         "current_delta": delta(current_count, base_count),
-        "returns_delta": delta(len(to_returns), 0),
-        "production_delta": delta(len(to_production), 0),
+        "returns_delta": delta(returns_count, 0),
+        "production_delta": delta(production_count, 0),
         "exact_cohort": bool(baseline_ids),
     }
 
@@ -520,14 +517,25 @@ def _apply_runtime(snap, details, month, compact=False):
     k['dormant_with_reason_amount']=round(sum(float(r.get('amount') or 0) for r in with_reason),2)
     k['dormant_with_reason_pct']=round(len(with_reason)/len(rows)*100,1) if rows else 0
     k['dormant_without_reason_count']=len(without_reason)
+    active_rows=list(prod_details.get('active') or [])
+    month_end=month_bounds(month,settings.timezone)[1]
+    active_with_reason=[r for r in active_rows if r.get('stuck_reasons')]
+    active_expected_month=[r for r in active_rows if (value:=parse_dt(r.get('expected_close'),month_start.tzinfo)) and month_start<=value<month_end]
+    active_with_reason_expected_month=[r for r in active_with_reason if (value:=parse_dt(r.get('expected_close'),month_start.tzinfo)) and month_start<=value<month_end]
+    k['active_stuck_with_reason_count']=len(active_with_reason)
+    k['active_stuck_with_reason_amount']=round(sum(float(r.get('amount') or 0) for r in active_with_reason),2)
+    k['active_stuck_with_reason_pct']=round(len(active_with_reason)/len(active_rows)*100,1) if active_rows else 0
+    k['active_stuck_with_reason_expected_month_count']=len(active_with_reason_expected_month)
+    k['active_stuck_with_reason_expected_month_amount']=round(sum(float(r.get('amount') or 0) for r in active_with_reason_expected_month),2)
+    k['active_stuck_with_reason_expected_month_pct']=round(len(active_with_reason_expected_month)/len(active_expected_month)*100,1) if active_expected_month else 0
     from collections import defaultdict
-    def reason_rows(items):
-        acc=defaultdict(int)
+    def reason_rows(items, denominator):
+        acc=defaultdict(lambda:{'count':0,'amount':0.0})
         for row in items:
             for reason in row.get('stuck_reasons') or []:
-                acc[reason]+=1
-        total=len(items)
-        return [{'name':name,'count':count,'pct':round(count/total*100,1) if total else 0} for name,count in sorted(acc.items(),key=lambda t:(-t[1],t[0]))]
+                acc[reason]['count']+=1
+                acc[reason]['amount']+=float(row.get('amount') or 0)
+        return [{'name':name,'count':value['count'],'amount':round(value['amount'],2),'pct':round(value['count']/denominator*100,1) if denominator else 0} for name,value in sorted(acc.items(),key=lambda t:(-t[1]['count'],t[0]))]
     p['dormant']={
         **p.get('dormant',{}),
         'all_with_reason_count':len(all_with_reason),
@@ -535,8 +543,16 @@ def _apply_runtime(snap, details, month, compact=False):
         'with_reason_count':len(with_reason),
         'with_reason_amount':k['dormant_with_reason_amount'],
         'with_reason_pct':k['dormant_with_reason_pct'],
-        'reasons':reason_rows(rows),
-        'all_reasons':reason_rows(all_rows),
+        'reasons':reason_rows(rows,len(rows)),
+        'all_reasons':reason_rows(all_rows,len(all_rows)),
+    }
+    p['active_stuck']={
+        **p.get('active_stuck',{}),
+        'all_reasons':reason_rows(active_with_reason,len(active_rows)),
+        'expected_month_reasons':reason_rows(active_with_reason_expected_month,len(active_expected_month)),
+        'all_count':len(active_rows),
+        'expected_month_count':len(active_expected_month),
+        'expected_month_rule':'Предполагаемая дата закрытия попадает в выбранный месяц',
     }
     return x
 
@@ -697,6 +713,7 @@ async def lifespan(app: FastAPI):
     # database was wiped. Restore it once on the persistent disk, without ever
     # replacing a plan subsequently entered through the dashboard.
     restore_missing_production_plan(storage)
+    restore_confirmed_september_dormant_baseline(storage)
     # Не блокируем запуск сервера тяжелой первой синхронизацией.
     task = asyncio.create_task(refresh_loop())
     refresh_trigger.set()

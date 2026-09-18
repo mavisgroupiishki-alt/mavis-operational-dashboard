@@ -48,6 +48,8 @@ class PwaAssetTests(unittest.TestCase):
         )
         self.assertIsNotNone(experts_function)
         self.assertIn("const p=state.production.kpi;", experts_function.group("body"))
+        self.assertIn("Активные зависшие — ожидаемое закрытие в месяце", experts_function.group("body"))
+        self.assertNotIn("В воронке «Зависшие»", experts_function.group("body"))
 
 
 if __name__ == "__main__":

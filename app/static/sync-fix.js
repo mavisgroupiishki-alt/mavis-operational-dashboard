@@ -1,4 +1,4 @@
-// MAVIS dashboard v3.1.5 — robust initial synchronization.
+// MAVIS dashboard v3.1.6 — robust initial synchronization.
 (() => {
   let attempts = 0;
   const MAX_ATTEMPTS = 12; // ~30 seconds at 2.5 s polling
@@ -133,7 +133,7 @@
   } catch (_) {}
 
   const marker = document.querySelector("#buildMarker");
-  if (marker) marker.textContent = "v3.1.5";
+  if (marker) marker.textContent = "v3.1.6";
 
   attempts = 0;
   load();

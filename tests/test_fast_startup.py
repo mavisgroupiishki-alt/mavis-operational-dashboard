@@ -61,6 +61,30 @@ class FastStartupTests(unittest.TestCase):
 
         self.assertFalse(result)
 
+    def test_active_stuck_expected_month_uses_expected_close(self):
+        production = {"production_at_month_start": {"count": 0}}
+        details = {
+            "new": [], "closed": [], "returns": [], "dormant": [], "returned": [],
+            "dormant_to_production": [], "dormant_to_return": [], "dormant_entered_since_month_start": [],
+            "overdue": [], "active_missing_expected": [], "active_missing_service": [],
+            "active_missing_expert": [], "closed_without_act": [],
+            "active": [
+                {"id": "inside", "prod_start": "2026-09-03T00:00:00+03:00", "expected_close": "2026-09-03T00:00:00+03:00", "amount": 100, "stuck_reasons": ["Нет денег"]},
+                {"id": "outside", "prod_start": "2026-09-10T00:00:00+03:00", "expected_close": "2026-11-10T00:00:00+03:00", "amount": 200, "stuck_reasons": ["Нет денег"]},
+            ],
+        }
+
+        result = derive_production_period(
+            "2026-09", "custom", "Europe/Minsk", production, details,
+            "2026-09-02", "2026-09-04",
+        )
+
+        self.assertIsNotNone(result)
+        derived, derived_details = result
+        self.assertEqual(derived["kpi"]["active_stuck_with_reason_count"], 2)
+        self.assertEqual(derived["kpi"]["active_stuck_with_reason_expected_month_count"], 1)
+        self.assertEqual([row["id"] for row in derived_details["active_stuck_with_reason_expected_month"]], ["inside"])
+
     def test_compact_snapshot_keeps_hub_metrics_and_removes_sales_trees(self):
         source = {
             "ok": True,

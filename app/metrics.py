@@ -1262,6 +1262,18 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     active_missing_service = [r for r in active if norm_text(r.get("service")) in {"", "не указано"}]
     active_missing_expert = [r for r in active if norm_text(r.get("expert")) in {"", "не указан", "не указано"}]
     closed_without_act = [r for r in closed if norm_text(r.get("act")) != "да"]
+    # Активно зависшие — это открытые карточки именно в производстве с
+    # заполненной причиной зависания. Второй срез — карточки с
+    # предполагаемой датой закрытия в выбранном месяце.
+    active_with_reason = [r for r in active if r.get("stuck_reasons")]
+    active_expected_month = [
+        r for r in active
+        if (x := parse_dt(r.get("expected_close"), tz)) and month_start <= x < next_start
+    ]
+    active_with_reason_expected_month = [
+        r for r in active_with_reason
+        if (x := parse_dt(r.get("expected_close"), tz)) and month_start <= x < next_start
+    ]
 
     closed_stats = aggregate_prod_rows(closed)
     production_at_month_start = [deal for deal in production_at_start_raw if was_in_production_on(deal, month_start, tz)]
@@ -1281,6 +1293,12 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "active_missing_service_count": len(active_missing_service),
         "active_missing_expert_count": len(active_missing_expert),
         "closed_without_act_count": len(closed_without_act),
+        "active_stuck_with_reason_count": len(active_with_reason),
+        "active_stuck_with_reason_amount": round(sum(r["amount"] for r in active_with_reason), 2),
+        "active_stuck_with_reason_pct": pct(len(active_with_reason), len(active)),
+        "active_stuck_with_reason_expected_month_count": len(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_amount": round(sum(r["amount"] for r in active_with_reason_expected_month), 2),
+        "active_stuck_with_reason_expected_month_pct": pct(len(active_with_reason_expected_month), len(active_expected_month)),
     }
     with_reason = [r for r in dormant if r.get("stuck_reasons")]
     kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
@@ -1338,10 +1356,20 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     stages=[{"name":k,"count":v["count"],"amount":round(v["amount"],2)} for k,v in stages_acc.items()]
     stages.sort(key=lambda x:-x["amount"])
 
-    reasons_acc=defaultdict(int)
-    for r in dormant:
-        for reason in r.get("stuck_reasons",[]): reasons_acc[reason]+=1
-    reasons=[{"name":k,"count":v,"pct":pct(v,len(dormant))} for k,v in sorted(reasons_acc.items(),key=lambda kv:(-kv[1],kv[0]))]
+    def reason_rows(rows, denominator):
+        reasons_acc = defaultdict(lambda: {"count": 0, "amount": 0.0})
+        for row in rows:
+            for reason in row.get("stuck_reasons", []):
+                reasons_acc[reason]["count"] += 1
+                reasons_acc[reason]["amount"] += row["amount"]
+        return [
+            {"name": key, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], denominator)}
+            for key, value in sorted(reasons_acc.items(), key=lambda item: (-item[1]["count"], item[0]))
+        ]
+
+    dormant_reasons = reason_rows(dormant, len(dormant))
+    active_reasons = reason_rows(active_with_reason, len(active))
+    active_expected_month_reasons = reason_rows(active_with_reason_expected_month, len(active_expected_month))
 
     returns_acc=defaultdict(lambda:{"count":0,"amount":0.0})
     for r in returns:
@@ -1363,7 +1391,14 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
-        "dormant": {"reasons": reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
+        "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
+        "active_stuck": {
+            "all_reasons": active_reasons,
+            "expected_month_reasons": active_expected_month_reasons,
+            "all_count": len(active),
+            "expected_month_count": len(active_expected_month),
+            "expected_month_rule": "Предполагаемая дата закрытия попадает в выбранный месяц",
+        },
         "return_reasons": return_reasons,
         "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
         "production_at_month_start": {
@@ -1375,6 +1410,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
                      "capacity":capacity,"dormant":dormant,"returned":returned,"dormant_to_production":dormant_to_production,"dormant_to_return":dormant_to_return,"overdue":overdue,
                      "dormant_entered_since_month_start":dormant_entered_since_month_start,
                      "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue,
+                     "active_stuck_with_reason":active_with_reason,"active_stuck_with_reason_expected_month":active_with_reason_expected_month,
                      "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
                      "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
     }
@@ -1463,6 +1499,15 @@ def derive_production_period(
     active_missing_service = copied("active_missing_service")
     active_missing_expert = copied("active_missing_expert")
     closed_without_act = [row for row in closed if norm_text(row.get("act")) != "да"]
+    active_with_reason = [row for row in active if row.get("stuck_reasons")]
+    active_expected_month = [
+        row for row in active
+        if (value := parse_dt(row.get("expected_close"), tz)) and month_start <= value < next_start
+    ]
+    active_with_reason_expected_month = [
+        row for row in active_with_reason
+        if (value := parse_dt(row.get("expected_close"), tz)) and month_start <= value < next_start
+    ]
 
     def amount(rows: List[Dict[str, Any]]) -> float:
         return round(sum(num(row.get("amount")) for row in rows), 2)
@@ -1482,6 +1527,12 @@ def derive_production_period(
         "active_missing_service_count": len(active_missing_service),
         "active_missing_expert_count": len(active_missing_expert),
         "closed_without_act_count": len(closed_without_act),
+        "active_stuck_with_reason_count": len(active_with_reason),
+        "active_stuck_with_reason_amount": amount(active_with_reason),
+        "active_stuck_with_reason_pct": pct(len(active_with_reason), len(active)),
+        "active_stuck_with_reason_expected_month_count": len(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_amount": amount(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_pct": pct(len(active_with_reason_expected_month), len(active_expected_month)),
     }
     with_reason = [row for row in dormant if row.get("stuck_reasons")]
     kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
@@ -1547,11 +1598,21 @@ def derive_production_period(
     stage_rows = [{"name": name, "count": value["count"], "amount": round(value["amount"], 2)} for name, value in stages.items()]
     stage_rows.sort(key=lambda row: -row["amount"])
 
-    reason_counts = defaultdict(int)
-    for row in dormant:
-        for reason in row.get("stuck_reasons") or []:
-            reason_counts[str(reason)] += 1
-    reasons = [{"name": name, "count": count, "pct": pct(count, len(dormant))} for name, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))]
+    def reason_rows(rows, denominator):
+        reason_counts = defaultdict(lambda: {"count": 0, "amount": 0.0})
+        for row in rows:
+            for reason in row.get("stuck_reasons") or []:
+                item = reason_counts[str(reason)]
+                item["count"] += 1
+                item["amount"] += num(row.get("amount"))
+        return [
+            {"name": name, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], denominator)}
+            for name, value in sorted(reason_counts.items(), key=lambda item: (-item[1]["count"], item[0]))
+        ]
+
+    dormant_reasons = reason_rows(dormant, len(dormant))
+    active_reasons = reason_rows(active_with_reason, len(active))
+    active_expected_month_reasons = reason_rows(active_with_reason_expected_month, len(active_expected_month))
 
     return_counts = defaultdict(lambda: {"count": 0, "amount": 0.0})
     for row in returns:
@@ -1574,6 +1635,7 @@ def derive_production_period(
         "dormant_to_production": dormant_to_production, "dormant_to_return": dormant_to_return,
         "overdue": overdue, "dormant_entered_since_month_start": dormant_entered_since_month_start,
         "dormant_expected": dormant_expected, "dormant_overdue": dormant_overdue,
+        "active_stuck_with_reason": active_with_reason, "active_stuck_with_reason_expected_month": active_with_reason_expected_month,
         "active_missing_expected": active_missing_expected, "active_missing_service": active_missing_service,
         "active_missing_expert": active_missing_expert, "closed_without_act": closed_without_act,
     }
@@ -1583,7 +1645,14 @@ def derive_production_period(
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
         "experts": experts, "stages": stage_rows,
-        "dormant": {"reasons": reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason), len(dormant))},
+        "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason), len(dormant))},
+        "active_stuck": {
+            "all_reasons": active_reasons,
+            "expected_month_reasons": active_expected_month_reasons,
+            "all_count": len(active),
+            "expected_month_count": len(active_expected_month),
+            "expected_month_rule": "Предполагаемая дата закрытия попадает в выбранный месяц",
+        },
         "return_reasons": return_reasons,
         "overdue": {"count": len(overdue), "amount": amount(overdue), "buckets": buckets},
         "production_at_month_start": copy.deepcopy(production.get("production_at_month_start") or {"count": 0, "as_of": month_start.isoformat(), "rule": ""}),
@@ -1682,7 +1751,7 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
         "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
         "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
         "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
-        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","dormant_with_reason_count":"dormant_expected","dormant_all_with_reason_count":"dormant","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","dormant_with_reason_count":"dormant_expected","dormant_all_with_reason_count":"dormant","active_stuck_with_reason_count":"active_stuck_with_reason","active_stuck_with_reason_expected_month_count":"active_stuck_with_reason_expected_month","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
         "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
         "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
         "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"

@@ -1,6 +1,11 @@
 import unittest
 
-from app.recovery import RECOVERED_VALUES, restore_missing_production_plan
+from app.recovery import (
+    RECOVERED_VALUES,
+    SEPTEMBER_2026_DORMANT_BASELINE,
+    restore_confirmed_september_dormant_baseline,
+    restore_missing_production_plan,
+)
 
 
 class FakeStorage:
@@ -13,6 +18,19 @@ class FakeStorage:
 
     def set_plans(self, month, scope, context_type, context_key, values):
         self.writes.append((month, scope, context_type, context_key, values))
+
+
+class FakeDormantStorage:
+    def __init__(self, baseline=None):
+        self.baseline = baseline or {}
+        self.writes = []
+
+    def dormant_baseline(self, month):
+        return self.baseline
+
+    def set_dormant_baseline(self, month, value):
+        self.writes.append((month, value))
+        self.baseline = value
 
 
 class PlanRecoveryTests(unittest.TestCase):
@@ -28,6 +46,13 @@ class PlanRecoveryTests(unittest.TestCase):
 
         self.assertFalse(restore_missing_production_plan(storage))
         self.assertEqual(storage.writes, [])
+
+    def test_replaces_old_september_dormant_baseline_once(self):
+        storage = FakeDormantStorage({"count": 298, "source": "confirmed_manual"})
+
+        self.assertTrue(restore_confirmed_september_dormant_baseline(storage))
+        self.assertEqual(storage.writes, [("2026-09", SEPTEMBER_2026_DORMANT_BASELINE)])
+        self.assertFalse(restore_confirmed_september_dormant_baseline(storage))
 
 
 if __name__ == "__main__":

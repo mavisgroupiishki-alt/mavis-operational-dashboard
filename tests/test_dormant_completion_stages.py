@@ -72,6 +72,19 @@ class DormantCompletionStageTests(unittest.TestCase):
 
         self.assertEqual([row["id"] for row in rows], ["30"])
 
+    def test_active_stuck_reason_metric_opens_production_cards_not_dormant(self):
+        details = {
+            "dormant": [{"id": "30", "stuck_reasons": ["Нет документов"]}],
+            "active_stuck_with_reason": [{"id": "28", "stuck_reasons": ["Нет документов"]}],
+            "active_stuck_with_reason_expected_month": [{"id": "29", "stuck_reasons": ["Нет документов"]}],
+        }
+
+        all_rows = filter_prod_details(details, "active_stuck_with_reason_count", reason="Нет документов")
+        period_rows = filter_prod_details(details, "active_stuck_with_reason_expected_month_count", reason="Нет документов")
+
+        self.assertEqual([row["id"] for row in all_rows], ["28"])
+        self.assertEqual([row["id"] for row in period_rows], ["29"])
+
 
 if __name__ == "__main__":
     unittest.main()
