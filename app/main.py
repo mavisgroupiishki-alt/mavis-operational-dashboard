@@ -8,7 +8,7 @@ import secrets
 import time
 from calendar import monthrange
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .metrics import build_snapshot, build_trends_light, derive_production_period, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, week_of_month
+from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .settings import settings
@@ -52,10 +53,73 @@ DERIVED_RANGE_CACHE_LIMIT = 8
 derived_range_cache_time = {}
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
+automatic_nps_cache = {}
+automatic_nps_cache_time = {}
+automatic_nps_tasks = {}
+AUTOMATIC_NPS_REFRESH_SECONDS = 15 * 60
 
 
 def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+def _automatic_nps_key(as_of=None):
+    as_of = as_of or datetime.now(ZoneInfo(settings.timezone))
+    return previous_calendar_week(as_of, settings.timezone)[0].date().isoformat()
+
+
+def _automatic_nps_empty(as_of=None, status="updating"):
+    week_start, week_end = previous_calendar_week(as_of, settings.timezone)
+    return {
+        "status": status,
+        "date_basis": "created_date",
+        "week_start": week_start.date().isoformat(),
+        "week_end": (week_end - timedelta(days=1)).date().isoformat(),
+        "overall": {"value": None, "count": 0},
+        "experts": {},
+        "excluded_without_score": 0,
+        "unmatched_expert_count": 0,
+    }
+
+
+def cached_automatic_nps(as_of=None):
+    cached = automatic_nps_cache.get(_automatic_nps_key(as_of))
+    return dict(cached) if isinstance(cached, dict) else _automatic_nps_empty(as_of)
+
+
+def schedule_automatic_nps_refresh(as_of=None):
+    as_of = as_of or datetime.now(ZoneInfo(settings.timezone))
+    key = _automatic_nps_key(as_of)
+    task = automatic_nps_tasks.get(key)
+    if task and not task.done():
+        return task
+    if key in automatic_nps_cache and time.monotonic() - automatic_nps_cache_time.get(key, 0) < AUTOMATIC_NPS_REFRESH_SECONDS:
+        return None
+
+    async def runner():
+        try:
+            week_start, week_end = previous_calendar_week(as_of, settings.timezone)
+            tasks = await client.tasks_for_group(NPS_GROUP_ID, week_start, week_end)
+            result = aggregate_automatic_nps(tasks or [], as_of, settings.timezone)
+            for expert in result["experts"].values():
+                for task_row in expert["tasks"]:
+                    task_row["task_url"] = f"{client.portal}/workgroups/group/{NPS_GROUP_ID}/tasks/task/view/{task_row['id']}/"
+            automatic_nps_cache[key] = result
+            automatic_nps_cache_time[key] = time.monotonic()
+            await broadcast({"type": "refresh", "automatic_nps": key})
+        except Exception:
+            previous = automatic_nps_cache.get(key)
+            if isinstance(previous, dict):
+                automatic_nps_cache[key] = {**previous, "status": "stale"}
+            else:
+                automatic_nps_cache[key] = _automatic_nps_empty(as_of, status="unavailable")
+            automatic_nps_cache_time[key] = time.monotonic()
+        finally:
+            automatic_nps_tasks.pop(key, None)
+
+    task = asyncio.create_task(runner())
+    automatic_nps_tasks[key] = task
+    return task
 
 
 def prewarm_months(month: str) -> list[tuple[str, str]]:
@@ -576,6 +640,8 @@ async def operational_snapshot(snap, details, month, compact=False):
         except (KeyError, TypeError, ValueError):
             pass
     x["clean_revenue"] = finance
+    x["automatic_nps"] = cached_automatic_nps()
+    schedule_automatic_nps_refresh()
     return x
 
 
@@ -679,6 +745,7 @@ async def refresh_loop():
             if current_task:
                 await current_task
             schedule_clean_revenue_refresh(month)
+            schedule_automatic_nps_refresh()
             if time.monotonic() - previous_month_refresh_at >= PREVIOUS_MONTH_REFRESH_SECONDS:
                 previous_task = schedule_snapshot(*previous, force=True)
                 if previous_task:

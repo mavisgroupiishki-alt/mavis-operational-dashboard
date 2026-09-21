@@ -8,7 +8,7 @@ from . import main as core
 
 app = core.app
 
-# v3.1.6 — snapshot sync guard.
+# v3.1.7 — automatic NPS is cohort-based on task creation date.
 # The old implementation swallowed background errors and the browser retried
 # every 2.5 seconds forever. Keep a per-period failure state and surface it.
 sync_errors = {}
@@ -200,7 +200,7 @@ async def health():
         "ok": True,
         "bitrix_configured": bool(core.settings.bitrix_webhook),
         "last_error": core.last_error,
-        "version": "3.1.6",
+        "version": "3.1.7",
         "storage": core.storage.backend_name,
         "supabase_configured": bool(
             core.settings.supabase_url and core.settings.supabase_key

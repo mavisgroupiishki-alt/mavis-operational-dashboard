@@ -48,6 +48,7 @@ class BitrixClient:
             p=await self.call(method,q); result=p.get("result")
             if isinstance(result,list): batch=result
             elif isinstance(result,dict) and isinstance(result.get("items"),list): batch=result["items"]
+            elif isinstance(result,dict) and isinstance(result.get("tasks"),list): batch=result["tasks"]
             elif isinstance(result,dict) and isinstance(result.get("productRows"),list): batch=result["productRows"]
             else:return result
             items.extend(batch)
@@ -59,6 +60,12 @@ class BitrixClient:
         return await self.list_all("crm.deal.list",{"order":{"ID":"ASC"},"filter":flt,"select":select})
     async def lead_list(self,flt,select):
         return await self.list_all("crm.lead.list",{"order":{"ID":"ASC"},"filter":flt,"select":select})
+    async def tasks_for_group(self,group_id,created_from,created_to):
+        return await self.list_all("tasks.task.list",{
+            "order":{"CREATED_DATE":"DESC","ID":"DESC"},
+            "filter":{"GROUP_ID":int(group_id),"STATUS":"5",">=CREATED_DATE":created_from.isoformat(),"<CREATED_DATE":created_to.isoformat()},
+            "select":["ID","TITLE","STATUS","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
+        })
     async def product_rows(self,deal_id):
         try:
             p=await self.call("crm.item.productrow.list",{"filter":{"=ownerType":"D","=ownerId":int(deal_id)}})
