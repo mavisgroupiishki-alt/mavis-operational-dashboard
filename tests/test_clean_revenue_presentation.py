@@ -58,6 +58,26 @@ class CleanRevenuePresentationTests(unittest.TestCase):
 
         self.assertIsNone(second_task)
 
+    def test_finance_refreshes_again_after_one_minute(self):
+        async def exercise():
+            task = main.schedule_clean_revenue_refresh("2026-09")
+            self.assertIsNotNone(task)
+            await task
+
+        refreshed = {"status": "online", "value": 73280.0, "contractor_amount": 10000.0}
+        with (
+            patch.object(main, "clean_revenue_cache", {"2026-09": {"status": "online", "value": 72030.0}}),
+            patch.object(main, "clean_revenue_cache_time", {"2026-09": 939.0}),
+            patch.object(main, "clean_revenue_tasks", {}),
+            patch.object(main, "clean_revenue_failures", {}),
+            patch.object(main.time, "monotonic", return_value=1000.0),
+            patch.object(main, "load_clean_revenue", new=AsyncMock(return_value=refreshed)) as load,
+            patch.object(main, "broadcast", new=AsyncMock()),
+        ):
+            asyncio.run(exercise())
+
+        load.assert_awaited_once_with("2026-09")
+
 
 if __name__ == "__main__":
     unittest.main()
