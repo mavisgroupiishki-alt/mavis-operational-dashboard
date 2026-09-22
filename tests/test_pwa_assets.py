@@ -24,6 +24,7 @@ class PwaAssetTests(unittest.TestCase):
         self.assertNotIn('value="last_week"', home.text)
         self.assertIn('id="installIosSteps"', home.text)
         self.assertIn("На экран „Домой“", home.text)
+        self.assertIn('id="dashboardChatWidget"', home.text)
         self.assertEqual(manifest.status_code, 200)
         self.assertTrue(manifest.headers["content-type"].startswith("application/manifest+json"))
         self.assertIn('"display": "standalone"', manifest.text)
@@ -60,6 +61,16 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('openPlanDialog("production","week","0")', script)
         self.assertIn('openPlanDialog("production","product")', script)
         self.assertIn('openPlanDialog("production","expert")', script)
+
+    def test_bitrix_chat_is_a_global_widget(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("function renderDashboardChat()", script)
+        self.assertIn("function setDashboardChatOpen", script)
+        self.assertIn('data-dashboard-chat-toggle="1"', script)
+        self.assertIn('data-dashboard-chat-close="1"', script)
+        self.assertIn('dashboardChatOpen=true;renderDashboardChat()', script)
+        self.assertNotIn("${dashboardChatMarkup()}</section>`", script)
 
 
 if __name__ == "__main__":
