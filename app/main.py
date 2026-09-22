@@ -197,6 +197,40 @@ def clean_revenue_period(month: str):
         return "", ""
 
 
+def clean_revenue_overdue_rows(payload: dict) -> list[dict]:
+    """Normalize finance-ledger arrears before exposing them to the browser."""
+    portal = client.portal if str(client.webhook or "").startswith("https://") else ""
+    rows = []
+    for source in payload.get("overdueScheduleRows") or []:
+        if not isinstance(source, dict):
+            continue
+        deal_id = str(source.get("dealId") or "").strip()
+        schedule_id = str(source.get("scheduleId") or "").strip()
+        pay_date = str(source.get("date") or "")[:10]
+        try:
+            remaining = float(source.get("remaining"))
+            planned = float(source.get("planned") or 0)
+            bank_confirmed = float(source.get("bankConfirmed") or 0)
+            manual_confirmed = float(source.get("manualConfirmed") or 0)
+        except (TypeError, ValueError):
+            continue
+        values = (remaining, planned, bank_confirmed, manual_confirmed)
+        if not (deal_id.isdigit() and schedule_id and pay_date and remaining > 0 and all(math.isfinite(value) for value in values)):
+            continue
+        rows.append({
+            "deal_id": deal_id,
+            "deal_title": str(source.get("dealTitle") or f"Сделка №{deal_id}")[:500],
+            "stage": str(source.get("stageName") or "—")[:500],
+            "date": pay_date,
+            "planned": round(max(0.0, planned), 2),
+            "bank_confirmed": round(max(0.0, bank_confirmed), 2),
+            "manual_confirmed": round(max(0.0, manual_confirmed), 2),
+            "remaining": round(max(0.0, remaining), 2),
+            "url": f"{portal}/crm/deal/details/{deal_id}/" if portal else "",
+        })
+    return sorted(rows, key=lambda row: (row["date"], row["deal_title"], row["deal_id"]))
+
+
 async def load_clean_revenue(month: str):
     """Fetch the single financial source of truth without exposing it to the browser."""
     if not settings.clean_revenue_url or not settings.clean_revenue_token:
@@ -251,6 +285,8 @@ async def load_clean_revenue(month: str):
             "date_from": str(payload.get("dateFrom") or date_from),
             "date_to": str(payload.get("dateTo") or date_to),
             "generated_at": str(payload.get("generatedAt") or ""),
+            "overdue_schedule_available": isinstance(payload.get("overdueScheduleRows"), list),
+            "overdue_schedule_rows": clean_revenue_overdue_rows(payload),
         }
         clean_revenue_cache[month] = result
         clean_revenue_cache_time[month] = time.monotonic()

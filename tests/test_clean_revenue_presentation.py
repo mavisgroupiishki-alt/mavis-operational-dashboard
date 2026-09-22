@@ -6,6 +6,20 @@ from app import main
 
 
 class CleanRevenuePresentationTests(unittest.TestCase):
+    def test_finance_overdue_rows_are_normalized_and_linked_to_bitrix_deals(self):
+        payload = {"overdueScheduleRows": [
+            {"scheduleId": "11", "dealId": "44", "dealTitle": "Просрочено", "stageName": "Договор", "date": "2026-09-17", "planned": "1200", "bankConfirmed": 100, "manualConfirmed": "50", "remaining": "1050"},
+            {"scheduleId": "bad", "dealId": "not-a-deal", "date": "2026-09-17", "remaining": "100"},
+        ]}
+        with patch.object(main.client, "webhook", "https://portal.bitrix24.by/rest/1/token/"):
+            rows = main.clean_revenue_overdue_rows(payload)
+
+        self.assertEqual(rows, [{
+            "deal_id": "44", "deal_title": "Просрочено", "stage": "Договор", "date": "2026-09-17",
+            "planned": 1200.0, "bank_confirmed": 100.0, "manual_confirmed": 50.0, "remaining": 1050.0,
+            "url": "https://portal.bitrix24.by/crm/deal/details/44/",
+        }])
+
     def test_operational_snapshot_derives_confirmed_incoming_from_finance_ledger(self):
         snap = {
             "sales": {

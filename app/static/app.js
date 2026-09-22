@@ -413,6 +413,18 @@ function salesActiveDealsCard(){
   return `<button type="button" class="sales-active-deals" ${drillAttrs("sales","active_deals",{period_type:"total"})}><span>Незакрытые сделки</span><strong>${fmt(count)}</strong><small>Активные сделки основной воронки на момент обновления · открыть список</small></button>`;
 }
 
+function salesOverdueSchedule(){
+  const finance=state?.clean_revenue||{};
+  const available=finance.overdue_schedule_available===true;
+  const rows=Array.isArray(finance.overdue_schedule_rows)?finance.overdue_schedule_rows:[];
+  if(!available){
+    return `<section class="sales-overdue-schedule is-pending" aria-labelledby="sales-overdue-title"><header><div><h3 id="sales-overdue-title">Просроченные оплаты по графику</h3><p>Получаю список непогашенных строк из «Графика платежей».</p></div></header></section>`;
+  }
+  const total=rows.reduce((sum,row)=>sum+Number(row.remaining||0),0);
+  const body=rows.map(row=>`<tr><td>${esc(row.date||"—")}</td><td>${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noreferrer">${esc(row.deal_title||`Сделка №${row.deal_id||""}`)}</a>`:esc(row.deal_title||`Сделка №${row.deal_id||""}`)}<small>№${esc(row.deal_id||"—")}</small></td><td>${esc(row.stage||"—")}</td><td class="num">${money(row.planned||0)}</td><td class="num">${money(row.bank_confirmed||0)}</td><td class="num">${money(row.manual_confirmed||0)}</td><td class="num sales-overdue-amount">${money(row.remaining||0)}</td></tr>`).join("");
+  return `<section class="sales-overdue-schedule" aria-labelledby="sales-overdue-title"><header><div><h3 id="sales-overdue-title">Просроченные оплаты по графику <span>${fmt(rows.length)}</span></h3><p>Строки с непогашенным остатком и датой оплаты раньше сегодняшней. Откройте сделку, чтобы проверить следующий шаг.</p></div><strong>${money(total)}</strong></header><div class="scroll-x"><table><thead><tr><th>Дата</th><th>Сделка</th><th>Стадия</th><th class="num">По графику</th><th class="num">Банк</th><th class="num">Вручную</th><th class="num">Остаток</th></tr></thead><tbody>${body||`<tr><td colspan="7" class="empty">Просроченных оплат по графику нет.</td></tr>`}</tbody></table></div></section>`;
+}
+
 function allocatedManagerCleanRevenue(managerSales,totalSales){
   const finance=state?.clean_revenue||{};
   if(!["online","stale"].includes(finance.status))return null;
@@ -837,6 +849,7 @@ function renderSales(){
     </div>
 
     <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «Чистая выручка». Суммы в разбивках по менеджерам, источникам, неделям и дням остаются CRM-расшифровкой: подрядчики не распределяются по конкретному менеджеру, источнику или дню.</div>
+    ${salesOverdueSchedule()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
