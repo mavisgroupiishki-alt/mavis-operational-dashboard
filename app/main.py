@@ -93,16 +93,14 @@ async def key_task_available_users():
 
 
 async def refresh_key_tasks(members, cache_key):
-    """Fetch selected users' active tasks and persist a last-known-good board."""
+    """Compatibility cache refresh for dashboard-owned key tasks."""
     try:
-        rows = await asyncio.gather(*(client.tasks_for_responsible(row["id"]) for row in members))
-        rows_by_user = {str(member["id"]): source or [] for member, source in zip(members, rows)}
         now = datetime.now(ZoneInfo(settings.timezone))
         payload = {
             "ok": True,
             "generated_at": now.isoformat(),
             "members": members,
-            **build_key_tasks(rows_by_user, members, client.portal, now, settings.timezone),
+            **build_key_tasks(storage.manual_key_tasks(), members, now, settings.timezone),
         }
         key_task_cache[cache_key] = payload
         key_task_cache_time[cache_key] = time.monotonic()
@@ -1072,6 +1070,12 @@ class KeyTaskMemberBody(BaseModel):
     name: str
     admin_key: str = ""
 
+class KeyTaskBody(BaseModel):
+    title: str
+    responsible_id: str
+    deadline: str = ""
+    priority: str = "normal"
+
 class DashboardChatBody(BaseModel):
     question: str
     month: str = ""
@@ -1137,34 +1141,35 @@ async def delete_key_task_team_member(user_id: str, admin_key: str = ''):
 @app.get('/api/key-tasks')
 async def get_key_tasks():
     members = storage.key_task_team()
-    if not members:
-        return {"ok": True, "members": [], "people": [], "weeks": {}, "no_deadline": [], "empty_team": True}
-    cache_key = _key_task_cache_key(members)
-    cached = key_task_cache.get(cache_key)
-    if cached:
-        stale = time.monotonic() - key_task_cache_time.get(cache_key, 0) >= KEY_TASKS_REFRESH_SECONDS
-        if stale:
-            schedule_key_tasks_refresh(members, cache_key)
-        return {**cached, "stale": stale, "syncing": bool(key_task_refresh_tasks.get(cache_key))}
+    now = datetime.now(ZoneInfo(settings.timezone))
+    return {
+        "ok": True,
+        "generated_at": now.isoformat(),
+        "members": members,
+        "empty_team": not members,
+        **build_key_tasks(storage.manual_key_tasks(), members, now, settings.timezone),
+    }
 
-    persisted = await asyncio.to_thread(storage.key_task_cache, cache_key)
-    if persisted.get("ok"):
-        generated = str(persisted.get("generated_at") or "")
-        try:
-            age = datetime.now(ZoneInfo(settings.timezone)) - datetime.fromisoformat(generated)
-            stale = age.total_seconds() > KEY_TASKS_REFRESH_SECONDS
-            too_old = age.total_seconds() > KEY_TASKS_PERSISTED_STALE_SECONDS
-        except (TypeError, ValueError):
-            stale, too_old = True, True
-        if not too_old:
-            key_task_cache[cache_key] = persisted
-            key_task_cache_time[cache_key] = time.monotonic() - (KEY_TASKS_REFRESH_SECONDS if stale else 0)
-            if stale:
-                schedule_key_tasks_refresh(members, cache_key)
-            return {**persisted, "stale": stale, "syncing": bool(key_task_refresh_tasks.get(cache_key)), "cached_snapshot": True}
 
-    schedule_key_tasks_refresh(members, cache_key)
-    return JSONResponse({"ok": False, "loading": True, "message": "Задачи загружаются из Bitrix"}, status_code=202)
+@app.post('/api/key-tasks')
+async def add_key_task(body: KeyTaskBody):
+    members = {row["id"]: row for row in storage.key_task_team()}
+    if body.responsible_id not in members:
+        raise HTTPException(400, 'Сначала добавьте сотрудника в раздел «Ключевые задачи»')
+    try:
+        task = storage.add_manual_key_task(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "task": task}
+
+
+@app.delete('/api/key-tasks/{task_id}')
+async def delete_key_task(task_id: str):
+    if not storage.remove_manual_key_task(task_id):
+        raise HTTPException(404, 'Задача не найдена')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True}
 
 
 def _dashboard_chat_context(month: str, period: str):

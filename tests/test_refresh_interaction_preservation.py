@@ -9,8 +9,16 @@ class RefreshInteractionPreservationTests(unittest.TestCase):
         self.assertIn("function captureDashboardInteraction()", script)
         self.assertIn("function restoreDashboardInteraction(saved)", script)
         self.assertIn('querySelectorAll("details")', script)
-        self.assertIn('chatDraft:$("#dashboardChatQuestion")?.value||""', script)
+        self.assertIn("chatDraft:dashboardChatDraft", script)
         self.assertIn("restoreDashboardInteraction(interaction);", script)
+
+    def test_chat_state_is_persisted_independently_from_dom_rerenders(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("DASHBOARD_CHAT_STATE_KEY", script)
+        self.assertIn("sessionStorage.setItem", script)
+        self.assertIn("persistDashboardChatState", script)
+        self.assertIn("dashboardChatDraft", script)
 
     def test_event_stream_is_coalesced_before_reloading_the_snapshot(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()

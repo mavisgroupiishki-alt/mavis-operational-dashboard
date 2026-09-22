@@ -69,7 +69,7 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn("function setDashboardChatOpen", script)
         self.assertIn('data-dashboard-chat-toggle="1"', script)
         self.assertIn('data-dashboard-chat-close="1"', script)
-        self.assertIn('dashboardChatOpen=true;renderDashboardChat()', script)
+        self.assertIn('dashboardChatOpen=true;persistDashboardChatState();renderDashboardChat()', script)
         self.assertNotIn("${dashboardChatMarkup()}</section>`", script)
 
 

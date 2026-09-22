@@ -298,6 +298,66 @@ class Storage:
     def set_key_task_cache(self, cache_key, value):
         self._set(f"key_task_cache:{cache_key}", value)
 
+    # ---------- Dashboard-owned key tasks ----------
+    def manual_key_tasks(self):
+        value = self._get("manual_key_tasks", [])
+        if not isinstance(value, list):
+            return []
+        out = []
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            task_id = str(row.get("id") or "").strip()
+            title = str(row.get("title") or "").strip()
+            responsible_id = str(row.get("responsible_id") or "").strip()
+            deadline = str(row.get("deadline") or "").strip()
+            if not task_id or not title or not responsible_id:
+                continue
+            out.append({
+                "id": task_id,
+                "title": title,
+                "responsible_id": responsible_id,
+                "deadline": deadline,
+                "priority": "high" if str(row.get("priority") or "").lower() == "high" else "normal",
+                "created_at": str(row.get("created_at") or ""),
+            })
+        return out
+
+    def add_manual_key_task(self, row):
+        title = str((row or {}).get("title") or "").strip()
+        responsible_id = str((row or {}).get("responsible_id") or "").strip()
+        deadline = str((row or {}).get("deadline") or "").strip()
+        if not title:
+            raise ValueError("Укажите название задачи")
+        if not responsible_id:
+            raise ValueError("Выберите сотрудника")
+        if deadline:
+            try:
+                datetime.strptime(deadline, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("Дата задачи должна быть в формате YYYY-MM-DD") from exc
+        task = {
+            "id": uuid.uuid4().hex,
+            "title": title[:500],
+            "responsible_id": responsible_id,
+            "deadline": deadline,
+            "priority": "high" if str((row or {}).get("priority") or "").lower() == "high" else "normal",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tasks = self.manual_key_tasks()
+        tasks.append(task)
+        self._set("manual_key_tasks", tasks)
+        return task
+
+    def remove_manual_key_task(self, task_id):
+        task_id = str(task_id or "").strip()
+        tasks = self.manual_key_tasks()
+        kept = [row for row in tasks if row["id"] != task_id]
+        if len(kept) == len(tasks):
+            return False
+        self._set("manual_key_tasks", kept)
+        return True
+
     # ---------- Tile comments ----------
     def comments(self, month):
         value = self._get(f"comments:{month}", {})
