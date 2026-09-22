@@ -62,6 +62,15 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('openPlanDialog("production","product")', script)
         self.assertIn('openPlanDialog("production","expert")', script)
 
+    def test_production_receipts_use_financial_source_and_overdue_list_is_collapsible(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("function financialIncomingValue()", script)
+        self.assertIn("function productionSalesIncomingCard()", script)
+        self.assertIn("Поступления отдела продаж", script)
+        self.assertIn('class="sales-overdue-schedule"', script)
+        self.assertIn("<details", script)
+
     def test_bitrix_chat_is_a_global_widget(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
 

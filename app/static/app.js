@@ -158,9 +158,13 @@ function financeAmount(key){
   const finance=state?.clean_revenue||{},value=Number(finance[key]);
   return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?money(value):"—";
 }
-function financialIncomingAmount(fallback=0){
+function financialIncomingValue(){
   const finance=state?.clean_revenue||{},value=Number(finance.incoming_amount);
-  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?value:Number(fallback||0);
+  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?value:null;
+}
+function financialIncomingAmount(fallback=0){
+  const value=financialIncomingValue();
+  return value===null?Number(fallback||0):value;
 }
 function financialSalesMetrics(s){
   const incoming=financialIncomingAmount(s?.sales_amount),sales=Number(s?.sales||0);
@@ -422,7 +426,7 @@ function salesOverdueSchedule(){
   }
   const total=rows.reduce((sum,row)=>sum+Number(row.remaining||0),0);
   const body=rows.map(row=>`<tr><td>${esc(row.date||"—")}</td><td>${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noreferrer">${esc(row.deal_title||`Сделка №${row.deal_id||""}`)}</a>`:esc(row.deal_title||`Сделка №${row.deal_id||""}`)}<small>№${esc(row.deal_id||"—")}</small></td><td>${esc(row.stage||"—")}</td><td class="num">${money(row.planned||0)}</td><td class="num">${money(row.bank_confirmed||0)}</td><td class="num">${money(row.manual_confirmed||0)}</td><td class="num sales-overdue-amount">${money(row.remaining||0)}</td></tr>`).join("");
-  return `<section class="sales-overdue-schedule" aria-labelledby="sales-overdue-title"><header><div><h3 id="sales-overdue-title">Просроченные оплаты по графику <span>${fmt(rows.length)}</span></h3><p>Строки с непогашенным остатком и датой оплаты раньше сегодняшней. Откройте сделку, чтобы проверить следующий шаг.</p></div><strong>${money(total)}</strong></header><div class="scroll-x"><table><thead><tr><th>Дата</th><th>Сделка</th><th>Стадия</th><th class="num">По графику</th><th class="num">Банк</th><th class="num">Вручную</th><th class="num">Остаток</th></tr></thead><tbody>${body||`<tr><td colspan="7" class="empty">Просроченных оплат по графику нет.</td></tr>`}</tbody></table></div></section>`;
+  return `<details class="sales-overdue-schedule" aria-labelledby="sales-overdue-title"><summary><div><h3 id="sales-overdue-title">Просроченные оплаты по графику <span>${fmt(rows.length)}</span></h3><p>Непогашенные строки с датой оплаты раньше сегодняшней.</p></div><div class="sales-overdue-summary-total"><strong>${money(total)}</strong><span>Открыть список</span><i aria-hidden="true"></i></div></summary><div class="scroll-x"><table><thead><tr><th>Дата</th><th>Сделка</th><th>Стадия</th><th class="num">По графику</th><th class="num">Банк</th><th class="num">Вручную</th><th class="num">Остаток</th></tr></thead><tbody>${body||`<tr><td colspan="7" class="empty">Просроченных оплат по графику нет.</td></tr>`}</tbody></table></div></details>`;
 }
 
 function allocatedManagerCleanRevenue(managerSales,totalSales){
@@ -961,6 +965,16 @@ function productionWeeklyDynamics(){
     }).join("")}</div>
   </details>`;
 }
+function productionSalesIncomingCard(){
+  const value=financialIncomingValue();
+  const plan=getPlan("production","new_amount");
+  const shown=value===null?"—":money(value);
+  const completion=value!==null&&plan?pct(value/plan*100):"—";
+  const bar=value!==null&&plan?Math.min(100,Math.max(0,value/plan*100)):0;
+  const finance=state?.clean_revenue||{};
+  const note=finance.status==="online"?"Чистая выручка + подрядчики из «Графика платежей»":finance.status==="stale"?"Последняя подтверждённая сумма: чистая выручка + подрядчики":"Поступления временно недоступны";
+  return `<div class="card production-sales-incoming"><div class="kpi-label">Поступления отдела продаж</div><div class="kpi-value">${shown}</div><div class="kpi-meta plan-line"><span>План: ${plan?money(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">${esc(note)}</div>${plan&&value!==null?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
+}
 function renderProduction(){
   const npsMeta=overallManualNpsMeta();
   const p={...state.production.kpi,nps_avg:npsMeta.value};
@@ -970,7 +984,7 @@ function renderProduction(){
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   ${productionWeeklyDynamics()}
   <div class="section-title">Поток выбранного периода</div>
-  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
+  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${productionSalesIncomingCard()}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
   <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div><button type="button" class="btn ghost" data-production-product-plans="1">Изменить планы</button></summary>${prodProductTable()}</details>
