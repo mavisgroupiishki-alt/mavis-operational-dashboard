@@ -51,6 +51,8 @@ let dashboardChatHistory=[];
 let dashboardChatPending=false;
 let dashboardChatOpen=false;
 let dashboardChatFocusRequested=false;
+let backgroundRefreshTimer=null;
+let lastBackgroundRefreshAt=0;
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -199,7 +201,7 @@ function dashboardChatMarkup(){
   const panel=dashboardChatOpen?`<aside id="dashboardChatPanel" class="bitrix-chat-panel" aria-label="Чат с Bitrix"><header class="bitrix-chat-head"><div><h2>Mavis AI-помощник</h2><p>Спросите о данных Bitrix. Чат только анализирует и ничего не меняет в CRM.</p></div><button class="bitrix-chat-close" type="button" data-dashboard-chat-close="1" aria-label="Закрыть чат">×</button></header><div class="dashboard-chat-messages" aria-live="polite">${entries||'<div class="dashboard-chat-empty">Например: «сколько сделок в зависших сейчас?» или «какие сделки можно вернуть?»</div>'}${dashboardChatPending?'<div class="dashboard-chat-message assistant pending"><span>Mavis AI</span><p>Собираю ответ…</p></div>':''}</div><div class="dashboard-chat-compose"><input id="dashboardChatQuestion" name="dashboard_chat_question" maxlength="900" autocomplete="off" aria-label="Вопрос про Bitrix" placeholder="Напишите вопрос…"><button class="bitrix-chat-send" type="button" data-dashboard-chat-send="1" ${dashboardChatPending?'disabled':''} aria-label="Отправить вопрос"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z"/></svg></button></div></aside>`:"";
   return `<div class="bitrix-chat-widget">${panel}<button class="bitrix-chat-trigger" type="button" data-dashboard-chat-toggle="1" aria-expanded="${dashboardChatOpen}" aria-controls="dashboardChatPanel"><span class="bitrix-chat-trigger-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.2a7.5 7.5 0 0 1-8 7.5 8.8 8.8 0 0 1-3.8-.9L4 19l1.2-3.5A7.2 7.2 0 0 1 4 11.2 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.2Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg></span><span><strong>Спросить про Bitrix</strong><small>AI-помощник</small></span></button></div>`;
 }
-function renderDashboardChat(){const target=$("#dashboardChatWidget");if(!target)return;target.innerHTML=dashboardChatMarkup();if(dashboardChatFocusRequested&&dashboardChatOpen){dashboardChatFocusRequested=false;requestAnimationFrame(()=>$("#dashboardChatQuestion")?.focus())}}
+function renderDashboardChat(){const target=$("#dashboardChatWidget");if(!target)return;const draft=$("#dashboardChatQuestion")?.value||"";target.innerHTML=dashboardChatMarkup();const input=$("#dashboardChatQuestion");if(input&&!dashboardChatPending)input.value=draft;if(dashboardChatFocusRequested&&dashboardChatOpen){dashboardChatFocusRequested=false;requestAnimationFrame(()=>$("#dashboardChatQuestion")?.focus())}}
 function setDashboardChatOpen(open,{focus=false}={}){dashboardChatOpen=Boolean(open);dashboardChatFocusRequested=focus;renderDashboardChat()}
 function keyTaskPersonCard(person){const tasks=person.tasks||[];return `<article class="key-task-person"><header><div><div class="eyebrow">${esc(person.name)}</div><strong>${person.active_count?`${fmt(person.active_count)} активных`:'Нет задач с дедлайном на эту неделю'}</strong></div>${person.active_count>5?`<span class="key-task-limit">показаны 5</span>`:""}</header>${tasks.length?`<div class="key-task-list">${tasks.map(keyTaskItem).join("")}</div>`:'<div class="key-task-empty">На эту неделю задач с дедлайном нет.</div>'}</article>`}
 function renderKeyTasksPlaceholder(message="Загружаю ключевые задачи…"){const target=$("#key-tasks");if(!target)return;target.innerHTML=`<div class="section-page key-tasks-loading"><div class="eyebrow">ФОКУС КОМАНДЫ</div><h2>Ключевые задачи</h2><p class="section-page-lead">${esc(message)}</p><div class="integration-state">Собираю только активные задачи выбранных сотрудников из Bitrix.</div></div>`}
@@ -1082,13 +1084,28 @@ function planSummary(scope){
 }
 function renderPlans(){renderPlanInline()}
 
+function captureDashboardInteraction(){
+  const view=$("#"+requestedView());
+  const fields=view?[...view.querySelectorAll("input,textarea,select")].map((field,index)=>({index,value:field.value,checked:field.checked,selectionStart:field.selectionStart,selectionEnd:field.selectionEnd})):[];
+  return {view:requestedView(),scrollY:window.scrollY,openDetails:view?[...view.querySelectorAll("details")].map((detail,index)=>detail.open?index:null).filter(index=>index!==null):[],fields,chatDraft:$("#dashboardChatQuestion")?.value||"",chatFocused:document.activeElement?.id==="dashboardChatQuestion"};
+}
+function restoreDashboardInteraction(saved){
+  if(!saved)return;
+  const view=$("#"+saved.view);
+  saved.openDetails.forEach(index=>{const detail=view?.querySelectorAll("details")[index];if(detail)detail.open=true});
+  saved.fields.forEach(item=>{const field=view?.querySelectorAll("input,textarea,select")[item.index];if(!field)return;if(field.type==="checkbox"||field.type==="radio")field.checked=item.checked;else field.value=item.value});
+  const chat=$("#dashboardChatQuestion");if(chat&&!dashboardChatPending)chat.value=saved.chatDraft;
+  requestAnimationFrame(()=>{if(saved.chatFocused&&chat){chat.focus();if(typeof chat.setSelectionRange==="function")chat.setSelectionRange(chat.value.length,chat.value.length)}window.scrollTo({top:saved.scrollY,behavior:"auto"})});
+}
 function renderAll(){
-  if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);renderDashboardChat();return}
+  const interaction=captureDashboardInteraction();
+  if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);renderDashboardChat();restoreDashboardInteraction(interaction);return}
   renderOverview();
   if(state.sales?.details_loaded&&state.sales?.details_key===snapshotKey())renderSales();else renderSalesPlaceholder("Откройте раздел, чтобы загрузить детальную разбивку продаж.");
   renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();keyTasksData?renderKeyTasks():renderKeyTasksPlaceholder("Откройте раздел, чтобы загрузить задачи.");openView(requestedView(),false);
   renderDashboardChat();
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
+  restoreDashboardInteraction(interaction);
 }
 
 const VIEW_TITLES={
@@ -1190,7 +1207,12 @@ async function loadSalesSection(){
     if(key===snapshotKey()&&requestedView()==="sales")renderSalesPlaceholder(error.message||"Детализация продаж временно недоступна",true);
   }finally{if(salesDetailsRequest===key)salesDetailsRequest=null}
 }
-async function load(){
+function scheduleBackgroundLoad(){
+  if(backgroundRefreshTimer)return;
+  const delay=Math.max(0,15000-(Date.now()-lastBackgroundRefreshAt));
+  backgroundRefreshTimer=setTimeout(()=>{backgroundRefreshTimer=null;load({background:true})},delay);
+}
+async function load({background=false}={}){
   const month=$("#month").value,period=$("#period").value;
   if(loadTimer){clearTimeout(loadTimer);loadTimer=null}
   if(loadController)loadController.abort();
@@ -1225,7 +1247,7 @@ async function load(){
       $("#liveText").textContent=state&&state.month_key===month
         ?"ПОКАЗАНЫ ПОСЛЕДНИЕ ДАННЫЕ · Bitrix обновляется в фоне"
         :"BITRIX · ПЕРВИЧНАЯ СИНХРОНИЗАЦИЯ";
-      loadTimer=setTimeout(load,2500);
+      loadTimer=setTimeout(()=>load({background:true}),2500);
       return;
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
@@ -1233,6 +1255,7 @@ async function load(){
     state=j;
     activeSnapshotKey=requestKey;
     saveBrowserSnapshot(j);
+    if(background)lastBackgroundRefreshAt=Date.now();
     renderAll();
     if(offlineSnapshot){
       $("#liveDot").className="bad";
@@ -1498,10 +1521,10 @@ function init(){
   $("#saveTrafficGroup").addEventListener('click',saveTrafficGroupDialog);
   $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
   $("#saveKeyTaskMember").addEventListener('click',async()=>{const id=$("#keyTaskUser").value,person=(keyTaskTeamData?.users||[]).find(row=>row.id===id);if(!person)return;const response=await fetch('/api/key-tasks/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:person.id,name:person.name,admin_key:$("#keyTaskAdminKey").value||''})});if(!response.ok){alert(await response.text());return}keyTaskTeamData={...(keyTaskTeamData||{}),members:(await response.json()).members};keyTasksData=null;$("#keyTaskTeamDialog").close();loadKeyTasks(true)});
-  const es=new EventSource('/events');es.addEventListener('update',()=>load());es.onerror=()=>{$("#liveDot").className='bad'};
+  const es=new EventSource('/events');es.addEventListener('update',scheduleBackgroundLoad);es.onerror=()=>{$("#liveDot").className='bad'};
   window.addEventListener("offline",()=>{if(state){$("#liveDot").className="bad";$("#liveText").textContent="ПОКАЗАНА ПОСЛЕДНЯЯ ВЕРСИЯ · НЕТ СЕТИ"}});
-  window.addEventListener("online",()=>load());
-  renderDashboardChat();load();setInterval(load,120000);
+  window.addEventListener("online",scheduleBackgroundLoad);
+  renderDashboardChat();load();setInterval(scheduleBackgroundLoad,120000);
 }
 init();
 
