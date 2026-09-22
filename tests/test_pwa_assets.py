@@ -51,6 +51,16 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn("Активные зависшие — ожидаемое закрытие в месяце", experts_function.group("body"))
         self.assertNotIn("В воронке «Зависшие»", experts_function.group("body"))
 
+    def test_production_breakdowns_have_direct_plan_actions(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('data-production-week-plans="1"', script)
+        self.assertIn('data-production-product-plans="1"', script)
+        self.assertIn('data-production-expert-plans="1"', script)
+        self.assertIn('openPlanDialog("production","week","0")', script)
+        self.assertIn('openPlanDialog("production","product")', script)
+        self.assertIn('openPlanDialog("production","expert")', script)
+
 
 if __name__ == "__main__":
     unittest.main()

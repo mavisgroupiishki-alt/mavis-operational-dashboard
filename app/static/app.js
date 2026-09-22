@@ -118,7 +118,7 @@ function deptHero({kind,title,eyebrow,value,valueType='money',scope,metric,extra
   return `<div class="department-hero ${kind} clickable" ${drillAttrs(scope,metric,extra)}><div class="dept-hero-top"><div><div class="dept-kicker">${esc(eyebrow)}</div><h2>${esc(title)}</h2></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,pp))*3.6}deg"><span>${plan?Math.round(pp)+'%':'—'}</span></div></div><div class="dept-value">${format(value,valueType)}</div><div class="dept-plan"><span>План ${plan?format(plan,valueType):'—'}</span><span>${plan?`Выполнение ${pct(pp)}`:'Заполни план'}</span></div><div class="dept-substats">${substats.map(s=>`<div><span>${esc(s.label)}</span><strong>${format(s.value,s.type||'num')}</strong></div>`).join('')}</div></div>`;
 }
 function signalCard(kind,title,value,type,scope,metric,note="",extra={}){return `<div class="signal-card ${kind} clickable" ${drillAttrs(scope,metric,extra)}><div class="signal-top"><span>${esc(title)}</span><span class="signal-arrow">›</span></div><div class="signal-value">${format(value,type)}</div><div class="signal-note">${esc(note)}</div></div>`;}
-function panel(title,body,note=""){return `<div class="panel"><div class="panel-head"><div class="panel-title">${esc(title)}</div><div class="muted">${esc(note)}</div></div>${body}</div>`}
+function panel(title,body,note="",action=""){return `<div class="panel"><div class="panel-head"><div class="panel-title">${esc(title)}</div>${action||`<div class="muted">${esc(note)}</div>`}</div>${body}</div>`}
 function tdLink(value,scope,metric,type,extra={}){return `<span class="cell-link" ${drillAttrs(scope,metric,extra)}>${format(value,type)}</span>`}
 
 function cleanRevenueCaption(){
@@ -857,6 +857,8 @@ const PROD_WEEKLY_METRICS=[
   ["within_norm_pct","В нормативе","pct"]
 ];
 function prodWeekPlan(metric,weekIndex){
+  const weeklyPlan=getPlan("production",metric,"week",String(weekIndex));
+  if(weeklyPlan)return weeklyPlan;
   const plan=getPlan("production",metric);
   if(!plan||!["closed_count","closed_amount"].includes(metric))return 0;
   const week=rnpWeekRanges()[weekIndex];
@@ -874,7 +876,7 @@ function prodDailyTable(week){
 function productionWeeklyDynamics(){
   const weeks=state.production.weekly?.weeks||{},ranges=rnpWeekRanges();
   return `<details class="rnp-subdetails production-weekly-dynamics">
-    <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
+    <summary><strong>Недельная динамика</strong><span><button type="button" class="btn ghost" data-production-week-plans="1">Изменить планы</button> план / факт · раскрывается до дней</span></summary>
     <div class="rnp-weeks">${ranges.map(week=>{
       const amount=weeks.closed_amount?.[week.index]||0,count=weeks.closed_count?.[week.index]||0;
       return `<details class="rnp-week"><summary><div><strong>${week.index+1} неделя</strong><span>${week.label}</span></div><div><b>${money(amount)}</b><span>${fmt(count)} закрыто</span></div></summary>
@@ -898,8 +900,8 @@ function renderProduction(){
   <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${card("Сумма пришедших",p.new_amount,"production","new_amount","money")}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
-  <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div></summary>${prodProductTable()}</details>
-  <div class="grid-2">${panel("Эксперты",expertTable(false),"состав можно менять прямо здесь")}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
+  <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div><button type="button" class="btn ghost" data-production-product-plans="1">Изменить планы</button></summary>${prodProductTable()}</details>
+  <div class="grid-2">${panel("Эксперты",expertTable(false),"состав можно менять прямо здесь",'<button type="button" class="btn ghost" data-production-expert-plans="1">Изменить планы</button>')}${panel("Стадии производства",prodStages(),"количество и сумма")}</div>`;
   $("#openPlanProd")?.addEventListener("click",()=>openPlanDialog("production"));
 }
 
@@ -939,6 +941,7 @@ function renderRisks(){
 
 function contextOptions(scope,type){
   if(type==="overall")return [{value:"",label:"Общий план"}];
+  if(scope==="production"&&type==="week")return rnpWeekRanges().map(week=>({value:String(week.index),label:`${week.index+1} неделя · ${week.label}`}));
   if(scope==="sales"&&type==="manager")return managers().map(x=>({value:x.name,label:x.name}));
   if(scope==="sales"&&type==="source_group")return state.sales.groups.map(x=>({value:x.name,label:x.name}));
   if(scope==="sales"&&type==="source")return state.sales.exact_sources.map(x=>({value:x.name,label:x.name}));
@@ -1342,9 +1345,9 @@ function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
   buildPlanForm();
   $("#planDialog").showModal();
 }
-function updatePlanContextTypes(){const scope=$("#planScope").value;const sel=$("#planContextType");[...sel.options].forEach(o=>o.disabled=(scope==="sales"&&["expert","expert_product"].includes(o.value))||(scope==="production"&&["manager","source_group","source"].includes(o.value)));if(sel.selectedOptions[0]?.disabled)sel.value="overall"}
+function updatePlanContextTypes(){const scope=$("#planScope").value;const sel=$("#planContextType");[...sel.options].forEach(o=>o.disabled=(scope==="sales"&&["week","expert","expert_product"].includes(o.value))||(scope==="production"&&["manager","source_group","source"].includes(o.value)));if(sel.selectedOptions[0]?.disabled)sel.value="overall"}
 function updatePlanKey(){const opts=contextOptions($("#planScope").value,$("#planContextType").value);$("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');buildPlanForm()}
-function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",defs=scope==="production"&&type==="expert_product"?{closed_count:["План продуктов, шт","num"]}:scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
+function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",productionResultPlan={closed_count:["План закрытых продуктов, шт","num"],closed_amount:["План суммы закрытых, BYN","money"]},defs=scope==="production"&&["week","expert","product"].includes(type)?productionResultPlan:scope==="production"&&type==="expert_product"?{closed_count:["План продуктов, шт","num"]}:scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" min="0" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
 async function savePlan(){const scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={};$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();state.plans=j.dict;$("#planDialog").close();renderAll()}
 
 function fillMonths(){
@@ -1410,6 +1413,9 @@ function init(){
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
+    if(e.target.closest('[data-production-week-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","week","0");return}
+    if(e.target.closest('[data-production-product-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","product");return}
+    if(e.target.closest('[data-production-expert-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","expert");return}
     const productPlan=e.target.closest('[data-edit-product-plan]');if(productPlan){e.stopPropagation();openPlanDialog("production","product",productPlan.dataset.editProductPlan||"");return}
     const expertProductPlan=e.target.closest('[data-edit-expert-product-plan]');if(expertProductPlan){e.stopPropagation();openPlanDialog("production","expert_product",expertProductPlanKey(expertProductPlan.dataset.expert||"",expertProductPlan.dataset.product||""));return}
     const rnpPlan=e.target.closest('[data-rnp-plan]');if(rnpPlan){e.preventDefault();e.stopPropagation();openPlanDialog("sales","source_group",rnpPlan.dataset.rnpPlan||"");return}
