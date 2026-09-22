@@ -66,6 +66,18 @@ class BitrixClient:
             "filter":{"GROUP_ID":int(group_id),"STATUS":"5",">=CREATED_DATE":created_from.isoformat(),"<CREATED_DATE":created_to.isoformat()},
             "select":["ID","TITLE","STATUS","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
         })
+    async def tasks_for_responsible(self, user_id, limit=200):
+        """Load one employee's task list. Filtering to active states happens locally.
+
+        Bitrix installations differ in which task status filters they accept, so
+        asking by responsible user and applying the deterministic status rule
+        after retrieval is safer than silently omitting a live task.
+        """
+        return await self.list_all("tasks.task.list",{
+            "order":{"DEADLINE":"ASC","ID":"DESC"},
+            "filter":{"RESPONSIBLE_ID":int(user_id)},
+            "select":["ID","TITLE","STATUS","REAL_STATUS","DEADLINE","CREATED_DATE","PRIORITY","GROUP_ID","GROUP_NAME","RESPONSIBLE_ID"],
+        }, limit=limit)
     async def product_rows(self,deal_id):
         try:
             p=await self.call("crm.item.productrow.list",{"filter":{"=ownerType":"D","=ownerId":int(deal_id)}})

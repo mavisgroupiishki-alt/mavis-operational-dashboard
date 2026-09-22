@@ -21,6 +21,8 @@ class Settings:
     clean_revenue_token: str = os.getenv("CLEAN_REVENUE_TOKEN", "").strip()
     jarvis_operations_url: str = os.getenv("JARVIS_OPERATIONS_URL", "").strip()
     jarvis_operations_token: str = os.getenv("JARVIS_OPERATIONS_TOKEN", "").strip()
+    assistant_chat_url: str = os.getenv("ASSISTANT_CHAT_URL", "https://mavis-bitrix-expert-assistant.onrender.com").strip()
+    dashboard_chat_token: str = os.getenv("DASHBOARD_CHAT_TOKEN", "").strip()
 
 settings=Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)

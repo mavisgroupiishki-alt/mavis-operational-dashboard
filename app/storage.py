@@ -262,6 +262,42 @@ class Storage:
         team[key] = [x for x in team[key] if x != name]
         self._set("team", team)
 
+    # ---------- Key task owners ----------
+    def key_task_team(self):
+        value = self._get("key_task_team", [])
+        if not isinstance(value, list):
+            return []
+        out = []
+        seen = set()
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            user_id = str(row.get("id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            if not user_id or not name or user_id in seen:
+                continue
+            seen.add(user_id)
+            out.append({"id": user_id, "name": name})
+        return out
+
+    def add_key_task_member(self, user_id, name):
+        team = self.key_task_team()
+        user_id, name = str(user_id or "").strip(), str(name or "").strip()
+        if user_id and name and all(row["id"] != user_id for row in team):
+            team.append({"id": user_id, "name": name})
+        self._set("key_task_team", team)
+
+    def remove_key_task_member(self, user_id):
+        user_id = str(user_id or "").strip()
+        self._set("key_task_team", [row for row in self.key_task_team() if row["id"] != user_id])
+
+    def key_task_cache(self, cache_key):
+        value = self._get(f"key_task_cache:{cache_key}", {})
+        return value if isinstance(value, dict) else {}
+
+    def set_key_task_cache(self, cache_key, value):
+        self._set(f"key_task_cache:{cache_key}", value)
+
     # ---------- Tile comments ----------
     def comments(self, month):
         value = self._get(f"comments:{month}", {})

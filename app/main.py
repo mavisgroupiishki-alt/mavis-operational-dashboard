@@ -24,6 +24,7 @@ from .metrics import build_snapshot, build_trends_light, derive_production_perio
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
+from .key_tasks import build_key_tasks
 from .settings import settings
 from .storage import Storage
 
@@ -57,10 +58,68 @@ automatic_nps_cache = {}
 automatic_nps_cache_time = {}
 automatic_nps_tasks = {}
 AUTOMATIC_NPS_REFRESH_SECONDS = 15 * 60
+KEY_TASKS_REFRESH_SECONDS = 5 * 60
+KEY_TASKS_PERSISTED_STALE_SECONDS = 24 * 60 * 60
+key_task_cache = {}
+key_task_cache_time = {}
+key_task_refresh_tasks = {}
+key_task_users_cache = []
+key_task_users_cache_time = 0.0
 
 
 def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+def _key_task_cache_key(members):
+    return ",".join(sorted(str(row.get("id") or "") for row in members if row.get("id")))
+
+
+async def key_task_available_users():
+    """Small, cached user list for the manual task-owner picker."""
+    global key_task_users_cache, key_task_users_cache_time
+    if key_task_users_cache and time.monotonic() - key_task_users_cache_time < 15 * 60:
+        return list(key_task_users_cache)
+    users = await client.list_all("user.get", {"FILTER": {"ACTIVE": True}})
+    output = []
+    for user in users or []:
+        user_id = str(user.get("ID") or "").strip()
+        name = " ".join(part for part in [user.get("NAME"), user.get("LAST_NAME")] if part).strip()
+        if user_id and name:
+            output.append({"id": user_id, "name": name})
+    key_task_users_cache = sorted(output, key=lambda row: row["name"].casefold())
+    key_task_users_cache_time = time.monotonic()
+    return list(key_task_users_cache)
+
+
+async def refresh_key_tasks(members, cache_key):
+    """Fetch selected users' active tasks and persist a last-known-good board."""
+    try:
+        rows = await asyncio.gather(*(client.tasks_for_responsible(row["id"]) for row in members))
+        rows_by_user = {str(member["id"]): source or [] for member, source in zip(members, rows)}
+        now = datetime.now(ZoneInfo(settings.timezone))
+        payload = {
+            "ok": True,
+            "generated_at": now.isoformat(),
+            "members": members,
+            **build_key_tasks(rows_by_user, members, client.portal, now, settings.timezone),
+        }
+        key_task_cache[cache_key] = payload
+        key_task_cache_time[cache_key] = time.monotonic()
+        await asyncio.to_thread(storage.set_key_task_cache, cache_key, payload)
+        await broadcast({"type": "key-tasks"})
+        return payload
+    finally:
+        key_task_refresh_tasks.pop(cache_key, None)
+
+
+def schedule_key_tasks_refresh(members, cache_key):
+    task = key_task_refresh_tasks.get(cache_key)
+    if task and not task.done():
+        return task
+    task = asyncio.create_task(refresh_key_tasks(members, cache_key))
+    key_task_refresh_tasks[cache_key] = task
+    return task
 
 
 def _automatic_nps_key(as_of=None):
@@ -1008,6 +1067,17 @@ class TeamBody(BaseModel):
     name: str
     admin_key: str = ""
 
+class KeyTaskMemberBody(BaseModel):
+    id: str
+    name: str
+    admin_key: str = ""
+
+class DashboardChatBody(BaseModel):
+    question: str
+    month: str = ""
+    period: str = "month"
+    history: list[dict[str, str]] = []
+
 class CommentBody(BaseModel):
     month: str
     scope: str
@@ -1037,6 +1107,145 @@ async def add_team(body: TeamBody):
 async def del_team(role:str,name:str,admin_key:str=''):
     if settings.admin_key and not secrets.compare_digest(admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
     storage.remove_team_member(role,name);return {'ok':True,'team':storage.team()}
+
+
+@app.get('/api/key-tasks/team')
+async def get_key_task_team():
+    return {"ok": True, "members": storage.key_task_team(), "users": await key_task_available_users()}
+
+
+@app.post('/api/key-tasks/team')
+async def add_key_task_team_member(body: KeyTaskMemberBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, 'Неверный ADMIN_KEY')
+    users = await key_task_available_users()
+    valid = next((row for row in users if row["id"] == str(body.id)), None)
+    if not valid:
+        raise HTTPException(400, 'Пользователь не найден среди активных пользователей Bitrix')
+    storage.add_key_task_member(valid["id"], valid["name"])
+    return {"ok": True, "members": storage.key_task_team()}
+
+
+@app.delete('/api/key-tasks/team')
+async def delete_key_task_team_member(user_id: str, admin_key: str = ''):
+    if settings.admin_key and not secrets.compare_digest(admin_key, settings.admin_key):
+        raise HTTPException(403, 'Неверный ADMIN_KEY')
+    storage.remove_key_task_member(user_id)
+    return {"ok": True, "members": storage.key_task_team()}
+
+
+@app.get('/api/key-tasks')
+async def get_key_tasks():
+    members = storage.key_task_team()
+    if not members:
+        return {"ok": True, "members": [], "people": [], "weeks": {}, "no_deadline": [], "empty_team": True}
+    cache_key = _key_task_cache_key(members)
+    cached = key_task_cache.get(cache_key)
+    if cached:
+        stale = time.monotonic() - key_task_cache_time.get(cache_key, 0) >= KEY_TASKS_REFRESH_SECONDS
+        if stale:
+            schedule_key_tasks_refresh(members, cache_key)
+        return {**cached, "stale": stale, "syncing": bool(key_task_refresh_tasks.get(cache_key))}
+
+    persisted = await asyncio.to_thread(storage.key_task_cache, cache_key)
+    if persisted.get("ok"):
+        generated = str(persisted.get("generated_at") or "")
+        try:
+            age = datetime.now(ZoneInfo(settings.timezone)) - datetime.fromisoformat(generated)
+            stale = age.total_seconds() > KEY_TASKS_REFRESH_SECONDS
+            too_old = age.total_seconds() > KEY_TASKS_PERSISTED_STALE_SECONDS
+        except (TypeError, ValueError):
+            stale, too_old = True, True
+        if not too_old:
+            key_task_cache[cache_key] = persisted
+            key_task_cache_time[cache_key] = time.monotonic() - (KEY_TASKS_REFRESH_SECONDS if stale else 0)
+            if stale:
+                schedule_key_tasks_refresh(members, cache_key)
+            return {**persisted, "stale": stale, "syncing": bool(key_task_refresh_tasks.get(cache_key)), "cached_snapshot": True}
+
+    schedule_key_tasks_refresh(members, cache_key)
+    return JSONResponse({"ok": False, "loading": True, "message": "Задачи загружаются из Bitrix"}, status_code=202)
+
+
+def _dashboard_chat_context(month: str, period: str):
+    """Only approved, compact operational facts are sent to the AI gateway."""
+    key = (month, period, "", "")
+    snapshot = cache.get(key) or {}
+    details = detail_cache.get(key) or {}
+    sales = snapshot.get("sales") or {}
+    production = snapshot.get("production") or {}
+    production_rows = (details.get("production") or {})
+    active = list(production_rows.get("active") or [])[:80]
+    stuck = []
+    for row in active:
+        reasons = row.get("stuck_reasons") or []
+        if not reasons:
+            continue
+        deal_id = str(row.get("id") or "")
+        stuck.append({
+            "id": deal_id,
+            "title": str(row.get("title") or ""),
+            "stage": str(row.get("stage") or ""),
+            "reason": reasons,
+            "expected_close": str(row.get("expected_close") or ""),
+            "amount": float(row.get("amount") or 0),
+            "expert": str(row.get("expert") or ""),
+            "url": f"{client.portal}/crm/deal/details/{deal_id}/" if deal_id else "",
+        })
+    team = storage.key_task_team()
+    task_cache_key = _key_task_cache_key(team)
+    tasks = key_task_cache.get(task_cache_key) or {}
+    return {
+        "period": {"month": month, "kind": period},
+        "sales": {
+            "total": ((sales.get("overall") or {}).get("total") or {}).get("metrics") or {},
+            "stages": sales.get("stages") or [],
+        },
+        "production": {
+            "kpi": production.get("kpi") or {},
+            "active_stuck_with_reason": stuck,
+        },
+        "key_tasks": {
+            "generated_at": tasks.get("generated_at") or "",
+            "people": tasks.get("people") or [],
+        },
+        "scope_note": "Это read-only агрегаты и ограниченный список активных сделок. Если данных нет в контексте, нужно сказать об этом, а не предполагать.",
+    }
+
+
+@app.post('/api/dashboard-chat')
+async def dashboard_chat(body: DashboardChatBody):
+    question = str(body.question or "").strip()
+    if not question:
+        raise HTTPException(400, 'Напишите вопрос')
+    if len(question) > 900:
+        raise HTTPException(400, 'Вопрос слишком длинный — до 900 символов')
+    if not settings.assistant_chat_url or not settings.dashboard_chat_token:
+        return JSONResponse({"ok": False, "error": "Защищённый AI-шлюз ещё не подключён"}, status_code=503)
+    target = urlparse(settings.assistant_chat_url)
+    if target.scheme != "https" or not target.netloc:
+        return JSONResponse({"ok": False, "error": "Некорректный адрес AI-шлюза"}, status_code=503)
+    month = body.month or current_month()
+    history = []
+    for item in body.history[-6:]:
+        role = str(item.get("role") or "")
+        text = str(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and text:
+            history.append({"role": role, "content": text[:1400]})
+    payload = {"question": question, "history": history, "context": _dashboard_chat_context(month, body.period)}
+    try:
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=False) as session:
+            response = await session.post(
+                f"{settings.assistant_chat_url.rstrip('/')}/api/dashboard-chat",
+                headers={"Authorization": f"Bearer {settings.dashboard_chat_token}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return JSONResponse({"ok": False, "error": "AI-шлюз временно недоступен"}, status_code=503)
+    if response.status_code != 200 or not data.get("ok"):
+        return JSONResponse({"ok": False, "error": str(data.get("error") or "Не удалось получить ответ AI")}, status_code=503)
+    return {"ok": True, "answer": data.get("answer") or "", "facts": data.get("facts") or [], "recommendations": data.get("recommendations") or [], "links": data.get("links") or []}
 
 @app.put('/api/comment')
 async def save_comment(body: CommentBody):

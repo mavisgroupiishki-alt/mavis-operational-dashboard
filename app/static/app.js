@@ -42,6 +42,13 @@ function readBrowserSnapshot(month,period){
 let expandedSalesWeek=null;
 let trafficTargetGroup="";
 let trafficDraft={};
+let keyTasksData=null;
+let keyTaskTeamData=null;
+let keyTasksRequest=null;
+let keyTasksRetry=null;
+let keyTaskWeekStart="";
+let dashboardChatHistory=[];
+let dashboardChatPending=false;
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -171,10 +178,35 @@ function renderHub(){
       <button type="button" class="department-entry overview-entry" data-open-view="overview"><span class="entry-kicker">04 · Руководителю</span><strong>Общий краткий свод</strong><b>${fmt(s.sales)} продаж</b><small>Продажи, производство, риски и оперативные сигналы</small><i>Открыть →</i></button>
       <button type="button" class="department-entry marketing-entry" data-open-view="marketing"><span class="entry-kicker">05 · Привлечение</span><strong>Маркетинг</strong><b>Bitrix24</b><small>Лиды, источники, конверсия и экономика кампаний</small><i>Открыть →</i></button>
       <button type="button" class="department-entry audit-entry" data-open-view="crm-audit"><span class="entry-kicker">06 · Качество данных</span><strong>Аудит CRM</strong><b>Контроль</b><small>Ежедневный свод и карточки сделок для разбора</small><i>Открыть →</i></button>
-      <button type="button" class="department-entry muted-entry" data-open-view="expert-calls"><span class="entry-kicker">07 · В разработке</span><strong>Звонки экспертов</strong><b>Скоро</b><small>Контур оставлен пустым до подключения данных</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry tasks-entry" data-open-view="key-tasks"><span class="entry-kicker">07 · Фокус команды</span><strong>Ключевые задачи</strong><b>Неделя</b><small>Топ-5 задач по каждому выбранному сотруднику</small><i>Открыть →</i></button>
+      <button type="button" class="department-entry muted-entry" data-open-view="expert-calls"><span class="entry-kicker">08 · В разработке</span><strong>Звонки экспертов</strong><b>Скоро</b><small>Контур оставлен пустым до подключения данных</small><i>Открыть →</i></button>
     </div>
   </section>`;
 }
+
+function keyTaskDate(iso){return iso?new Date(`${iso.slice(0,10)}T12:00:00`):null}
+function keyTaskIso(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`}
+function keyTaskMonday(date){const value=new Date(date.getFullYear(),date.getMonth(),date.getDate());value.setDate(value.getDate()-((value.getDay()+6)%7));return value}
+function keyTaskWeekLabel(start){const from=keyTaskDate(start);if(!from)return "Неделя";const to=new Date(from);to.setDate(to.getDate()+6);const part=value=>value.toLocaleDateString("ru-RU",{day:"numeric",month:"short"}).replace(".","");return `${part(from)} — ${part(to)}`}
+function defaultKeyTaskWeek(){const month=$("#month")?.value||new Date().toISOString().slice(0,7),[year,number]=month.split("-").map(Number),today=new Date(),base=today.getFullYear()===year&&today.getMonth()+1===number?today:new Date(year,number-1,1);return keyTaskIso(keyTaskMonday(base))}
+function keyTaskMonthWeeks(){const month=$("#month")?.value||"",[year,number]=month.split("-").map(Number);if(!year||!number)return [];const first=keyTaskMonday(new Date(year,number-1,1)),last=new Date(year,number,0),out=[];for(let cursor=new Date(first);cursor<=last;cursor.setDate(cursor.getDate()+7))out.push(keyTaskIso(cursor));return out}
+function keyTaskFormatDeadline(raw){const date=keyTaskDate(raw);return date?date.toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"}):"Без дедлайна"}
+function keyTaskItem(task){return `<a class="key-task-item ${task.reason==="Просрочена"?"is-overdue":""}" href="${attr(task.task_url)}" target="_blank" rel="noopener"><span class="key-task-status">${esc(task.reason||"В работе")}</span><strong>${esc(task.title)}</strong><small>${esc(task.group_name||"Личная задача")} · ${esc(keyTaskFormatDeadline(task.deadline))}${task.priority==="high"?" · высокий приоритет":""}</small><i>Открыть в Bitrix →</i></a>`}
+function dashboardChatMarkup(){const entries=dashboardChatHistory.map(item=>`<div class="dashboard-chat-message ${item.role==='user'?'user':'assistant'}"><span>${item.role==='user'?'Вы':'AI · Bitrix'}</span><p>${esc(item.content||'').replaceAll('\n','<br>')}</p>${item.facts?.length?`<ul>${item.facts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}${item.recommendations?.length?`<div class="dashboard-chat-recommendations"><strong>Рекомендую</strong><ul>${item.recommendations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}${item.links?.length?`<div class="dashboard-chat-links">${item.links.map(link=>`<a href="${attr(link.url)}" target="_blank" rel="noopener">${esc(link.label)} →</a>`).join('')}</div>`:''}</div>`).join('');return `<section class="dashboard-chat" aria-label="Чат с Bitrix"><header><div><div class="eyebrow">AI · READ ONLY</div><h3>Спросить про Bitrix</h3><p>Например: «сколько сделок в зависших сейчас?» или «какие зависшие сделки стоит вернуть?». Чат анализирует данные и ничего не меняет в Bitrix.</p></div></header><div class="dashboard-chat-messages" aria-live="polite">${entries||'<div class="dashboard-chat-empty">Задайте вопрос — ответ будет сформирован по данным дашборда и Bitrix.</div>'}${dashboardChatPending?'<div class="dashboard-chat-message assistant pending"><span>AI · Bitrix</span><p>Собираю ответ…</p></div>':''}</div><div class="dashboard-chat-compose"><input id="dashboardChatQuestion" maxlength="900" autocomplete="off" placeholder="Например: какие сделки в производстве зависли по причине «Нет денег»?"><button class="btn primary" data-dashboard-chat-send="1" ${dashboardChatPending?'disabled':''}>Спросить</button></div></section>`}
+function keyTaskPersonCard(person){const tasks=person.tasks||[];return `<article class="key-task-person"><header><div><div class="eyebrow">${esc(person.name)}</div><strong>${person.active_count?`${fmt(person.active_count)} активных`:'Нет задач с дедлайном на эту неделю'}</strong></div>${person.active_count>5?`<span class="key-task-limit">показаны 5</span>`:""}</header>${tasks.length?`<div class="key-task-list">${tasks.map(keyTaskItem).join("")}</div>`:'<div class="key-task-empty">На эту неделю задач с дедлайном нет.</div>'}</article>`}
+function renderKeyTasksPlaceholder(message="Загружаю ключевые задачи…"){const target=$("#key-tasks");if(!target)return;target.innerHTML=`<div class="section-page key-tasks-loading"><div class="eyebrow">ФОКУС КОМАНДЫ</div><h2>Ключевые задачи</h2><p class="section-page-lead">${esc(message)}</p><div class="integration-state">Собираю только активные задачи выбранных сотрудников из Bitrix.</div></div>`}
+function renderKeyTasks(){
+  const target=$("#key-tasks");if(!target)return;const data=keyTasksData||{},members=data.members||keyTaskTeamData?.members||[];
+  if(!members.length){target.innerHTML=`<section class="key-tasks-page"><header class="key-tasks-head"><div><div class="eyebrow">ФОКУС КОМАНДЫ</div><h2>Ключевые задачи</h2><p>Добавьте сотрудников из Bitrix — их список сохранится отдельно от менеджеров и экспертов.</p></div><button class="btn primary" data-key-task-team-open="1">Выбрать сотрудников</button></header><div class="key-tasks-empty-state"><strong>Пока никто не выбран</strong><span>После выбора появятся пять самых важных активных задач каждого сотрудника.</span></div>${dashboardChatMarkup()}</section>`;return}
+  if(!keyTaskWeekStart)keyTaskWeekStart=defaultKeyTaskWeek();const people=(data.weekly_people||{})[keyTaskWeekStart]||members.map(member=>({id:member.id,name:member.name,tasks:[],active_count:0}));const monthWeeks=keyTaskMonthWeeks(),noDeadline=data.no_deadline||[];
+  target.innerHTML=`<section class="key-tasks-page"><header class="key-tasks-head"><div><div class="eyebrow">ФОКУС КОМАНДЫ · BITRIX</div><h2>Ключевые задачи</h2><p>По 5 активных задач на сотрудника: сначала просроченные, затем ближайшие дедлайны и высокий приоритет.</p></div><div class="key-tasks-actions"><button class="btn ghost" data-key-task-team-open="1">Сотрудники</button><button class="btn ghost" data-key-tasks-reload="1">Обновить</button></div></header><div class="key-task-weekbar"><button class="icon key-task-week-shift" data-key-task-week-shift="-1" aria-label="Предыдущая неделя">←</button><div><span>Выбранная неделя</span><strong>${esc(keyTaskWeekLabel(keyTaskWeekStart))}</strong></div><button class="btn ghost key-task-this-week" data-key-task-this-week="1">Текущая</button><button class="icon key-task-week-shift" data-key-task-week-shift="1" aria-label="Следующая неделя">→</button></div><nav class="key-task-month-weeks" aria-label="Недели выбранного месяца">${monthWeeks.map(start=>{const count=((data.weekly_people||{})[start]||[]).reduce((sum,row)=>sum+(row.active_count||0),0);return `<button class="${start===keyTaskWeekStart?'active':''}" data-key-task-week="${start}"><span>${esc(keyTaskWeekLabel(start))}</span><b>${fmt(count)}</b></button>`}).join("")}</nav>${data.stale?'<div class="criteria-box">Показана последняя подтверждённая версия списка; Bitrix обновляет её в фоне.</div>':''}<div class="key-task-people">${people.map(keyTaskPersonCard).join("")}</div>${noDeadline.length?`<details class="key-task-no-deadline"><summary><span>Без дедлайна</span><span>${fmt(noDeadline.length)} задач из общего топа</span></summary><div class="key-task-list">${noDeadline.map(keyTaskItem).join("")}</div></details>`:""}${dashboardChatMarkup()}</section>`;
+}
+async function loadKeyTasks(force=false){
+  if(keyTasksRequest)return keyTasksRequest;if(!force&&keyTasksData){renderKeyTasks();return}renderKeyTasksPlaceholder();
+  keyTasksRequest=(async()=>{try{const teamResponse=await fetch('/api/key-tasks/team',{cache:'no-store'}),team=await teamResponse.json().catch(()=>({detail:'Bitrix временно недоступен'}));if(!teamResponse.ok)throw new Error(team.detail||'Не удалось получить список сотрудников');keyTaskTeamData=team;const response=await fetch('/api/key-tasks',{cache:'no-store'}),payload=await response.json().catch(()=>({detail:'Сервис задач временно недоступен'}));if(response.status===202||payload.loading){renderKeyTasksPlaceholder(payload.message||'Задачи готовятся в фоне…');if(keyTasksRetry)clearTimeout(keyTasksRetry);keyTasksRetry=setTimeout(()=>{keyTasksRetry=null;keyTasksRequest=null;loadKeyTasks(true)},1800);return}if(!response.ok||!payload.ok)throw new Error(payload.detail||payload.error||'Не удалось загрузить задачи');keyTasksData=payload;renderKeyTasks()}catch(error){renderKeyTasksPlaceholder(error.message||'Задачи временно недоступны')}finally{keyTasksRequest=null}})();return keyTasksRequest;
+}
+function openKeyTaskTeamDialog(){const users=keyTaskTeamData?.users||[],members=keyTaskTeamData?.members||[],selected=new Set(members.map(row=>row.id));$("#keyTaskUser").innerHTML=users.filter(user=>!selected.has(user.id)).map(user=>`<option value="${attr(user.id)}">${esc(user.name)}</option>`).join("");$("#keyTaskTeamCurrent").innerHTML=members.length?members.map(row=>`<span class="team-tag">${esc(row.name)} <button type="button" data-key-task-member-remove="${attr(row.id)}" aria-label="Удалить ${attr(row.name)}">×</button></span>`).join(""):'<span class="muted">Сотрудники ещё не добавлены</span>';$("#keyTaskTeamDialog").showModal()}
+async function askDashboardChat(){const input=$("#dashboardChatQuestion"),question=(input?.value||'').trim();if(!question||dashboardChatPending)return;dashboardChatHistory.push({role:'user',content:question});dashboardChatHistory=dashboardChatHistory.slice(-8);dashboardChatPending=true;renderKeyTasks();try{const response=await fetch('/api/dashboard-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,month:$('#month').value,period:$('#period').value,history:dashboardChatHistory.slice(0,-1).map(({role,content})=>({role,content}))})}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'Не удалось получить ответ');dashboardChatHistory.push({role:'assistant',content:payload.answer||'',facts:payload.facts||[],recommendations:payload.recommendations||[],links:payload.links||[]});dashboardChatHistory=dashboardChatHistory.slice(-8)}catch(error){dashboardChatHistory.push({role:'assistant',content:error.message||'Чат временно недоступен. Попробуйте ещё раз.'})}finally{dashboardChatPending=false;renderKeyTasks()}}
 function integrationState(status){return ({not_configured:"Интеграция ещё не настроена",invalid_configuration:"Некорректная настройка интеграции",unavailable:"Источник временно недоступен",stale:"Показаны последние полученные данные"})[status]||"Данные обновляются"}
 function renderCallsPlaceholder(){
   $("#sales-calls").innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">Здесь появятся показатели Jarvis по последнему дню звонков.</p><div class="integration-state">Загрузка данных Jarvis…</div></div>`;
@@ -1046,13 +1078,13 @@ function renderAll(){
   if(!state?.ok){const e=`<div class="error">${esc(state?.error||"Ошибка загрузки")}</div>`;$$('.view').forEach(x=>x.innerHTML=e);return}
   renderOverview();
   if(state.sales?.details_loaded&&state.sales?.details_key===snapshotKey())renderSales();else renderSalesPlaceholder("Откройте раздел, чтобы загрузить детальную разбивку продаж.");
-  renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();openView(requestedView(),false);
+  renderProduction();renderExperts();renderExpertsDepartment();renderRisks();renderForecast();renderPlans();renderCallsPlaceholder();renderMarketingPlaceholder();renderCrmAuditPlaceholder();renderHub();keyTasksData?renderKeyTasks():renderKeyTasksPlaceholder("Откройте раздел, чтобы загрузить задачи.");openView(requestedView(),false);
   $("#liveDot").className="ok";const d=new Date(state.updated_at);$("#liveText").textContent=`BITRIX ONLINE · ${d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
 }
 
 const VIEW_TITLES={
   hub:"Все разделы", overview:"Общий краткий свод", sales:"Продажи", "department-experts":"Эксперты",
-  "sales-calls":"Звонки продажи", "expert-calls":"Звонки эксперты", marketing:"Маркетинг", "crm-audit":"Аудит CRM",
+  "sales-calls":"Звонки продажи", "expert-calls":"Звонки эксперты", marketing:"Маркетинг", "crm-audit":"Аудит CRM", "key-tasks":"Ключевые задачи",
   risks:"Риски", dynamics:"Динамика", forecast:"Прогноз", plans:"Планы и настройки"
 };
 function requestedView(){const value=location.hash.slice(1);return VIEW_TITLES[value]?value:"hub"}
@@ -1068,6 +1100,7 @@ function openView(view,updateHistory=true){
   if(view==="sales-calls")loadJarvisExperience();
   if(view==="marketing")loadOperationsSection("marketing");
   if(view==="crm-audit")loadOperationsSection("crm-audit");
+  if(view==="key-tasks")loadKeyTasks();
   if(updateHistory){history.pushState(null,"",view==="hub"?location.pathname:`#${view}`);window.scrollTo({top:0,behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 }
 
@@ -1408,6 +1441,13 @@ function init(){
   window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
     const view=e.target.closest('[data-open-view],[data-view]');if(view){openView(view.dataset.openView||view.dataset.view);return}
+    const keyTaskTeamOpen=e.target.closest('[data-key-task-team-open]');if(keyTaskTeamOpen){if(keyTaskTeamData)openKeyTaskTeamDialog();else loadKeyTasks(true).then(openKeyTaskTeamDialog);return}
+    if(e.target.closest('[data-key-tasks-reload]')){keyTasksData=null;loadKeyTasks(true);return}
+    const keyTaskWeek=e.target.closest('[data-key-task-week]');if(keyTaskWeek){keyTaskWeekStart=keyTaskWeek.dataset.keyTaskWeek;renderKeyTasks();return}
+    const keyTaskWeekShift=e.target.closest('[data-key-task-week-shift]');if(keyTaskWeekShift){const base=keyTaskDate(keyTaskWeekStart||defaultKeyTaskWeek());base.setDate(base.getDate()+7*Number(keyTaskWeekShift.dataset.keyTaskWeekShift||0));keyTaskWeekStart=keyTaskIso(base);renderKeyTasks();return}
+    if(e.target.closest('[data-key-task-this-week]')){keyTaskWeekStart=keyTaskIso(keyTaskMonday(new Date()));renderKeyTasks();return}
+    const keyTaskMemberRemove=e.target.closest('[data-key-task-member-remove]');if(keyTaskMemberRemove){const query=new URLSearchParams({user_id:keyTaskMemberRemove.dataset.keyTaskMemberRemove,admin_key:$('#keyTaskAdminKey')?.value||''});fetch('/api/key-tasks/team?'+query,{method:'DELETE'}).then(async response=>{if(!response.ok){alert(await response.text());return}keyTaskTeamData={...(keyTaskTeamData||{}),members:(await response.json()).members};keyTasksData=null;openKeyTaskTeamDialog();loadKeyTasks(true)});return}
+    if(e.target.closest('[data-dashboard-chat-send]')){askDashboardChat();return}
     if(e.target.closest('[data-retry-sales-section]')){loadSalesSection();return}
     const cb=e.target.closest('[data-comment-scope]');if(cb){e.stopPropagation();commentTarget={scope:cb.dataset.commentScope,metric:cb.dataset.commentMetric,title:cb.dataset.commentTitle};$('#commentTitle').textContent=commentTarget.title;$('#commentText').value=getComment(commentTarget.scope,commentTarget.metric);$('#commentDialog').showModal();return}
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
@@ -1430,6 +1470,7 @@ function init(){
     const rem=e.target.closest('[data-team-remove]');if(rem){removeTeam(rem.dataset.role,rem.dataset.name);return}
     const x=e.target.closest('[data-drill="1"]');if(x)openDrill(x)
   });
+  document.body.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&e.target?.id==='dashboardChatQuestion'){e.preventDefault();askDashboardChat()}});
   document.body.addEventListener('change',e=>{if(e.target.matches('[data-audit-filter]'))renderCrmAuditRows()});
   $("#closeDrill").addEventListener('click',()=>$("#drillDialog").close());$("#drillSearch").addEventListener('input',renderDrillRows);
   $("#closePlan").addEventListener('click',()=>$("#planDialog").close());$("#planScope").addEventListener('change',()=>{updatePlanContextTypes();updatePlanKey()});$("#planContextType").addEventListener('change',updatePlanKey);$("#planContextKey").addEventListener('change',buildPlanForm);$("#savePlan").addEventListener('click',savePlan);
@@ -1440,10 +1481,12 @@ function init(){
   $("#npsExpert").addEventListener('change',()=>{npsTarget=$("#npsExpert").value;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory()});
   $("#saveNps").addEventListener('click',async()=>{npsTarget=$("#npsExpert").value||npsTarget;if(!npsTarget)return;const raw=$("#npsValue").value;if(raw===''){alert('Введи NPS от 0 до 10');return}const r=await fetch('/api/nps',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,expert:npsTarget,value:Number(raw),note:$('#npsNote').value,admin_key:$('#npsAdminKey').value})});if(!r.ok){alert(await r.text());return}state.manual_nps=(await r.json()).manual_nps;$("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();renderAll()});
   $("#closeTeam").addEventListener('click',()=>$("#teamDialog").close());
+  $("#closeKeyTaskTeam").addEventListener('click',()=>$("#keyTaskTeamDialog").close());
   $("#closeTrafficGroup").addEventListener('click',()=>$("#trafficGroupDialog").close());
   $("#addTrafficSource").addEventListener('click',addTrafficSourceToGroup);
   $("#saveTrafficGroup").addEventListener('click',saveTrafficGroupDialog);
   $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
+  $("#saveKeyTaskMember").addEventListener('click',async()=>{const id=$("#keyTaskUser").value,person=(keyTaskTeamData?.users||[]).find(row=>row.id===id);if(!person)return;const response=await fetch('/api/key-tasks/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:person.id,name:person.name,admin_key:$("#keyTaskAdminKey").value||''})});if(!response.ok){alert(await response.text());return}keyTaskTeamData={...(keyTaskTeamData||{}),members:(await response.json()).members};keyTasksData=null;$("#keyTaskTeamDialog").close();loadKeyTasks(true)});
   const es=new EventSource('/events');es.addEventListener('update',()=>load());es.onerror=()=>{$("#liveDot").className='bad'};
   window.addEventListener("offline",()=>{if(state){$("#liveDot").className="bad";$("#liveText").textContent="ПОКАЗАНА ПОСЛЕДНЯЯ ВЕРСИЯ · НЕТ СЕТИ"}});
   window.addEventListener("online",()=>load());
@@ -1459,7 +1502,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.1.0";
+    b.textContent="v3.1.9";
     top.appendChild(b);
   }
 });
