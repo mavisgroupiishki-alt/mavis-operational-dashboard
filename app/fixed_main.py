@@ -200,7 +200,7 @@ async def health():
         "ok": True,
         "bitrix_configured": bool(core.settings.bitrix_webhook),
         "last_error": core.last_error,
-        "version": "3.1.13",
+        "version": "3.1.14",
         "storage": core.storage.backend_name,
         "supabase_configured": bool(
             core.settings.supabase_url and core.settings.supabase_key

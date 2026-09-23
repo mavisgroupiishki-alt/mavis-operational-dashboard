@@ -203,15 +203,11 @@ function contractorCaption(){
   if(finance.status==="stale")return "Последнее подтверждённое значение";
   return cleanRevenueCaption();
 }
-function contractorPlan(incomingPlan,cleanRevenuePlan){
-  if(!incomingPlan||!cleanRevenuePlan)return 0;
-  return Math.max(0,Number(incomingPlan)-Number(cleanRevenuePlan));
-}
-function salesSummaryMetric(title,value,type,plan,note=""){
+function salesSummaryMetric(title,value,type,plan,note="",showPlan=true){
   const hasFact=value!==null&&value!==undefined&&Number.isFinite(Number(value));
   const hasPlan=Number(plan)>0;
   const completion=hasFact&&hasPlan?`Выполнение ${pct(Number(value)/Number(plan)*100)}`:"Выполнение —";
-  return `<div><span>${esc(title)}</span><strong>${hasFact?format(value,type):"—"}</strong>${note?`<small>${esc(note)}</small>`:""}<small class="rnp-summary-plan">План ${hasPlan?format(plan,type):"—"} · ${completion}</small></div>`;
+  return `<div><span>${esc(title)}</span><strong>${hasFact?format(value,type):"—"}</strong>${note?`<small>${esc(note)}</small>`:""}${showPlan?`<small class="rnp-summary-plan">План ${hasPlan?format(plan,type):"—"} · ${completion}</small>`:""}</div>`;
 }
 function salesRevenueHero(s){
   const plan=getPlan("sales","sales_amount"),financial=financialSalesMetrics(s),percent=plan?financial.incoming/plan*100:0;
@@ -867,7 +863,7 @@ function rnpManagerMatrix(){
 }
 function renderSales(){
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
-  const incomingPlan=getPlan("sales","sales_amount"),cleanRevenuePlan=getPlan("sales","net_revenue"),salesPlan=getPlan("sales","sales"),contractorsPlan=contractorPlan(incomingPlan,cleanRevenuePlan);
+  const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales");
   const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_amount");
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
@@ -878,9 +874,9 @@ function renderSales(){
     </div>
 
     <div class="rnp-overall-strip">
-      ${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",incomingPlan,incomingRevenueCaption())}
+      ${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false)}
       ${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption())}
-      ${salesSummaryMetric("Подрядчики",contractors,"money",contractorsPlan,contractorCaption())}
+      ${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false)}
       ${salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)}
       <div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div>
     </div>
@@ -1707,7 +1703,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.1.13";
+    b.textContent="v3.1.14";
     top.appendChild(b);
   }
 });

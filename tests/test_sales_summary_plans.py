@@ -7,9 +7,11 @@ class SalesSummaryPlansTest(unittest.TestCase):
         source = Path("app/static/app.js").read_text()
 
         self.assertIn("function salesSummaryMetric", source)
-        self.assertIn("function contractorPlan", source)
         self.assertIn('getPlan("sales","sales_amount")', source)
-        self.assertIn('getPlan("sales","net_revenue")', source)
+        self.assertNotIn("function contractorPlan", source)
+        self.assertIn('salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false)', source)
+        self.assertIn('salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption())', source)
+        self.assertIn('salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false)', source)
         self.assertIn('salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)', source)
 
 
