@@ -61,11 +61,17 @@ class BitrixClient:
     async def lead_list(self,flt,select):
         return await self.list_all("crm.lead.list",{"order":{"ID":"ASC"},"filter":flt,"select":select})
     async def tasks_for_group(self,group_id,created_from,created_to):
+        """Load the NPS project and apply its date/status rules locally.
+
+        Bitrix installations differ in support for task date/status filters.
+        Asking only for the project prevents those server-side filters from
+        silently dropping completed tasks before NPS is calculated.
+        """
         return await self.list_all("tasks.task.list",{
             "order":{"CREATED_DATE":"DESC","ID":"DESC"},
-            "filter":{"GROUP_ID":int(group_id),"STATUS":"5",">=CREATED_DATE":created_from.isoformat(),"<CREATED_DATE":created_to.isoformat()},
-            "select":["ID","TITLE","STATUS","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
-        })
+            "filter":{"GROUP_ID":int(group_id)},
+            "select":["ID","TITLE","STATUS","GROUP_ID","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
+        }, limit=1000)
     async def tasks_for_responsible(self, user_id, limit=200):
         """Load one employee's task list. Filtering to active states happens locally.
 

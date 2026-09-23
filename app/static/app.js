@@ -863,7 +863,7 @@ function rnpManagerMatrix(){
 }
 function renderSales(){
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
-  const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales");
+  const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales"),averageCheckPlan=getPlan("sales","average_check");
   const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_amount");
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
@@ -878,7 +878,7 @@ function renderSales(){
       ${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption())}
       ${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false)}
       ${salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)}
-      <div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div>
+      ${salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)}
     </div>
 
     <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «Чистая выручка». Суммы в разбивках по менеджерам, источникам, неделям и дням остаются CRM-расшифровкой: подрядчики не распределяются по конкретному менеджеру, источнику или дню.</div>
@@ -1043,7 +1043,7 @@ function renderExperts(){
   const cards=experts().map(e=>{const nm=expertNpsMeta(e),nv=nm.value;return `<div class="expert-card"><div class="expert-card-top"><div><div class="expert-name">${esc(e.name)}</div><div class="expert-result">${money(e.closed_amount)}</div></div><span class="btn nps-button">${nv===null?'NPS —':`NPS ${fmt(nv)} · ${fmt(nm.count)} оц.`}</span></div><div class="expert-stats"><div><span>Закрыто</span><strong>${tdLink(e.closed_count,"production","closed_count","num",{expert:e.name})}</strong></div><div><span>В работе</span><strong>${tdLink(e.active_count,"production","active","num",{expert:e.name})}</strong></div><div><span>В норме</span><strong>${pct(e.within_norm_pct)}</strong></div><div><span>Возвраты</span><strong>${tdLink(e.returns_count,"production","returns_count","num",{expert:e.name})}</strong></div></div><details class="nested"><summary>По продуктам (${e.products.length})</summary><div class="nested-body"><table><thead><tr><th>Продукт</th><th class="num">Закрыто</th><th class="num">План, шт</th><th class="num">% плана</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th><th></th></tr></thead><tbody>${e.products.map(p=>{const plan=expertProductPlan(e.name,p.name);return `<tr><td>${esc(p.name)}</td><td class="num">${tdLink(p.closed_count,"production","closed_count","num",{expert:e.name,product:p.name})}</td><td class="num">${plan?fmt(plan):"—"}</td><td class="num">${plan?pct(p.closed_count/plan*100):"—"}</td><td class="num">${tdLink(p.closed_amount,"production","closed_amount","money",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.avg_days,"production","avg_production_days","days",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.within_norm_pct,"production","within_norm_pct","pct",{expert:e.name,product:p.name})}</td><td class="num"><button class="mini-edit" data-edit-expert-product-plan="1" data-expert="${attr(e.name)}" data-product="${attr(p.name)}">План</button></td></tr>`}).join("")}</tbody></table></div></details></div>`}).join("");
   const activeStuck=state.production.active_stuck||{},reasonCards=`<div class="kpi-grid compact-cards reason-coverage-cards">${card("Активные зависшие — все",p.active_stuck_with_reason_count||0,"production","active_stuck_with_reason_count","num",{},`${money(p.active_stuck_with_reason_amount||0)} · ${pct(p.active_stuck_with_reason_pct||0)} из ${fmt(activeStuck.all_count||0)}`)}${card("Активные зависшие — ожидаемое закрытие в месяце",p.active_stuck_with_reason_expected_month_count||0,"production","active_stuck_with_reason_expected_month_count","num",{},`${money(p.active_stuck_with_reason_expected_month_amount||0)} · ${pct(p.active_stuck_with_reason_expected_month_pct||0)} из ${fmt(activeStuck.expected_month_count||0)}`)}</div>`;
   const reasonsBlock=`<section class="expert-stuck-reasons"><div class="section-title">Активные зависшие в производстве</div>${reasonCards}${panel("Разбивка по причинам",activeReasonTable(activeStuck.all_reasons||[],activeStuck.expected_month_reasons||[]),activeStuck.expected_month_rule||"Вторая группа: предполагаемая дата закрытия попадает в выбранный месяц.")}</section>`;
-  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и NPS за прошлую неделю по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${flowBlock}${reasonsBlock}`;
+  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и NPS за прошлую неделю по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button type="button" class="btn ghost" data-open-nps="">+ Добавить NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${flowBlock}${reasonsBlock}`;
 }
 
 function reasonTable(rows=state.production.dormant.reasons,metric="dormant_count"){return `<table><thead><tr><th>Причина зависания</th><th class="num">Кол-во</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td class="num">${tdLink(r.count,"production",metric,"num",{reason:r.name})}</td></tr>`).join("")||"<tr><td colspan='2' class='empty'>Причины пока не заполнены</td></tr>"}</tbody></table>`}
@@ -1703,7 +1703,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.1.14";
+    b.textContent="v3.1.15";
     top.appendChild(b);
   }
 });

@@ -81,6 +81,18 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('dashboardChatOpen=true;persistDashboardChatState();renderDashboardChat()', script)
         self.assertNotIn("${dashboardChatMarkup()}</section>`", script)
 
+    def test_nps_has_a_visible_manual_entry_action(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('data-open-nps=""', script)
+        self.assertIn('+ Добавить NPS вручную', script)
+
+    def test_sales_average_check_has_a_plan_in_the_summary(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('averageCheckPlan=getPlan("sales","average_check")', script)
+        self.assertIn('salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)', script)
+
 
 if __name__ == "__main__":
     unittest.main()
