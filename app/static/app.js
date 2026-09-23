@@ -1605,6 +1605,77 @@ function init(){
 }
 init();
 
+// A background refresh must not rebuild the whole dashboard: that used to reset
+// the visible section, open accordions and the text being typed in the chat.
+// Render the current view into a detached DOM tree and only reconcile its nodes.
+let activeLoadMode=null;
+const loadDashboardSnapshot=load;
+load=async function(options={}){
+  const mode={background:Boolean(options.background)};
+  activeLoadMode=mode;
+  try{return await loadDashboardSnapshot(options)}finally{if(activeLoadMode===mode)activeLoadMode=null}
+};
+
+function copyAttributes(target,source){
+  if(target.tagName!=="DETAILS"){
+    [...target.attributes].forEach(attribute=>{if(!source.hasAttribute(attribute.name))target.removeAttribute(attribute.name)});
+    [...source.attributes].forEach(attribute=>{if(target.getAttribute(attribute.name)!==attribute.value)target.setAttribute(attribute.name,attribute.value)});
+  }
+}
+function reconcileNode(target,source){
+  if(target.nodeType!==source.nodeType||target.nodeName!==source.nodeName){target.replaceWith(source.cloneNode(true));return}
+  if(target.nodeType===Node.TEXT_NODE){if(target.nodeValue!==source.nodeValue)target.nodeValue=source.nodeValue;return}
+  copyAttributes(target,source);
+  const editing=document.activeElement===target&&/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+  if(editing)return;
+  const oldNodes=[...target.childNodes],newNodes=[...source.childNodes];
+  for(let index=0;index<newNodes.length;index++){
+    if(!oldNodes[index])target.appendChild(newNodes[index].cloneNode(true));
+    else reconcileNode(oldNodes[index],newNodes[index]);
+  }
+  for(let index=oldNodes.length-1;index>=newNodes.length;index--)oldNodes[index].remove();
+}
+function renderCurrentViewInto(sandbox,viewId){
+  if(viewId==="overview")return renderOverview();
+  if(viewId==="sales")return state.sales?.details_loaded&&state.sales?.details_key===snapshotKey()?renderSales():renderSalesPlaceholder("Загружаю детальные продажи…");
+  if(viewId==="production"){renderProduction();return}
+  if(viewId==="experts"){renderExperts();return}
+  if(viewId==="department-experts"){renderProduction();renderExperts();renderExpertsDepartment();return}
+  if(viewId==="risks")return renderRisks();
+  if(viewId==="forecast")return renderForecast();
+  if(viewId==="plans")return renderPlans();
+  if(viewId==="calls")return renderCallsPlaceholder();
+  if(viewId==="marketing")return renderMarketingPlaceholder();
+  if(viewId==="crm-audit")return renderCrmAuditPlaceholder();
+  if(viewId==="hub")return renderHub();
+  if(viewId==="key-tasks")return keyTasksData?renderKeyTasks():renderKeyTasksPlaceholder("Загружаю ключевые задачи…");
+}
+function softRenderCurrentView(){
+  const viewId=requestedView(),liveView=document.getElementById(viewId);
+  if(!liveView||!liveView.childNodes.length)return false;
+  const sandbox=document.createElement("div");
+  document.querySelectorAll(".view").forEach(view=>{
+    const copy=document.createElement(view.tagName);
+    copy.id=view.id;copy.className=view.className;sandbox.appendChild(copy);
+  });
+  const queryOne=document.querySelector.bind(document),queryAll=document.querySelectorAll.bind(document);
+  document.querySelector=selector=>sandbox.querySelector(selector)||queryOne(selector);
+  document.querySelectorAll=selector=>{
+    const matches=sandbox.querySelectorAll(selector);
+    return matches.length?matches:queryAll(selector);
+  };
+  try{renderCurrentViewInto(sandbox,viewId)}finally{document.querySelector=queryOne;document.querySelectorAll=queryAll}
+  const nextView=sandbox.querySelector("#"+viewId);
+  if(!nextView)return false;
+  reconcileNode(liveView,nextView);
+  return true;
+}
+const renderDashboardFully=renderAll;
+renderAll=function(){
+  if(activeLoadMode?.background&&state?.ok&&softRenderCurrentView())return;
+  return renderDashboardFully();
+};
+
 
 // Build marker: helps verify that the browser is not showing stale frontend files.
 window.addEventListener("DOMContentLoaded",()=>{
