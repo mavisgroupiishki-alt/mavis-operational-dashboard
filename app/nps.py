@@ -65,13 +65,18 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
     grouped = {}
     excluded_without_score = 0
     unmatched_expert_count = 0
+    fetched_task_count = len(tasks)
+    completed_task_count = 0
+    created_in_week_count = 0
 
     for task in tasks:
         if str(task.get("STATUS")) != NPS_COMPLETED_STATUS:
             continue
+        completed_task_count += 1
         created_at = _as_local(task.get("CREATED_DATE"), timezone_name)
         if not created_at or not week_start <= created_at < week_end:
             continue
+        created_in_week_count += 1
 
         score = _score(task.get(NPS_SCORE_FIELD))
         if score is None:
@@ -112,6 +117,9 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
             "count": len(all_scores),
         },
         "experts": experts,
+        "fetched_task_count": fetched_task_count,
+        "completed_task_count": completed_task_count,
+        "created_in_week_count": created_in_week_count,
         "excluded_without_score": excluded_without_score,
         "unmatched_expert_count": unmatched_expert_count,
     }

@@ -38,6 +38,9 @@ def test_automatic_nps_uses_task_created_date_not_closed_date():
     assert result["overall"] == {"value": 9.0, "count": 2}
     assert result["experts"]["Ирина Богомольцева"]["count"] == 2
     assert result["excluded_without_score"] == 1
+    assert result["fetched_task_count"] == 4
+    assert result["completed_task_count"] == 4
+    assert result["created_in_week_count"] == 3
 
 
 def test_automatic_nps_ignores_open_tasks_even_when_created_in_week():

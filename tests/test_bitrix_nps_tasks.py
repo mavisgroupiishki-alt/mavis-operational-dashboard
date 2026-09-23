@@ -10,9 +10,12 @@ class BitrixNpsTaskFetchTests(unittest.TestCase):
     def test_fetches_project_tasks_without_server_side_status_or_date_filters(self):
         async def check():
             client = BitrixClient("https://example.bitrix24.by/rest/1/token")
-            client.list_all = AsyncMock(return_value=[])
+            client.list_all = AsyncMock(side_effect=[[], [
+                {"ID": "1", "GROUP_ID": "114"},
+                {"ID": "2", "GROUP_ID": "113"},
+            ]])
             try:
-                await client.tasks_for_group(
+                rows = await client.tasks_for_group(
                     114,
                     datetime.fromisoformat("2026-09-14T00:00:00+03:00"),
                     datetime.fromisoformat("2026-09-21T00:00:00+03:00"),
@@ -21,8 +24,10 @@ class BitrixNpsTaskFetchTests(unittest.TestCase):
                 await client.close()
 
             params = client.list_all.await_args.args[1]
-            self.assertEqual(params["filter"], {"GROUP_ID": 114})
+            self.assertEqual(client.list_all.await_count, 2)
+            self.assertEqual(params["filter"], {})
             self.assertIn("GROUP_ID", params["select"])
+            self.assertEqual(rows, [{"ID": "1", "GROUP_ID": "114"}])
 
         asyncio.run(check())
 

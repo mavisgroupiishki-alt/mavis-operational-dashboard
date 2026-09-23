@@ -134,6 +134,9 @@ def _automatic_nps_empty(as_of=None, status="updating"):
         "week_end": (week_end - timedelta(days=1)).date().isoformat(),
         "overall": {"value": None, "count": 0},
         "experts": {},
+        "fetched_task_count": 0,
+        "completed_task_count": 0,
+        "created_in_week_count": 0,
         "excluded_without_score": 0,
         "unmatched_expert_count": 0,
     }

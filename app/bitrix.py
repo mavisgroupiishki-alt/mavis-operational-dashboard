@@ -67,11 +67,19 @@ class BitrixClient:
         Asking only for the project prevents those server-side filters from
         silently dropping completed tasks before NPS is calculated.
         """
-        return await self.list_all("tasks.task.list",{
+        params={
             "order":{"CREATED_DATE":"DESC","ID":"DESC"},
             "filter":{"GROUP_ID":int(group_id)},
             "select":["ID","TITLE","STATUS","GROUP_ID","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
-        }, limit=1000)
+        }
+        rows=await self.list_all("tasks.task.list",params,limit=1000)
+        if rows:
+            return rows
+        # Some portals silently return an empty page for GROUP_ID.  Fall back
+        # to a bounded recent task list and verify the project locally.
+        fallback={**params,"filter":{}}
+        rows=await self.list_all("tasks.task.list",fallback,limit=1000)
+        return [row for row in rows or [] if str(row.get("GROUP_ID") or "")==str(group_id)]
     async def tasks_for_responsible(self, user_id, limit=200):
         """Load one employee's task list. Filtering to active states happens locally.
 
