@@ -50,3 +50,18 @@ def test_automatic_nps_ignores_open_tasks_even_when_created_in_week():
 
     assert result["overall"] == {"value": None, "count": 0}
     assert result["excluded_without_score"] == 0
+
+
+def test_automatic_nps_accepts_camel_case_fields_from_tasks_api():
+    result = aggregate_automatic_nps([{
+        "id": "42",
+        "title": "NPS task",
+        "status": "5",
+        "createdDate": "2026-09-15T10:00:00+03:00",
+        "closedDate": "2026-09-16T10:00:00+03:00",
+        "ufAuto213716165780": "9",
+        "ufAuto394851584352": "Ирина Богомольцева",
+    }], AS_OF)
+
+    assert result["overall"] == {"value": 9.0, "count": 1}
+    assert result["experts"]["Ирина Богомольцева"]["tasks"][0]["id"] == "42"

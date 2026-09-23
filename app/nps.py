@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta
+import re
 from zoneinfo import ZoneInfo
 
 
@@ -6,6 +7,16 @@ NPS_GROUP_ID = 114
 NPS_SCORE_FIELD = "UF_AUTO_213716165780"
 NPS_EXPERT_FIELD = "UF_AUTO_394851584352"
 NPS_COMPLETED_STATUS = "5"
+
+
+def _task_field(task, key):
+    """Read task fields from either legacy uppercase or Tasks API camelCase."""
+    wanted = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    for field, value in task.items():
+        actual = re.sub(r"[^a-z0-9]", "", str(field).lower())
+        if actual == wanted:
+            return value
+    return None
 
 
 def _as_local(value, timezone_name):
@@ -52,7 +63,7 @@ def _expert(value):
 
 def _deal_id(task):
     for field in ("UF_CRM_TASK_DEAL", "UF_CRM_TASK"):
-        value = task.get(field)
+        value = _task_field(task, field)
         if isinstance(value, list):
             value = value[0] if value else None
         if value:
@@ -70,29 +81,29 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
     created_in_week_count = 0
 
     for task in tasks:
-        if str(task.get("STATUS")) != NPS_COMPLETED_STATUS:
+        if str(_task_field(task, "STATUS")) != NPS_COMPLETED_STATUS:
             continue
         completed_task_count += 1
-        created_at = _as_local(task.get("CREATED_DATE"), timezone_name)
+        created_at = _as_local(_task_field(task, "CREATED_DATE"), timezone_name)
         if not created_at or not week_start <= created_at < week_end:
             continue
         created_in_week_count += 1
 
-        score = _score(task.get(NPS_SCORE_FIELD))
+        score = _score(_task_field(task, NPS_SCORE_FIELD))
         if score is None:
             excluded_without_score += 1
             continue
-        expert = _expert(task.get(NPS_EXPERT_FIELD))
+        expert = _expert(_task_field(task, NPS_EXPERT_FIELD))
         if not expert:
             unmatched_expert_count += 1
             continue
 
         grouped.setdefault(expert, []).append({
-            "id": str(task.get("ID")),
-            "title": task.get("TITLE") or "Задача NPS",
+            "id": str(_task_field(task, "ID")),
+            "title": _task_field(task, "TITLE") or "Задача NPS",
             "score": score,
             "created_date": created_at.date().isoformat(),
-            "closed_date": (_as_local(task.get("CLOSED_DATE"), timezone_name) or created_at).date().isoformat(),
+            "closed_date": (_as_local(_task_field(task, "CLOSED_DATE"), timezone_name) or created_at).date().isoformat(),
             "deal_id": _deal_id(task),
         })
 

@@ -79,7 +79,10 @@ class BitrixClient:
         # to a bounded recent task list and verify the project locally.
         fallback={**params,"filter":{}}
         rows=await self.list_all("tasks.task.list",fallback,limit=1000)
-        return [row for row in rows or [] if str(row.get("GROUP_ID") or "")==str(group_id)]
+        return [
+            row for row in rows or []
+            if str(row.get("GROUP_ID") or row.get("groupId") or "") == str(group_id)
+        ]
     async def tasks_for_responsible(self, user_id, limit=200):
         """Load one employee's task list. Filtering to active states happens locally.
 
