@@ -55,6 +55,7 @@ let dashboardChatFocusRequested=false;
 let dashboardChatDraft="";
 let backgroundRefreshTimer=null;
 let lastBackgroundRefreshAt=0;
+const pendingPlanWrites=new Map();
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -111,6 +112,22 @@ function getComment(scope,metric){return state?.comments?.[`${scope}|${metric}`]
 
 function getPlan(scope,metric,contextType="overall",contextKey=""){
   return Number(state?.plans?.[`${scope}|${contextType}|${contextKey}`]?.[metric]||0);
+}
+function rememberPlanWrite(contextKey,values){
+  pendingPlanWrites.set(contextKey,{...values});
+}
+function reconcilePendingPlans(plans){
+  const next={...(plans||{})};
+  for(const [contextKey,values] of pendingPlanWrites){
+    const received=next[contextKey]||{};
+    const confirmed=Object.entries(values).every(([metric,value])=>Number(received[metric]??0)===Number(value??0));
+    if(confirmed){
+      pendingPlanWrites.delete(contextKey);
+    }else{
+      next[contextKey]={...received,...values};
+    }
+  }
+  return next;
 }
 function expertProductPlanKey(expert,product){return `${expert}::${product}`}
 function expertProductPlan(expert,product){return getPlan("production","closed_count","expert_product",expertProductPlanKey(expert,product))}
@@ -975,6 +992,13 @@ function productionSalesIncomingCard(){
   const note=finance.status==="online"?"Чистая выручка + подрядчики из «Графика платежей»":finance.status==="stale"?"Последняя подтверждённая сумма: чистая выручка + подрядчики":"Поступления временно недоступны";
   return `<div class="card production-sales-incoming"><div class="kpi-label">Поступления отдела продаж</div><div class="kpi-value">${shown}</div><div class="kpi-meta plan-line"><span>План: ${plan?money(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">${esc(note)}</div>${plan&&value!==null?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
 }
+function productionSalesDealCountCard(){
+  const sales=Number(state?.sales?.overall?.total?.metrics?.sales||0);
+  const plan=getPlan("sales","sales");
+  const completion=plan?pct(sales/plan*100):"—";
+  const bar=plan?Math.min(100,Math.max(0,sales/plan*100)):0;
+  return `<div class="card production-sales-deal-count"><div class="kpi-label">Сделок отдела продаж</div><div class="kpi-value">${fmt(sales)}</div><div class="kpi-meta plan-line"><span>План продаж: ${plan?fmt(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">Успешные сделки продаж за выбранный период</div>${plan?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
+}
 function renderProduction(){
   const npsMeta=overallManualNpsMeta();
   const p={...state.production.kpi,nps_avg:npsMeta.value};
@@ -984,7 +1008,7 @@ function renderProduction(){
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   ${productionWeeklyDynamics()}
   <div class="section-title">Поток выбранного периода</div>
-  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${productionSalesIncomingCard()}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
+  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${productionSalesDealCountCard()}${productionSalesIncomingCard()}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
   <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div><button type="button" class="btn ghost" data-production-product-plans="1">Изменить планы</button></summary>${prodProductTable()}</details>
@@ -1300,9 +1324,9 @@ async function load({background=false}={}){
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
 
-    state=j;
+    state={...j,plans:reconcilePendingPlans(j.plans)};
     activeSnapshotKey=requestKey;
-    saveBrowserSnapshot(j);
+    saveBrowserSnapshot(state);
     if(background)lastBackgroundRefreshAt=Date.now();
     renderAll();
     if(offlineSnapshot){
@@ -1461,7 +1485,7 @@ function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
 function updatePlanContextTypes(){const scope=$("#planScope").value;const sel=$("#planContextType");[...sel.options].forEach(o=>o.disabled=(scope==="sales"&&["week","expert","expert_product"].includes(o.value))||(scope==="production"&&["manager","source_group","source"].includes(o.value)));if(sel.selectedOptions[0]?.disabled)sel.value="overall"}
 function updatePlanKey(){const opts=contextOptions($("#planScope").value,$("#planContextType").value);$("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');buildPlanForm()}
 function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",productionResultPlan={closed_count:["План закрытых продуктов, шт","num"],closed_amount:["План суммы закрытых, BYN","money"]},defs=scope==="production"&&["week","expert","product"].includes(type)?productionResultPlan:scope==="production"&&type==="expert_product"?{closed_count:["План продуктов, шт","num"]}:scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" min="0" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
-async function savePlan(){const scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={};$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();state.plans=j.dict;$("#planDialog").close();renderAll()}
+async function savePlan(){const scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={},context=`${scope}|${context_type}|${context_key}`,button=$("#savePlan");$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));button.disabled=true;try{const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();rememberPlanWrite(context,values);state.plans=j.dict;$("#planDialog").close();renderAll()}finally{button.disabled=false}}
 
 function fillMonths(){
   const sel=$("#month");
