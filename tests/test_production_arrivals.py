@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.metrics import F_SALES_LINK, has_sales_origin, observed_period_end, was_in_production_on
+from app.metrics import F_SALES_LINK, exclude_dormant_to_production, has_sales_origin, observed_period_end, was_in_production_on
 
 
 class ProductionArrivalFactTests(unittest.TestCase):
@@ -36,6 +36,11 @@ class ProductionArrivalFactTests(unittest.TestCase):
         self.assertTrue(has_sales_origin({F_SALES_LINK: ["", {"id": 123}]}))
         self.assertFalse(has_sales_origin({F_SALES_LINK: ""}))
         self.assertFalse(has_sales_origin({F_SALES_LINK: ["", None, 0]}))
+
+    def test_arrivals_exclude_cards_transferred_from_dormant_funnel(self):
+        rows = [{"ID": "101"}, {"ID": "102"}]
+        self.assertEqual(exclude_dormant_to_production(rows, {"102"}), [{"ID": "101"}])
+
 
 
 if __name__ == "__main__":

@@ -118,6 +118,12 @@ def has_sales_origin(deal: Dict[str, Any]) -> bool:
     return present(deal.get(F_SALES_LINK))
 
 
+def exclude_dormant_to_production(deals: List[Dict[str, Any]], dormant_to_production_ids: Iterable[str]) -> List[Dict[str, Any]]:
+    """Keep only sales hand-offs that did not enter production from «Зависшие»."""
+    excluded = {str(deal_id) for deal_id in dormant_to_production_ids if deal_id}
+    return [deal for deal in deals if str(deal.get("ID") or "") not in excluded]
+
+
 def was_in_production_on(deal: Dict[str, Any], boundary: datetime, tz: ZoneInfo) -> bool:
     """Whether a production card was active at the opening of ``boundary``."""
     started = parse_dt(deal.get(F_PROD_START), tz) or parse_dt(deal.get("DATE_CREATE"), tz)
@@ -1201,6 +1207,17 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = [
         x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw]
     ]
+    dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
+    production_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_28", {})
+    period_transition_history = [
+        row for row in completed_dormant_period_raw + dormant_to_production_target_history_raw
+        if (created := parse_dt(row.get("CREATED_TIME"), tz)) and range_start <= created < arrival_end
+    ]
+    period_completed_to_production, _ = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
+    period_direct_to_production = direct_dormant_to_production_history(period_transition_history, production_stage_labels)
+    dormant_to_production_in_period_ids = set(history_owner_ids(
+        unique_history_rows_by_owner(period_completed_to_production + period_direct_to_production)
+    ))
     # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
     # дата начала оказания услуг не заполнена — это именно fallback.
     new_map = {str(d.get("ID")): d for d in new_by_start_raw}
@@ -1210,7 +1227,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     # The flow KPI measures hand-offs from the Sales department only.  A
     # production card created directly (or by a technical import) has no link
     # to the sales deal and must not inflate «Пришло продуктов» or its amount.
-    new_raw = [deal for deal in new_map.values() if has_sales_origin(deal)]
+    new_raw = exclude_dormant_to_production(
+        [deal for deal in new_map.values() if has_sales_origin(deal)],
+        dormant_to_production_in_period_ids,
+    )
 
     def convert(rows, role="production"):
         return [prod_item(client, meta, d, tz, month_start, next_start, role=role) for d in rows]
@@ -1220,8 +1240,6 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     returns = convert(returns_raw)
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
-    dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
-    production_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_28", {})
     dormant_entry_ids = set(history_owner_ids(dormant_funnel_entries(completed_dormant_flow_raw)))
     dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
@@ -1408,7 +1426,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
 
     return {
         "period_label": period_label,
-        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки. Переходы из «Зависших» исключены по истории Bitrix",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
         "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
@@ -1661,7 +1679,7 @@ def derive_production_period(
     }
     derived = {
         "period_label": period_label,
-        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки. Переходы из «Зависших» исключены по истории Bitrix",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
         "experts": experts, "stages": stage_rows,
