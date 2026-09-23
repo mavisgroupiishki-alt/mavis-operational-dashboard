@@ -1267,6 +1267,13 @@ function snapshotKey(month=$("#month")?.value||"",period=$("#period")?.value||"m
   const custom=period==="custom"?`${$("#customStart")?.value||""}:${$("#customEnd")?.value||""}`:"";
   return `${month}|${period}|${custom}`;
 }
+function preserveSalesDetails(previous,nextSales,key){
+  const next={...(nextSales||{})};
+  if(previous?.details_loaded&&previous.details_key===key){
+    return {...previous,...next,details_loaded:true,details_key:key};
+  }
+  return next;
+}
 function renderSalesPlaceholder(message="Загружаю детализацию продаж…",retry=false){
   const target=$("#sales");if(!target)return;
   target.innerHTML=`<div class="section-page sales-loading"><div class="eyebrow">ОТДЕЛ ПРОДАЖ</div><h2>Продажи</h2><p class="section-page-lead">${esc(message)}</p><div class="integration-state">Основные показатели уже доступны на главном экране. Загружаю расшифровку менеджеров, источников и сделок только для этого раздела.</div>${retry?'<button type="button" class="btn primary" data-retry-sales-section="1">Повторить</button>':''}</div>`;
@@ -1340,7 +1347,7 @@ async function load({background=false}={}){
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
 
-    state={...j,plans:reconcilePendingPlans(j.plans)};
+    state={...j,sales:preserveSalesDetails(state?.sales,j.sales,requestKey),plans:reconcilePendingPlans(j.plans)};
     activeSnapshotKey=requestKey;
     saveBrowserSnapshot(state);
     if(background)lastBackgroundRefreshAt=Date.now();
