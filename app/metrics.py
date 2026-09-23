@@ -101,6 +101,23 @@ def observed_period_end(range_end: datetime, now: datetime) -> datetime:
     return min(range_end, tomorrow)
 
 
+def has_sales_origin(deal: Dict[str, Any]) -> bool:
+    """Whether the production card is linked to a Sales-department deal.
+
+    ``F_SALES_LINK`` is a Bitrix CRM-link field, whose response shape varies
+    between portals (a scalar, an array or a nested value).  A non-empty link
+    is the source-of-truth that the product was handed over from Sales.
+    """
+    def present(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(present(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return any(present(item) for item in value)
+        return str(value or "").strip().lower() not in {"", "0", "false", "none", "null"}
+
+    return present(deal.get(F_SALES_LINK))
+
+
 def was_in_production_on(deal: Dict[str, Any], boundary: datetime, tz: ZoneInfo) -> bool:
     """Whether a production card was active at the opening of ``boundary``."""
     started = parse_dt(deal.get(F_PROD_START), tz) or parse_dt(deal.get("DATE_CREATE"), tz)
@@ -1190,7 +1207,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     for d in new_by_created_raw:
         if not d.get(F_PROD_START):
             new_map.setdefault(str(d.get("ID")), d)
-    new_raw = list(new_map.values())
+    # The flow KPI measures hand-offs from the Sales department only.  A
+    # production card created directly (or by a technical import) has no link
+    # to the sales deal and must not inflate «Пришло продуктов» or its amount.
+    new_raw = [deal for deal in new_map.values() if has_sales_origin(deal)]
 
     def convert(rows, role="production"):
         return [prod_item(client, meta, d, tz, month_start, next_start, role=role) for d in rows]
@@ -1388,7 +1408,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
 
     return {
         "period_label": period_label,
-        "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
         "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
@@ -1641,7 +1661,7 @@ def derive_production_period(
     }
     derived = {
         "period_label": period_label,
-        "arrival_rule": "Дата начала оказания услуг; если поле пустое — дата создания карточки",
+        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
         "experts": experts, "stages": stage_rows,

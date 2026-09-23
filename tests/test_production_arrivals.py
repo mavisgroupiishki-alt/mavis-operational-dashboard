@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.metrics import observed_period_end, was_in_production_on
+from app.metrics import F_SALES_LINK, has_sales_origin, observed_period_end, was_in_production_on
 
 
 class ProductionArrivalFactTests(unittest.TestCase):
@@ -30,6 +30,12 @@ class ProductionArrivalFactTests(unittest.TestCase):
         self.assertTrue(was_in_production_on({"UF_CRM_1703225329": "2026-08-31T10:00:00+03:00"}, boundary, tz))
         self.assertFalse(was_in_production_on({"UF_CRM_1703225329": "2026-09-01T10:00:00+03:00"}, boundary, tz))
         self.assertFalse(was_in_production_on({"UF_CRM_1703225329": "2026-08-20T10:00:00+03:00", "CLOSEDATE": "2026-08-31T18:00:00+03:00"}, boundary, tz))
+
+    def test_arrivals_require_a_link_to_a_sales_deal(self):
+        self.assertTrue(has_sales_origin({F_SALES_LINK: "D_123"}))
+        self.assertTrue(has_sales_origin({F_SALES_LINK: ["", {"id": 123}]}))
+        self.assertFalse(has_sales_origin({F_SALES_LINK: ""}))
+        self.assertFalse(has_sales_origin({F_SALES_LINK: ["", None, 0]}))
 
 
 if __name__ == "__main__":
