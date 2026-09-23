@@ -103,9 +103,12 @@ function selectedManagers(){return state?.team?.managers||["Ирина Бого�
 function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова"]}
 function managers(){const s=new Set(selectedManagers());return (state?.sales?.managers||[]).filter(x=>s.has(x.name))}
 function experts(){const s=new Set(selectedExperts());return (state?.production?.experts||[]).filter(x=>s.has(x.name))}
-function expertNpsMeta(e){const m=state?.automatic_nps?.experts?.[e.name];if(!m)return {value:null,count:0,entries:[]};return {value:m.value===null||m.value===undefined?null:Number(m.value),count:Number(m.count||0),entries:m.tasks||[]}}
+function automaticNpsScores(meta){return (meta?.tasks||[]).map(x=>Number(x.score)).filter(Number.isFinite)}
+function manualNpsScores(expert){return (state?.manual_nps?.[expert]?.entries||[]).map(x=>Number(x.value)).filter(Number.isFinite)}
+function npsMeta(scores,entries=[]){return {value:scores.length?Number((scores.reduce((total,value)=>total+value,0)/scores.length).toFixed(1)):null,count:scores.length,entries}}
+function expertNpsMeta(e){const automatic=state?.automatic_nps?.experts?.[e.name]||{},scores=automaticNpsScores(automatic).concat(manualNpsScores(e.name));return npsMeta(scores,automatic.tasks||[])}
 function expertNps(e){return expertNpsMeta(e).value}
-function overallManualNpsMeta(){const m=state?.automatic_nps?.overall||{};return {value:m.value===null||m.value===undefined?null:Number(m.value),count:Number(m.count||0)}}
+function overallManualNpsMeta(){const automatic=Object.values(state?.automatic_nps?.experts||{}).flatMap(automaticNpsScores),manual=Object.keys(state?.manual_nps||{}).flatMap(manualNpsScores);return npsMeta(automatic.concat(manual))}
 function overallManualNps(){return overallManualNpsMeta().value}
 function npsText(v){return v===null||v===undefined?"Не задан":fmt(v)}
 function getComment(scope,metric){return state?.comments?.[`${scope}|${metric}`]?.comment||""}

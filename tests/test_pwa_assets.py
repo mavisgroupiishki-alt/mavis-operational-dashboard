@@ -86,6 +86,7 @@ class PwaAssetTests(unittest.TestCase):
 
         self.assertIn('data-open-nps=""', script)
         self.assertIn('+ Добавить NPS вручную', script)
+        self.assertIn('function manualNpsScores', script)
 
     def test_sales_average_check_has_a_plan_in_the_summary(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
