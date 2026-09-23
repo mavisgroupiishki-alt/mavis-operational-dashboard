@@ -1007,13 +1007,6 @@ function productionSalesIncomingCard(){
   const note=finance.status==="online"?"Чистая выручка + подрядчики из «Графика платежей»":finance.status==="stale"?"Последняя подтверждённая сумма: чистая выручка + подрядчики":"Поступления временно недоступны";
   return `<div class="card production-sales-incoming"><div class="kpi-label">Поступления отдела продаж</div><div class="kpi-value">${shown}</div><div class="kpi-meta plan-line"><span>План: ${plan?money(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">${esc(note)}</div>${plan&&value!==null?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
 }
-function productionSalesDealCountCard(){
-  const sales=Number(state?.sales?.overall?.total?.metrics?.sales||0);
-  const plan=getPlan("sales","sales");
-  const completion=plan?pct(sales/plan*100):"—";
-  const bar=plan?Math.min(100,Math.max(0,sales/plan*100)):0;
-  return `<div class="card production-sales-deal-count"><div class="kpi-label">Сделок отдела продаж</div><div class="kpi-value">${fmt(sales)}</div><div class="kpi-meta plan-line"><span>План продаж: ${plan?fmt(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">Успешные сделки продаж за выбранный период</div>${plan?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
-}
 function renderProduction(){
   const npsMeta=overallManualNpsMeta();
   const p={...state.production.kpi,nps_avg:npsMeta.value};
@@ -1023,7 +1016,7 @@ function renderProduction(){
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   ${productionWeeklyDynamics()}
   <div class="section-title">Поток выбранного периода</div>
-  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${productionSalesDealCountCard()}${productionSalesIncomingCard()}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
+  <div class="kpi-grid dense">${card("Пришло продуктов",p.new_count,"production","new_count","num")}${productionSalesIncomingCard()}${card("Закрыто из пришедших",p.period_closed_count,"production","period_closed_count","num")}${card("Сумма закрытых из пришедших",p.period_closed_amount,"production","period_closed_amount","money")}${card("Конверсия в успех",p.new_to_success_pct,"production","new_to_success_pct","pct",{},`${fmt(p.period_closed_count)} закрыто из ${fmt(p.new_count)} пришедших`)}</div>
   <div class="section-title">Воронка и сроки</div>
   <div class="kpi-grid dense">${card("Ёмкость периода",p.capacity_count,"production","capacity_count","num",{},money(p.capacity_amount))}${card("Возвраты",p.returns_count,"production","returns_count","num",{},money(p.returns_amount))}${card("Средний срок",p.avg_production_days,"production","avg_production_days","days")}${card("Отклонение от нормы",p.avg_deviation_days,"production","avg_deviation_days","days")}${card("В нормативе",p.within_norm_pct,"production","within_norm_pct","pct")}</div>
   <details class="rnp-main-details production-product-breakdown"><summary><div><strong>Разбивка по продуктам</strong><span>нажми на показатель → эксперт → продукт → компания</span></div><button type="button" class="btn ghost" data-production-product-plans="1">Изменить планы</button></summary>${prodProductTable()}</details>
