@@ -81,6 +81,19 @@ class MarketerAccessTests(unittest.TestCase):
                 response = client.get("/api/snapshot?month=2026-09&period=month")
                 self.assertEqual(response.status_code, 401)
 
+    def test_logout_clears_access_cookie_and_returns_to_login(self):
+        with patch.object(main, "settings", self.access_settings):
+            with TestClient(fixed_main.app, base_url="https://testserver") as client:
+                login = client.post("/login", data={"password": "owner-password"}, follow_redirects=False)
+                self.assertEqual(login.status_code, 303)
+                logout = client.post("/logout", follow_redirects=False)
+                self.assertEqual(logout.status_code, 303)
+                self.assertEqual(logout.headers["location"], "/login")
+                self.assertEqual(
+                    client.get("/api/snapshot?month=2026-09&period=month").status_code,
+                    401,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

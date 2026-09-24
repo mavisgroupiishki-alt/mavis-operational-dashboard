@@ -612,7 +612,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event"} or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event"} or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -1033,6 +1033,13 @@ async def login(password: str = Form(...)):
         return r
     return RedirectResponse("/login?error=1", status_code=303)
 
+
+@app.post("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(ACCESS_COOKIE)
+    response.delete_cookie("mavis_view")
+    return response
 
 
 @app.middleware("http")

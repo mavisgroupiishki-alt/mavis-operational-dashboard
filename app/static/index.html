@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon.svg">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=3.1.18">
+  <link rel="stylesheet" href="/static/styles.css?v=3.1.19">
 </head>
 <body>
 <a class="skip-link" href="#mainContent">К содержимому</a>
@@ -33,6 +33,7 @@
       <div id="customPeriod" class="custom-period hidden"><label class="compact">С<input id="customStart" type="date"></label><label class="compact">По<input id="customEnd" type="date"></label></div>
       <button id="refreshBtn" class="btn ghost">Обновить</button>
       <button id="tvBtn" class="btn ghost">TV</button>
+      <form action="/logout" method="post"><button class="btn ghost" type="submit">Выйти</button></form>
       <div class="live" aria-live="polite"><span id="liveDot"></span><span id="liveText">Загрузка…</span></div>
     </div>
   </header>
@@ -120,7 +121,7 @@
   </div>
 </dialog>
 
-<script src="/static/app.js?v=3.1.18"></script>
+<script src="/static/app.js?v=3.1.19"></script>
 
 </body>
 </html>
