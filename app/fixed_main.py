@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from fastapi import Query
+from fastapi import Query, Request
 from fastapi.responses import JSONResponse
 
 from . import main as core
@@ -65,6 +65,7 @@ app.router.routes[:] = [
 
 @app.get("/api/snapshot")
 async def api_snapshot(
+    request: Request,
     month: str = Query(default=""),
     period: str = Query(default="month", pattern="^(month|this_week|last_week|custom)$"),
     custom_start: str = "",
@@ -102,6 +103,8 @@ async def api_snapshot(
             ),
             "syncing": bool(core.sync_tasks.get((month, "month", "", "")) and not core.sync_tasks[(month, "month", "", "")].done()) if derived else bool(core.sync_tasks.get(key) and not core.sync_tasks[key].done()),
         }
+        if core.is_marketer(request):
+            result = core.marketer_snapshot(result)
         return core.compact_snapshot_payload(result) if compact else result
 
     # 2) After Render restart, use persistent snapshot before asking Bitrix.
@@ -117,6 +120,8 @@ async def api_snapshot(
             "syncing": True,
             "cached_snapshot": True,
         }
+        if core.is_marketer(request):
+            result = core.marketer_snapshot(result)
         return core.compact_snapshot_payload(result) if compact else result
 
     # 3) A calendar range inside the selected month is derived from the
@@ -130,6 +135,8 @@ async def api_snapshot(
             "syncing": False,
             "derived_from_month_snapshot": True,
         }
+        if core.is_marketer(request):
+            result = core.marketer_snapshot(result)
         return core.compact_snapshot_payload(result) if compact else result
 
     # 4) Already running: report progress, never create a duplicate task.
@@ -200,7 +207,7 @@ async def health():
         "ok": True,
         "bitrix_configured": bool(core.settings.bitrix_webhook),
         "last_error": core.last_error,
-        "version": "3.1.17",
+        "version": "3.1.18",
         "storage": core.storage.backend_name,
         "supabase_configured": bool(
             core.settings.supabase_url and core.settings.supabase_key

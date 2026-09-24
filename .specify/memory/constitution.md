@@ -20,6 +20,9 @@ Plans, selected employees and other manual dashboard settings MUST use durable s
 ### VI. Fast, bounded reads
 New detail sections MUST load only their required Bitrix data, retain a last-known-good cache where feasible, and avoid unbounded CRM exports to AI.
 
+### VII. Server-enforced access
+Role restrictions MUST be applied before a response leaves the server; browser-only hiding is not access control.
+
 ## Constraints
 - Bitrix secrets and URLs with tokens MUST stay in environment variables.
 - Existing sales and production calculations are out of scope for the CRM audit feature.
@@ -34,4 +37,4 @@ New detail sections MUST load only their required Bitrix data, retain a last-kno
 ## Governance
 This constitution has priority over implementation choices. A change to a principle requires a version update.
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-10 | **Last Amended**: 2026-09-22
+**Version**: 1.2.0 | **Ratified**: 2026-09-10 | **Last Amended**: 2026-09-24

@@ -78,8 +78,10 @@ const PROD_LABELS={
 
 const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
-const fmt=n=>new Intl.NumberFormat("ru-RU",{maximumFractionDigits:1}).format(Number(n||0));
-const money=n=>new Intl.NumberFormat("ru-RU",{maximumFractionDigits:0}).format(Number(n||0))+" BYN";
+const marketerAccess=()=>state?.access?.role==="marketer";
+const maskedValue=n=>marketerAccess()&&(n===null||n===undefined||n==="");
+const fmt=n=>maskedValue(n)?"—":new Intl.NumberFormat("ru-RU",{maximumFractionDigits:1}).format(Number(n||0));
+const money=n=>maskedValue(n)?"—":new Intl.NumberFormat("ru-RU",{maximumFractionDigits:0}).format(Number(n||0))+" BYN";
 const pct=n=>fmt(n)+"%";
 const days=n=>fmt(n)+" дн.";
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -106,9 +108,9 @@ function experts(){const s=new Set(selectedExperts());return (state?.production?
 function automaticNpsScores(meta){return (meta?.tasks||[]).map(x=>Number(x.score)).filter(Number.isFinite)}
 function manualNpsScores(expert){return (state?.manual_nps?.[expert]?.entries||[]).map(x=>Number(x.value)).filter(Number.isFinite)}
 function npsMeta(scores,entries=[]){return {value:scores.length?Number((scores.reduce((total,value)=>total+value,0)/scores.length).toFixed(1)):null,count:scores.length,entries}}
-function expertNpsMeta(e){const automatic=state?.automatic_nps?.experts?.[e.name]||{},scores=automaticNpsScores(automatic).concat(manualNpsScores(e.name));return npsMeta(scores,automatic.tasks||[])}
+function expertNpsMeta(e){if(marketerAccess())return {value:null,count:0,entries:[]};const automatic=state?.automatic_nps?.experts?.[e.name]||{},scores=automaticNpsScores(automatic).concat(manualNpsScores(e.name));return npsMeta(scores,automatic.tasks||[])}
 function expertNps(e){return expertNpsMeta(e).value}
-function overallManualNpsMeta(){const automatic=Object.values(state?.automatic_nps?.experts||{}).flatMap(automaticNpsScores),manual=Object.keys(state?.manual_nps||{}).flatMap(manualNpsScores);return npsMeta(automatic.concat(manual))}
+function overallManualNpsMeta(){if(marketerAccess())return {value:null,count:0,entries:[]};const automatic=Object.values(state?.automatic_nps?.experts||{}).flatMap(automaticNpsScores),manual=Object.keys(state?.manual_nps||{}).flatMap(manualNpsScores);return npsMeta(automatic.concat(manual))}
 function overallManualNps(){return overallManualNpsMeta().value}
 function npsText(v){return v===null||v===undefined?"Не задан":fmt(v)}
 function getComment(scope,metric){return state?.comments?.[`${scope}|${metric}`]?.comment||""}
@@ -135,6 +137,7 @@ function reconcilePendingPlans(plans){
 function expertProductPlanKey(expert,product){return `${expert}::${product}`}
 function expertProductPlan(expert,product){return getPlan("production","closed_count","expert_product",expertProductPlanKey(expert,product))}
 function drillAttrs(scope,metric,extra={}){
+  if(marketerAccess())return "";
   let out=`data-drill="1" data-scope="${attr(scope)}" data-metric="${attr(metric)}"`;
   Object.entries(extra).forEach(([k,v])=>{if(v!==undefined&&v!==null&&v!=="") out+=` data-${k.replaceAll("_","-")}="${attr(v)}"`;});
   return out;
@@ -191,6 +194,7 @@ function financialIncomingAmount(fallback=0){
   return value===null?Number(fallback||0):value;
 }
 function financialSalesMetrics(s){
+  if(marketerAccess())return {incoming:null,averageCheck:null};
   const incoming=financialIncomingAmount(s?.sales_amount),sales=Number(s?.sales||0);
   return {incoming,averageCheck:sales?incoming/sales:0};
 }
@@ -245,6 +249,7 @@ function defaultKeyTaskWeek(){const month=$("#month")?.value||new Date().toISOSt
 function keyTaskMonthWeeks(){const month=$("#month")?.value||"",[year,number]=month.split("-").map(Number);if(!year||!number)return [];const first=keyTaskMonday(new Date(year,number-1,1)),last=new Date(year,number,0),out=[];for(let cursor=new Date(first);cursor<=last;cursor.setDate(cursor.getDate()+7))out.push(keyTaskIso(cursor));return out}
 function keyTaskFormatDeadline(raw){const date=keyTaskDate(raw);return date?date.toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"}):"Без дедлайна"}
 function dashboardChatMarkup(){
+  if(marketerAccess())return "";
   const entries=dashboardChatHistory.map(item=>`<div class="dashboard-chat-message ${item.role==='user'?'user':'assistant'}"><span>${item.role==='user'?'Вы':'Mavis AI'}</span><p>${esc(item.content||'').replaceAll('\n','<br>')}</p>${item.facts?.length?`<ul>${item.facts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}${item.recommendations?.length?`<div class="dashboard-chat-recommendations"><strong>Рекомендую</strong><ul>${item.recommendations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}${item.links?.length?`<div class="dashboard-chat-links">${item.links.map(link=>`<a href="${attr(link.url)}" target="_blank" rel="noopener">${esc(link.label)} →</a>`).join('')}</div>`:''}</div>`).join('');
   const panel=dashboardChatOpen?`<aside id="dashboardChatPanel" class="bitrix-chat-panel" aria-label="Чат с Bitrix"><header class="bitrix-chat-head"><div><h2>Mavis AI-помощник</h2><p>Спросите о данных Bitrix. Чат только анализирует и ничего не меняет в CRM.</p></div><button class="bitrix-chat-close" type="button" data-dashboard-chat-close="1" aria-label="Закрыть чат">×</button></header><div class="dashboard-chat-messages" aria-live="polite">${entries||'<div class="dashboard-chat-empty">Например: «сколько сделок в зависших сейчас?» или «какие сделки можно вернуть?»</div>'}${dashboardChatPending?'<div class="dashboard-chat-message assistant pending"><span>Mavis AI</span><p>Собираю ответ…</p></div>':''}</div><div class="dashboard-chat-compose"><input id="dashboardChatQuestion" name="dashboard_chat_question" maxlength="900" autocomplete="off" aria-label="Вопрос про Bitrix" placeholder="Напишите вопрос…"><button class="bitrix-chat-send" type="button" data-dashboard-chat-send="1" ${dashboardChatPending?'disabled':''} aria-label="Отправить вопрос"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z"/></svg></button></div></aside>`:"";
   return `<div class="bitrix-chat-widget">${panel}<button class="bitrix-chat-trigger" type="button" data-dashboard-chat-toggle="1" aria-expanded="${dashboardChatOpen}" aria-controls="dashboardChatPanel"><span class="bitrix-chat-trigger-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.2a7.5 7.5 0 0 1-8 7.5 8.8 8.8 0 0 1-3.8-.9L4 19l1.2-3.5A7.2 7.2 0 0 1 4 11.2 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.2Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/></svg></span><span><strong>Спросить про Bitrix</strong><small>AI-помощник</small></span></button></div>`;
@@ -1193,6 +1198,11 @@ const VIEW_TITLES={
   "sales-calls":"Звонки продажи", "expert-calls":"Звонки эксперты", marketing:"Маркетинг", "crm-audit":"Аудит CRM", "key-tasks":"Ключевые задачи",
   risks:"Риски", dynamics:"Динамика", forecast:"Прогноз", plans:"Планы и настройки"
 };
+const MARKETER_RESTRICTED_VIEWS=new Set(["sales-calls","expert-calls","crm-audit","key-tasks","plans","dynamics"]);
+function renderMarketerRestriction(view){
+  const target=$("#"+view);if(!target)return;
+  target.innerHTML=`<div class="section-page"><div class="eyebrow">ОГРАНИЧЕННЫЙ ДОСТУП</div><h2>${esc(VIEW_TITLES[view]||"Раздел")}</h2><p class="section-page-lead">Этот раздел содержит операционные данные и недоступен для роли «Маркетолог».</p><div class="integration-state">Фактические показатели доступны в разделе «Маркетинг».</div></div>`;
+}
 function requestedView(){const value=location.hash.slice(1);return VIEW_TITLES[value]?value:"hub"}
 function openView(view,updateHistory=true){
   if(!$("#"+view))return;
@@ -1200,6 +1210,11 @@ function openView(view,updateHistory=true){
   const isHub=view==="hub";
   $("#sectionNav").classList.toggle("hidden",isHub);
   $("#sectionNavTitle").textContent=VIEW_TITLES[view]||"";
+  if(marketerAccess()&&MARKETER_RESTRICTED_VIEWS.has(view)){
+    renderMarketerRestriction(view);
+    if(updateHistory){history.pushState(null,"",`#${view}`);window.scrollTo({top:0,behavior:"auto"});}
+    return;
+  }
   if(view==="dynamics")renderDynamics();
   if(view==="forecast")renderForecast();
   if(view==="sales")loadSalesSection();
@@ -1272,6 +1287,10 @@ function renderSalesPlaceholder(message="Загружаю детализацию
 }
 async function loadSalesSection(){
   if(!state?.ok)return;
+  if(marketerAccess()){
+    renderSalesPlaceholder("Реальные показатели и детализация продаж скрыты для роли «Маркетолог». В разделе «Маркетинг» доступны фактические данные.");
+    return;
+  }
   const key=snapshotKey();
   if(state.sales?.details_loaded&&state.sales?.details_key===key){renderSales();return}
   if(salesDetailsRequest===key)return;

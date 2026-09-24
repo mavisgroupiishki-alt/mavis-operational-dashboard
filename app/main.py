@@ -524,12 +524,99 @@ def invalidate_derived_ranges(month: str):
             cache_time.pop(key, None)
 
 
+FULL_ACCESS = "full"
+MARKETER_ACCESS = "marketer"
+ACCESS_COOKIE = "mavis_access"
+
+
 def auth_hash():
+    """Backward-compatible value for existing owner sessions."""
     return hashlib.sha256((settings.view_password or "").encode()).hexdigest()
 
 
+def access_control_enabled():
+    return bool(settings.view_password or settings.marketer_password)
+
+
+def session_token(role: str):
+    if role not in {FULL_ACCESS, MARKETER_ACCESS} or not settings.dashboard_session_secret:
+        return ""
+    signature = hmac.new(
+        settings.dashboard_session_secret.encode("utf-8"),
+        f"mavis-dashboard:{role}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{role}.{signature}"
+
+
+def request_access_role(request: Request):
+    if not access_control_enabled():
+        return FULL_ACCESS
+    token = str(request.cookies.get(ACCESS_COOKIE) or "")
+    for role in (FULL_ACCESS, MARKETER_ACCESS):
+        expected = session_token(role)
+        if expected and secrets.compare_digest(token, expected):
+            return role
+    # Existing owner sessions keep working when marketer access is enabled.
+    if settings.view_password and secrets.compare_digest(
+        str(request.cookies.get("mavis_view") or ""), auth_hash()
+    ):
+        return FULL_ACCESS
+    return ""
+
+
+def is_marketer(request: Request):
+    return getattr(request.state, "dashboard_access", "") == MARKETER_ACCESS
+
+
+def require_full_access(request: Request):
+    if is_marketer(request):
+        raise HTTPException(403, "Доступ к операционным данным закрыт для роли «Маркетолог»")
+
+
+def anonymize_for_marketer(value):
+    """Preserve dashboard shape while removing all non-marketing payload values."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return None
+    if isinstance(value, str):
+        return ""
+    if isinstance(value, list):
+        return [anonymize_for_marketer(item) for item in value]
+    if isinstance(value, dict):
+        return {key: anonymize_for_marketer(item) for key, item in value.items()}
+    return None
+
+
+def marketer_snapshot(snapshot):
+    """Keep navigation metadata, redact every non-marketing dashboard datum."""
+    metadata = {
+        key: snapshot.get(key)
+        for key in (
+            "ok", "month_key", "period", "period_label", "generatedAt",
+            "generated_at", "updated_at", "syncing", "cached_snapshot", "derived_from_month_snapshot",
+        )
+        if key in snapshot
+    }
+    redacted = {
+        key: anonymize_for_marketer(value)
+        for key, value in snapshot.items()
+        if key not in metadata
+    }
+    return {
+        **redacted,
+        **metadata,
+        "access": {"role": MARKETER_ACCESS, "masked": True},
+    }
+
+
 def is_public_path(path: str):
-    return path in {"/login", "/health", "/manifest.webmanifest", "/service-worker.js"} or path.startswith("/static/")
+    return path in {"/login", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event"} or path.startswith("/static/")
+
+
+def marketer_allowed_path(path: str):
+    return path in {"/", "/api/snapshot", "/api/marketing", "/events"}
 
 def _default_dormant_stages(available):
     if not available:return []
@@ -897,9 +984,16 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.middleware("http")
 async def optional_password(request: Request, call_next):
-    if not settings.view_password or is_public_path(request.url.path):
+    if is_public_path(request.url.path):
         return await call_next(request)
-    if request.cookies.get("mavis_view") == auth_hash():
+    role = request_access_role(request)
+    if role:
+        request.state.dashboard_access = role
+        if role == MARKETER_ACCESS and not marketer_allowed_path(request.url.path):
+            return JSONResponse(
+                {"detail": "Доступ к этому разделу закрыт для роли «Маркетолог»"},
+                status_code=403,
+            )
         return await call_next(request)
     if request.url.path.startswith("/api/") or request.url.path == "/events":
         return JSONResponse({"detail": "AUTH_REQUIRED"}, status_code=401)
@@ -908,7 +1002,7 @@ async def optional_password(request: Request, call_next):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
-    if not settings.view_password:
+    if not access_control_enabled():
         return RedirectResponse("/")
     return HTMLResponse("""
 <!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
@@ -919,9 +1013,23 @@ async def login_page():
 
 @app.post("/login")
 async def login(password: str = Form(...)):
-    if not settings.view_password or secrets.compare_digest(password, settings.view_password):
+    if not access_control_enabled():
+        return RedirectResponse("/", status_code=303)
+    role = ""
+    if settings.view_password and secrets.compare_digest(password, settings.view_password):
+        role = FULL_ACCESS
+    elif settings.marketer_password and secrets.compare_digest(password, settings.marketer_password):
+        role = MARKETER_ACCESS
+    if role:
+        token = session_token(role)
+        if not token and settings.marketer_password:
+            return HTMLResponse("Доступ временно не настроен: добавьте DASHBOARD_SESSION_SECRET", status_code=503)
         r = RedirectResponse("/", status_code=303)
-        r.set_cookie("mavis_view", auth_hash(), httponly=True, secure=True, samesite="lax", max_age=60*60*24*30)
+        if token:
+            r.set_cookie(ACCESS_COOKIE, token, httponly=True, secure=True, samesite="lax", max_age=60*60*24*30)
+            r.delete_cookie("mavis_view")
+        else:
+            r.set_cookie("mavis_view", auth_hash(), httponly=True, secure=True, samesite="lax", max_age=60*60*24*30)
         return r
     return RedirectResponse("/login?error=1", status_code=303)
 
@@ -981,6 +1089,7 @@ async def health():
 
 @app.get("/api/snapshot")
 async def api_snapshot(
+    request: Request,
     month: str = Query(default=""),
     period: str = Query(default="month", pattern="^(month|this_week|last_week|custom)$"),
     custom_start: str = "",
@@ -998,12 +1107,16 @@ async def api_snapshot(
         if stale:
             schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
         result = {**await operational_snapshot(cache[key], detail_cache.get(key,{}), month), "syncing": bool(sync_tasks.get(key) and not sync_tasks[key].done())}
+        if is_marketer(request):
+            result = marketer_snapshot(result)
         return compact_snapshot_payload(result) if compact else result
     # Render memory is empty after restart/redeploy. Try durable Supabase snapshot
     # first and refresh Bitrix in background.
     if await warm_snapshot_from_storage(month,period,custom_start,custom_end):
         schedule_snapshot(month,period,force=True,custom_start=custom_start,custom_end=custom_end)
         result = {**await operational_snapshot(cache[key],detail_cache.get(key,{}),month),"syncing":True,"cached_snapshot":True}
+        if is_marketer(request):
+            result = marketer_snapshot(result)
         return compact_snapshot_payload(result) if compact else result
 
     schedule_snapshot(month,period,force=False,custom_start=custom_start,custom_end=custom_end)
