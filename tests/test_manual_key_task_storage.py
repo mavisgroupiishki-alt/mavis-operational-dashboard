@@ -35,7 +35,7 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
         project = self.storage.add_task_project("Октябрь")
         task = self.storage.add_workspace_task({
             "title": "Подготовить встречу", "responsible_id": profile["id"],
-            "executor_ids": [profile["id"]], "project_id": project["id"], "status": "new",
+            "executor_ids": [profile["id"]], "project_id": project["id"], "status": "new", "deadline": "2026-09-23", "description": "Подготовить материалы",
         })
 
         self.storage.deactivate_task_profile(profile["id"])
@@ -53,9 +53,10 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
 
     def test_recurring_task_creates_one_next_week_after_completion(self):
         profile = self.storage.add_task_profile("Аня")
+        project = self.storage.add_task_project("Отчётность")
         task = self.storage.add_workspace_task({
             "title": "Еженедельный отчёт", "responsible_id": profile["id"], "executor_ids": [profile["id"]],
-            "deadline": "2026-09-30", "status": "new", "recurrence": "weekly",
+            "deadline": "2026-09-30", "status": "new", "recurrence": "weekly", "project_id": project["id"], "description": "Собрать показатели",
         })
 
         self.storage.update_workspace_task(task["id"], {"status": "done"})
@@ -68,8 +69,9 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
 
     def test_monthly_recurrence_uses_last_day_of_short_month_and_comments_persist(self):
         profile = self.storage.add_task_profile("Ира")
+        project = self.storage.add_task_project("Отчётность")
         task = self.storage.add_workspace_task({
-            "title": "Месячный отчёт", "responsible_id": profile["id"], "deadline": "2026-01-31", "recurrence": "monthly",
+            "title": "Месячный отчёт", "responsible_id": profile["id"], "executor_ids": [profile["id"]], "deadline": "2026-01-31", "recurrence": "monthly", "project_id": project["id"], "description": "Собрать показатели",
         })
         self.storage.update_workspace_task(task["id"], {"status": "done"})
 

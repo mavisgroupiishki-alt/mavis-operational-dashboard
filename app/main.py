@@ -1240,6 +1240,7 @@ class KeyTaskBody(BaseModel):
     description: str = ""
     created_by_profile_id: str = ""
     recurrence: str = "none"
+    backlog: bool = False
 
 class KeyTaskPatchBody(BaseModel):
     title: str | None = None
@@ -1251,6 +1252,7 @@ class KeyTaskPatchBody(BaseModel):
     status: str | None = None
     description: str | None = None
     recurrence: str | None = None
+    backlog: bool | None = None
     changed_by_profile_id: str = ""
 
 class TaskCommentBody(BaseModel):
@@ -1265,6 +1267,12 @@ class TaskProjectBody(BaseModel):
 
 class TaskProjectPatchBody(BaseModel):
     archived: bool
+
+class TaskTemplateBody(BaseModel):
+    name: str
+    title: str
+    description: str
+    priority: str = "normal"
 
 class DashboardChatBody(BaseModel):
     question: str
@@ -1374,12 +1382,20 @@ async def get_key_tasks():
             storage.workspace_tasks(), storage.task_profiles(), storage.task_projects(),
             storage.key_task_team(), now, settings.timezone,
         ),
+        "templates": storage.task_templates(),
     }
 
 
 @app.post('/api/key-tasks')
 async def add_key_task(body: KeyTaskBody):
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
+    active_projects = {row["id"] for row in storage.task_projects() if not row.get("archived")}
+    if not body.project_id or body.project_id not in active_projects:
+        raise HTTPException(400, 'Выберите активный проект')
+    if not str(body.description or '').strip():
+        raise HTTPException(400, 'Добавьте описание задачи')
+    if not body.backlog and not body.deadline:
+        raise HTTPException(400, 'Укажите срок или отметьте задачу как бэклог')
     if not body.responsible_id:
         raise HTTPException(400, 'Выберите ответственного')
     if body.responsible_id and body.responsible_id not in active_profiles:
@@ -1496,6 +1512,29 @@ async def patch_task_project(project_id: str, body: TaskProjectPatchBody):
         raise HTTPException(404, 'Проект не найден')
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "project": project}
+
+
+@app.get('/api/key-tasks/templates')
+async def get_task_templates():
+    return {"ok": True, "templates": storage.task_templates()}
+
+
+@app.post('/api/key-tasks/templates')
+async def add_task_template(body: TaskTemplateBody):
+    try:
+        template = storage.add_task_template(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "template": template}
+
+
+@app.delete('/api/key-tasks/templates/{template_id}')
+async def delete_task_template(template_id: str):
+    if not storage.remove_task_template(template_id):
+        raise HTTPException(404, 'Шаблон не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True}
 
 
 def _dashboard_chat_context(month: str, period: str):

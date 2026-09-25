@@ -10,12 +10,26 @@ class FakeStorage:
         self.rows = []
         self.comments = {}
         self.activity = {}
+        self.templates = []
 
     def task_profiles(self):
         return [{"id": "profile-7", "name": "Роман", "active": True}]
 
     def task_projects(self):
-        return []
+        return [{"id": "project-1", "name": "Запуск", "archived": False}]
+
+    def task_templates(self):
+        return list(self.templates)
+
+    def add_task_template(self, values):
+        row = {"id": f"template-{len(self.templates) + 1}", **values}
+        self.templates.append(row)
+        return row
+
+    def remove_task_template(self, template_id):
+        before = len(self.templates)
+        self.templates = [row for row in self.templates if row["id"] != template_id]
+        return len(self.templates) != before
 
     def workspace_tasks(self):
         return list(self.rows)
@@ -71,7 +85,7 @@ class ManualKeyTaskApiTests(unittest.TestCase):
         storage = FakeStorage()
         with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()) as broadcast:
             response = asyncio.run(main.add_key_task(main.KeyTaskBody(
-                title="Подготовить отчёт", responsible_id="profile-7", executor_ids=["profile-7"], deadline="2026-09-23", priority="high"
+                title="Подготовить отчёт", description="Собрать цифры", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"], deadline="2026-09-23", priority="high"
             )))
             deleted = asyncio.run(main.delete_key_task("task-1"))
 
@@ -80,6 +94,22 @@ class ManualKeyTaskApiTests(unittest.TestCase):
         self.assertEqual(storage.rows, [])
         self.assertEqual(broadcast.await_count, 2)
         self.assertEqual(storage.activity["task-1"][0]["text"], "Задача создана")
+
+    def test_api_rejects_regular_task_without_deadline_and_description(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            with self.assertRaisesRegex(Exception, "Добавьте описание"):
+                asyncio.run(main.add_key_task(main.KeyTaskBody(
+                    title="Проверить", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"]
+                )))
+            with self.assertRaisesRegex(Exception, "Укажите срок"):
+                asyncio.run(main.add_key_task(main.KeyTaskBody(
+                    title="Проверить", description="Нужно сделать", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"]
+                )))
+            created = asyncio.run(main.add_key_task(main.KeyTaskBody(
+                title="Идея", description="Проверить позже", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"], backlog=True
+            )))
+        self.assertTrue(created["task"]["backlog"])
 
     def test_comment_is_signed_by_selected_profile_and_kept_with_task(self):
         storage = FakeStorage()
@@ -91,6 +121,20 @@ class ManualKeyTaskApiTests(unittest.TestCase):
         self.assertEqual(response["comment"]["author_name"], "Роман")
         self.assertEqual(activity["comments"][0]["text"], "Жду ответ клиента")
         self.assertEqual(activity["activity"][0]["text"], "Добавлен комментарий")
+
+    def test_template_api_creates_and_deletes_dashboard_template(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()) as broadcast:
+            created = asyncio.run(main.add_task_template(main.TaskTemplateBody(
+                name="Еженедельный отчёт", title="Подготовить отчёт",
+                description="Собрать показатели", priority="high",
+            )))
+            deleted = asyncio.run(main.delete_task_template(created["template"]["id"]))
+
+        self.assertEqual(created["template"]["name"], "Еженедельный отчёт")
+        self.assertEqual(deleted, {"ok": True})
+        self.assertEqual(storage.templates, [])
+        self.assertEqual(broadcast.await_count, 2)
 
 
 if __name__ == "__main__":

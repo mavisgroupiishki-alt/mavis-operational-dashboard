@@ -180,12 +180,51 @@ def build_task_workspace(
             "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
             "recurrence": recurrence,
             "recurrence_label": {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}[recurrence],
+            "backlog": bool(row.get("backlog")),
         })
     out.sort(key=lambda item: (item["status"] == "done", not item["is_overdue"], item["deadline"] or "9999-12-31", item["title"].casefold()))
+    project_summaries = []
+    for project in projects:
+        project_id = str(project.get("id") or "")
+        rows = [task for task in out if task["project_id"] == project_id]
+        project_summaries.append({
+            "id": project_id,
+            "name": str(project.get("name") or "Без проекта"),
+            "archived": bool(project.get("archived")),
+            "active_count": sum(task["status"] != "done" for task in rows),
+            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in rows),
+            "overdue_count": sum(bool(task["is_overdue"]) for task in rows),
+            "done_count": sum(task["status"] == "done" for task in rows),
+        })
+    unassigned = [task for task in out if not task["project_id"] or task["project_id"] not in projects_by_id]
+    if unassigned:
+        project_summaries.append({
+            "id": "",
+            "name": "Без проекта",
+            "archived": False,
+            "active_count": sum(task["status"] != "done" for task in unassigned),
+            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in unassigned),
+            "overdue_count": sum(bool(task["is_overdue"]) for task in unassigned),
+            "done_count": sum(task["status"] == "done" for task in unassigned),
+        })
+    workload = []
+    for profile in profile_rows:
+        profile_id = str(profile.get("id") or "")
+        assigned = [task for task in out if any(person.get("id") == profile_id for person in task["executors"])]
+        workload.append({
+            "id": profile_id,
+            "name": str(profile.get("name") or "Сотрудник"),
+            "active": bool(profile.get("active")),
+            "open_count": sum(task["status"] != "done" for task in assigned),
+            "overdue_count": sum(bool(task["is_overdue"]) for task in assigned),
+            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in assigned),
+        })
     return {
         "tasks": out,
         "profiles": profile_rows,
         "people": sorted(people.values(), key=lambda row: str(row.get("name") or "").casefold()),
         "projects": [dict(row) for row in projects],
         "statuses": [{"id": key, "name": name} for key, name in TASK_STATUSES],
+        "project_summaries": project_summaries,
+        "workload": workload,
     }

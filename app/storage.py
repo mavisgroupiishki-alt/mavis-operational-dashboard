@@ -330,6 +330,7 @@ class Storage:
                 "completed_at": str(row.get("completed_at") or ""),
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
+                "backlog": bool(row.get("backlog")),
             })
         return out
 
@@ -478,6 +479,66 @@ class Storage:
             self._set("task_workspace_projects", projects)
         return found
 
+    def task_templates(self):
+        value = self._get("task_workspace_templates", [])
+        if not isinstance(value, list):
+            return []
+        out, seen = [], set()
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            template_id = str(row.get("id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            title = str(row.get("title") or "").strip()
+            description = str(row.get("description") or "").strip()
+            if not template_id or not name or not title or not description or template_id in seen:
+                continue
+            seen.add(template_id)
+            out.append({
+                "id": template_id,
+                "name": name[:120],
+                "title": title[:500],
+                "description": description[:3000],
+                "priority": "high" if str(row.get("priority") or "").lower() == "high" else "normal",
+                "created_at": str(row.get("created_at") or ""),
+            })
+        return out
+
+    def add_task_template(self, values):
+        values = dict(values or {})
+        name = str(values.get("name") or "").strip()
+        title = str(values.get("title") or "").strip()
+        description = str(values.get("description") or "").strip()
+        if not name:
+            raise ValueError("Укажите название шаблона")
+        if not title:
+            raise ValueError("Укажите название задачи в шаблоне")
+        if not description:
+            raise ValueError("Добавьте описание в шаблон")
+        templates = self.task_templates()
+        if any(row["name"].casefold() == name.casefold() for row in templates):
+            raise ValueError("Шаблон с таким названием уже есть")
+        row = {
+            "id": f"task-template-{uuid.uuid4().hex}",
+            "name": name[:120],
+            "title": title[:500],
+            "description": description[:3000],
+            "priority": "high" if str(values.get("priority") or "").lower() == "high" else "normal",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        templates.append(row)
+        self._set("task_workspace_templates", templates)
+        return row
+
+    def remove_task_template(self, template_id):
+        template_id = str(template_id or "").strip()
+        templates = self.task_templates()
+        kept = [row for row in templates if row["id"] != template_id]
+        if len(kept) == len(templates):
+            return False
+        self._set("task_workspace_templates", kept)
+        return True
+
     def workspace_tasks(self):
         """Return legacy manual tasks in the richer workspace shape without data loss."""
         profiles = {row["id"]: row for row in self.task_profiles()}
@@ -503,6 +564,7 @@ class Storage:
                 "completed_at": str(row.get("completed_at") or ""),
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
+                "backlog": bool(row.get("backlog")),
                 "legacy_responsible_name": legacy_names.get(responsible_id, ""),
                 "profile_exists": responsible_id in profiles,
             })
@@ -510,9 +572,28 @@ class Storage:
 
     def add_workspace_task(self, row):
         values = dict(row or {})
+        title = str(values.get("title") or "").strip()
+        description = str(values.get("description") or "").strip()
+        project_id = str(values.get("project_id") or "").strip()
+        responsible_id = str(values.get("responsible_id") or "").strip()
+        executor_ids = [str(value).strip() for value in values.get("executor_ids") or [] if str(value).strip()]
+        backlog = bool(values.get("backlog"))
+        if not title:
+            raise ValueError("Укажите название задачи")
+        if not project_id:
+            raise ValueError("Выберите проект")
+        if not responsible_id:
+            raise ValueError("Выберите ответственного")
+        if not executor_ids:
+            raise ValueError("Выберите хотя бы одного исполнителя")
+        if not description:
+            raise ValueError("Добавьте описание задачи")
+        if not backlog and not str(values.get("deadline") or "").strip():
+            raise ValueError("Укажите срок или отметьте задачу как бэклог")
         values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
         values["status"] = values.get("status") or "new"
         values["recurrence"] = str(values.get("recurrence") or "none")
+        values["backlog"] = backlog
         if values["recurrence"] not in {"none", "weekly", "monthly"}:
             raise ValueError("Неизвестный режим повторения")
         task = self.add_manual_key_task(values)
@@ -529,6 +610,7 @@ class Storage:
                     "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
                     "recurrence": str(values.get("recurrence") or "none"),
                     "recurrence_spawned_at": "",
+                    "backlog": backlog,
                 })
                 task = item
                 break
@@ -538,7 +620,7 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog"}
         for row in tasks:
             if row["id"] != task_id:
                 continue
@@ -575,6 +657,8 @@ class Storage:
                     if value not in {"none", "weekly", "monthly"}:
                         raise ValueError("Неизвестный режим повторения")
                     row[key] = value
+                elif key == "backlog":
+                    row[key] = bool(value)
                 else:
                     row[key] = str(value or "").strip()
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -702,6 +786,7 @@ class Storage:
             "completed_at": "",
             "recurrence": source["recurrence"],
             "recurrence_spawned_at": "",
+            "backlog": bool(source.get("backlog")),
         }
         tasks.append(clone)
         self._set("manual_key_tasks", tasks)
