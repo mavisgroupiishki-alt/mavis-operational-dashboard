@@ -1,7 +1,8 @@
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -327,6 +328,8 @@ class Storage:
                 "updated_at": str(row.get("updated_at") or ""),
                 "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
                 "completed_at": str(row.get("completed_at") or ""),
+                "recurrence": str(row.get("recurrence") or "none"),
+                "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
             })
         return out
 
@@ -498,6 +501,8 @@ class Storage:
                 "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
                 "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
                 "completed_at": str(row.get("completed_at") or ""),
+                "recurrence": str(row.get("recurrence") or "none"),
+                "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
                 "legacy_responsible_name": legacy_names.get(responsible_id, ""),
                 "profile_exists": responsible_id in profiles,
             })
@@ -507,6 +512,9 @@ class Storage:
         values = dict(row or {})
         values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
         values["status"] = values.get("status") or "new"
+        values["recurrence"] = str(values.get("recurrence") or "none")
+        if values["recurrence"] not in {"none", "weekly", "monthly"}:
+            raise ValueError("Неизвестный режим повторения")
         task = self.add_manual_key_task(values)
         all_tasks = self.manual_key_tasks()
         for item in all_tasks:
@@ -519,6 +527,8 @@ class Storage:
                     "created_by_profile_id": str(values.get("created_by_profile_id") or ""),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
+                    "recurrence": str(values.get("recurrence") or "none"),
+                    "recurrence_spawned_at": "",
                 })
                 task = item
                 break
@@ -528,7 +538,7 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence"}
         for row in tasks:
             if row["id"] != task_id:
                 continue
@@ -560,12 +570,142 @@ class Storage:
                     row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
                 elif key == "description":
                     row[key] = str(value or "")[:3000]
+                elif key == "recurrence":
+                    value = str(value or "none")
+                    if value not in {"none", "weekly", "monthly"}:
+                        raise ValueError("Неизвестный режим повторения")
+                    row[key] = value
                 else:
                     row[key] = str(value or "").strip()
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._set("manual_key_tasks", tasks)
             return row
         return None
+
+    def workspace_task(self, task_id):
+        task_id = str(task_id or "").strip()
+        return next((row for row in self.workspace_tasks() if row["id"] == task_id), None)
+
+    def task_comments(self, task_id):
+        value = self._get(f"task_comments:{str(task_id or '').strip()}", [])
+        if not isinstance(value, list):
+            return []
+        out = []
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            comment_id = str(row.get("id") or "").strip()
+            text = str(row.get("text") or "").strip()
+            if not comment_id or not text:
+                continue
+            out.append({
+                "id": comment_id,
+                "text": text[:3000],
+                "author_profile_id": str(row.get("author_profile_id") or ""),
+                "author_name": str(row.get("author_name") or "Команда")[:120],
+                "created_at": str(row.get("created_at") or ""),
+            })
+        return out
+
+    def add_task_comment(self, task_id, text, author_profile_id, author_name):
+        task_id, text = str(task_id or "").strip(), str(text or "").strip()
+        if not task_id:
+            raise ValueError("Не указана задача")
+        if not text:
+            raise ValueError("Напишите комментарий")
+        if len(text) > 3000:
+            raise ValueError("Комментарий не должен быть длиннее 3000 символов")
+        comments = self.task_comments(task_id)
+        row = {
+            "id": uuid.uuid4().hex,
+            "text": text,
+            "author_profile_id": str(author_profile_id or ""),
+            "author_name": str(author_name or "Команда")[:120],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        comments.append(row)
+        self._set(f"task_comments:{task_id}", comments)
+        return row
+
+    def task_activity(self, task_id):
+        value = self._get(f"task_activity:{str(task_id or '').strip()}", [])
+        if not isinstance(value, list):
+            return []
+        out = []
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            event_id = str(row.get("id") or "").strip()
+            text = str(row.get("text") or "").strip()
+            if not event_id or not text:
+                continue
+            out.append({
+                "id": event_id,
+                "kind": str(row.get("kind") or "updated"),
+                "text": text[:500],
+                "author_profile_id": str(row.get("author_profile_id") or ""),
+                "author_name": str(row.get("author_name") or "Команда")[:120],
+                "created_at": str(row.get("created_at") or ""),
+            })
+        return out
+
+    def add_task_activity(self, task_id, text, author_profile_id="", author_name="Команда", kind="updated"):
+        task_id, text = str(task_id or "").strip(), str(text or "").strip()
+        if not task_id or not text:
+            return None
+        events = self.task_activity(task_id)
+        row = {
+            "id": uuid.uuid4().hex,
+            "kind": str(kind or "updated")[:40],
+            "text": text[:500],
+            "author_profile_id": str(author_profile_id or ""),
+            "author_name": str(author_name or "Команда")[:120],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        events.append(row)
+        self._set(f"task_activity:{task_id}", events[-300:])
+        return row
+
+    def create_next_recurrence_task(self, task_id):
+        """Create one future copy after the first completion of a repeating task."""
+        task_id = str(task_id or "").strip()
+        tasks = self.manual_key_tasks()
+        source = next((row for row in tasks if row["id"] == task_id), None)
+        if not source or source.get("status") != "done" or source.get("recurrence") not in {"weekly", "monthly"}:
+            return None
+        if source.get("recurrence_spawned_at") or not source.get("deadline"):
+            return None
+        try:
+            deadline = datetime.strptime(source["deadline"], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+        if source["recurrence"] == "weekly":
+            next_deadline = deadline + timedelta(days=7)
+        else:
+            year, month = deadline.year + (deadline.month == 12), (deadline.month % 12) + 1
+            next_deadline = deadline.replace(year=year, month=month, day=min(deadline.day, monthrange(year, month)[1]))
+        now = datetime.now(timezone.utc).isoformat()
+        source["recurrence_spawned_at"] = now
+        clone = {
+            "id": uuid.uuid4().hex,
+            "title": source["title"],
+            "responsible_id": source["responsible_id"],
+            "deadline": next_deadline.isoformat(),
+            "priority": source.get("priority") or "normal",
+            "created_at": now,
+            "project_id": source.get("project_id") or "",
+            "executor_ids": list(source.get("executor_ids") or [source["responsible_id"]]),
+            "status": "new",
+            "description": source.get("description") or "",
+            "updated_at": now,
+            "created_by_profile_id": source.get("created_by_profile_id") or "",
+            "completed_at": "",
+            "recurrence": source["recurrence"],
+            "recurrence_spawned_at": "",
+        }
+        tasks.append(clone)
+        self._set("manual_key_tasks", tasks)
+        return clone
 
     # ---------- Tile comments ----------
     def comments(self, month):

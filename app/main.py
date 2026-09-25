@@ -1239,6 +1239,7 @@ class KeyTaskBody(BaseModel):
     status: str = "new"
     description: str = ""
     created_by_profile_id: str = ""
+    recurrence: str = "none"
 
 class KeyTaskPatchBody(BaseModel):
     title: str | None = None
@@ -1249,6 +1250,12 @@ class KeyTaskPatchBody(BaseModel):
     executor_ids: list[str] | None = None
     status: str | None = None
     description: str | None = None
+    recurrence: str | None = None
+    changed_by_profile_id: str = ""
+
+class TaskCommentBody(BaseModel):
+    text: str
+    author_profile_id: str
 
 class TaskProfileBody(BaseModel):
     name: str
@@ -1281,6 +1288,42 @@ class NpsBody(BaseModel):
 class DormantConfigBody(BaseModel):
     stages: list[str]
     admin_key: str = ""
+
+
+def _active_task_profile(profile_id: str, required: bool = True):
+    profile_id = str(profile_id or "").strip()
+    profile = next((row for row in storage.task_profiles() if row.get("id") == profile_id and row.get("active")), None)
+    if required and not profile:
+        raise HTTPException(400, "Выберите активный рабочий профиль")
+    return profile
+
+
+def _task_change_events(before: dict, after: dict, profiles: list[dict], projects: list[dict]):
+    names = {str(row.get("id") or ""): str(row.get("name") or "Сотрудник") for row in profiles}
+    project_names = {str(row.get("id") or ""): str(row.get("name") or "Без проекта") for row in projects}
+    status_names = {"new": "Новая", "in_progress": "В работе", "review": "На проверке", "done": "Завершена"}
+    recurrence_names = {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}
+    events = []
+    if before.get("title") != after.get("title"):
+        events.append(f"Переименована: «{after.get('title') or 'Без названия'}»")
+    if before.get("project_id") != after.get("project_id"):
+        events.append(f"Проект: {project_names.get(str(after.get('project_id') or ''), 'Без проекта')}")
+    if before.get("responsible_id") != after.get("responsible_id"):
+        events.append(f"Ответственный: {names.get(str(after.get('responsible_id') or ''), 'Не назначен')}")
+    if list(before.get("executor_ids") or []) != list(after.get("executor_ids") or []):
+        assignees = [names.get(str(value), "Сотрудник") for value in after.get("executor_ids") or []]
+        events.append(f"Исполнители: {', '.join(assignees) or 'Не назначены'}")
+    if before.get("deadline") != after.get("deadline"):
+        events.append(f"Срок: {after.get('deadline') or 'без срока'}")
+    if before.get("priority") != after.get("priority"):
+        events.append(f"Приоритет: {'Высокий' if after.get('priority') == 'high' else 'Обычный'}")
+    if before.get("status") != after.get("status"):
+        events.append(f"Статус: {status_names.get(after.get('status'), 'В работе')}")
+    if before.get("description") != after.get("description"):
+        events.append("Обновлено описание")
+    if before.get("recurrence") != after.get("recurrence"):
+        events.append(f"Повторение: {recurrence_names.get(after.get('recurrence'), 'Не повторяется')}")
+    return events
 
 @app.get('/api/team')
 async def get_team(): return storage.team()
@@ -1343,10 +1386,12 @@ async def add_key_task(body: KeyTaskBody):
         raise HTTPException(400, 'Выберите активный рабочий профиль')
     if any(value not in active_profiles for value in body.executor_ids):
         raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
+    author = _active_task_profile(body.created_by_profile_id, required=bool(body.created_by_profile_id))
     try:
         task = storage.add_workspace_task(body.model_dump())
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    storage.add_task_activity(task["id"], "Задача создана", (author or {}).get("id", ""), (author or {}).get("name", "Команда"), "created")
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "task": task}
 
@@ -1354,19 +1399,57 @@ async def add_key_task(body: KeyTaskBody):
 @app.patch('/api/key-tasks/{task_id}')
 async def patch_key_task(task_id: str, body: KeyTaskPatchBody):
     values = body.model_dump(exclude_none=True)
+    changed_by_profile_id = str(values.pop("changed_by_profile_id", "") or "")
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
     if values.get("responsible_id") and values["responsible_id"] not in active_profiles:
         raise HTTPException(400, 'Выберите активный рабочий профиль')
     if any(value not in active_profiles for value in values.get("executor_ids") or []):
         raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
+    before = storage.workspace_task(task_id)
+    if not before:
+        raise HTTPException(404, 'Задача не найдена')
+    author = _active_task_profile(changed_by_profile_id, required=bool(changed_by_profile_id))
     try:
         task = storage.update_workspace_task(task_id, values)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not task:
         raise HTTPException(404, 'Задача не найдена')
+    for text in _task_change_events(before, task, storage.task_profiles(), storage.task_projects()):
+        storage.add_task_activity(task_id, text, (author or {}).get("id", ""), (author or {}).get("name", "Команда"))
+    next_task = None
+    if before.get("status") != "done" and task.get("status") == "done":
+        next_task = storage.create_next_recurrence_task(task_id)
+        if next_task:
+            storage.add_task_activity(task_id, f"Создан следующий экземпляр со сроком {next_task['deadline']}", (author or {}).get("id", ""), (author or {}).get("name", "Команда"), "recurrence")
+            storage.add_task_activity(next_task["id"], f"Создана повторяющаяся задача из «{task['title']}»", (author or {}).get("id", ""), (author or {}).get("name", "Команда"), "created")
     await broadcast({"type": "key-tasks"})
-    return {"ok": True, "task": task}
+    return {"ok": True, "task": task, "next_task": next_task}
+
+
+@app.get('/api/key-tasks/{task_id}/activity')
+async def get_key_task_activity(task_id: str):
+    if not storage.workspace_task(task_id):
+        raise HTTPException(404, 'Задача не найдена')
+    return {
+        "ok": True,
+        "comments": sorted(storage.task_comments(task_id), key=lambda row: row.get("created_at") or "", reverse=True),
+        "activity": sorted(storage.task_activity(task_id), key=lambda row: row.get("created_at") or "", reverse=True),
+    }
+
+
+@app.post('/api/key-tasks/{task_id}/comments')
+async def add_key_task_comment(task_id: str, body: TaskCommentBody):
+    if not storage.workspace_task(task_id):
+        raise HTTPException(404, 'Задача не найдена')
+    author = _active_task_profile(body.author_profile_id)
+    try:
+        comment = storage.add_task_comment(task_id, body.text, author["id"], author["name"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    storage.add_task_activity(task_id, "Добавлен комментарий", author["id"], author["name"], "comment")
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "comment": comment}
 
 
 @app.delete('/api/key-tasks/{task_id}')

@@ -51,6 +51,34 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.storage.update_workspace_task(task["id"], {"status": "unknown"})
 
+    def test_recurring_task_creates_one_next_week_after_completion(self):
+        profile = self.storage.add_task_profile("Аня")
+        task = self.storage.add_workspace_task({
+            "title": "Еженедельный отчёт", "responsible_id": profile["id"], "executor_ids": [profile["id"]],
+            "deadline": "2026-09-30", "status": "new", "recurrence": "weekly",
+        })
+
+        self.storage.update_workspace_task(task["id"], {"status": "done"})
+        next_task = self.storage.create_next_recurrence_task(task["id"])
+
+        self.assertEqual(next_task["deadline"], "2026-10-07")
+        self.assertEqual(next_task["status"], "new")
+        self.assertEqual(next_task["recurrence"], "weekly")
+        self.assertIsNone(self.storage.create_next_recurrence_task(task["id"]))
+
+    def test_monthly_recurrence_uses_last_day_of_short_month_and_comments_persist(self):
+        profile = self.storage.add_task_profile("Ира")
+        task = self.storage.add_workspace_task({
+            "title": "Месячный отчёт", "responsible_id": profile["id"], "deadline": "2026-01-31", "recurrence": "monthly",
+        })
+        self.storage.update_workspace_task(task["id"], {"status": "done"})
+
+        next_task = self.storage.create_next_recurrence_task(task["id"])
+        comment = self.storage.add_task_comment(task["id"], "Данные проверены", profile["id"], profile["name"])
+
+        self.assertEqual(next_task["deadline"], "2026-02-28")
+        self.assertEqual(self.storage.task_comments(task["id"])[0]["id"], comment["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

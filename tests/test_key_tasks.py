@@ -47,3 +47,12 @@ class KeyTasksTests(unittest.TestCase):
         self.assertTrue(task["responsible"]["dismissed"])
         self.assertEqual(task["executors"][0]["name"], "Таня")
         self.assertEqual(task["status_label"], "В работе")
+
+    def test_workspace_exposes_recurrence_label(self):
+        result = build_task_workspace(
+            [{"id": "one", "title": "Планёрка", "responsible_id": "tanya", "status": "new", "recurrence": "weekly"}],
+            [{"id": "tanya", "name": "Таня", "active": True}], [], [], NOW, "Europe/Minsk",
+        )
+
+        self.assertEqual(result["tasks"][0]["recurrence"], "weekly")
+        self.assertEqual(result["tasks"][0]["recurrence_label"], "Каждую неделю")

@@ -155,6 +155,8 @@ def build_task_workspace(
         deadline = parse_task_date(row.get("deadline"), tz)
         status = str(row.get("status") or "in_progress")
         status = status if status in dict(TASK_STATUSES) else "in_progress"
+        recurrence = str(row.get("recurrence") or "none")
+        recurrence = recurrence if recurrence in {"none", "weekly", "monthly"} else "none"
         project_id = str(row.get("project_id") or "")
         project = projects_by_id.get(project_id)
         def person_payload(person_id: str) -> dict[str, Any]:
@@ -176,6 +178,8 @@ def build_task_workspace(
             "created_at": str(row.get("created_at") or ""),
             "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
             "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
+            "recurrence": recurrence,
+            "recurrence_label": {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}[recurrence],
         })
     out.sort(key=lambda item: (item["status"] == "done", not item["is_overdue"], item["deadline"] or "9999-12-31", item["title"].casefold()))
     return {
