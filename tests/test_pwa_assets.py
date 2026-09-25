@@ -62,6 +62,16 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('openPlanDialog("production","product")', script)
         self.assertIn('openPlanDialog("production","expert")', script)
 
+    def test_plan_dialog_can_save_plans_for_the_next_month(self):
+        html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('id="planMonth"', html)
+        self.assertIn("function fillPlanMonthOptions", script)
+        self.assertIn("function loadPlanDialogMonth", script)
+        self.assertIn('const month=$("#planMonth").value', script)
+        self.assertIn("JSON.stringify({month,scope,context_type,context_key,values", script)
+
     def test_production_receipts_use_financial_source_and_overdue_list_is_collapsible(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
 

@@ -56,6 +56,8 @@ let dashboardChatDraft="";
 let backgroundRefreshTimer=null;
 let lastBackgroundRefreshAt=0;
 const pendingPlanWrites=new Map();
+let planDialogPlans={};
+let planDialogRequestId=0;
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -1505,6 +1507,7 @@ function openTeamDialog(role="expert"){
   teamTargetRole=role;$("#teamRole").value=role;const users=state?.available_users||[];$("#teamUser").innerHTML=users.map(u=>`<option value="${attr(u)}">${esc(u)}</option>`).join('');$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
 }
 function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
+  fillPlanMonthOptions();
   $("#planScope").value=scope;
   updatePlanContextTypes();
   const typeSel=$("#planContextType");
@@ -1513,13 +1516,47 @@ function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
   const opts=contextOptions(scope,typeSel.value);
   $("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');
   if(opts.some(o=>o.value===contextKey))$("#planContextKey").value=contextKey;
-  buildPlanForm();
+  loadPlanDialogMonth();
   $("#planDialog").showModal();
+}
+function planMonthLabel(value){const [year,month]=String(value||"").split("-").map(Number);return Number.isInteger(year)&&Number.isInteger(month)?new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(new Date(year,month-1,1)):value}
+function isoMonth(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}`}
+function fillPlanMonthOptions(){
+  const dashboardMonth=state?.month_key||$("#month").value;
+  const now=new Date();now.setDate(1);now.setHours(0,0,0,0);
+  const next=new Date(now);next.setMonth(next.getMonth()+1);
+  const current=isoMonth(now),nextMonth=isoMonth(next);
+  const months=[dashboardMonth,current,nextMonth].filter((value,index,all)=>value&&all.indexOf(value)===index);
+  $("#planMonth").innerHTML=months.map(value=>{
+    const suffix=value===nextMonth?" · следующий месяц":value===dashboardMonth?" · выбран в дашборде":"";
+    return `<option value="${attr(value)}">${esc(planMonthLabel(value)+suffix)}</option>`;
+  }).join("");
+  $("#planMonth").value=dashboardMonth&&months.includes(dashboardMonth)?dashboardMonth:current;
+}
+async function loadPlanDialogMonth(){
+  const month=$("#planMonth").value;
+  const requestId=++planDialogRequestId;
+  if(month===(state?.month_key||"")){
+    planDialogPlans=state?.plans||{};
+    buildPlanForm();
+    return;
+  }
+  $("#planForm").innerHTML='<div class="loading">Загружаю планы выбранного месяца…</div>';
+  try{
+    const response=await fetch(`/api/plans?month=${encodeURIComponent(month)}`);
+    const payload=await response.json();
+    if(!response.ok)throw new Error(payload.detail||"Не удалось загрузить планы");
+    if(requestId!==planDialogRequestId)return;
+    planDialogPlans=payload.dict||{};
+    buildPlanForm();
+  }catch(error){
+    if(requestId===planDialogRequestId)$("#planForm").innerHTML=`<div class="error">${esc(error.message)}</div>`;
+  }
 }
 function updatePlanContextTypes(){const scope=$("#planScope").value;const sel=$("#planContextType");[...sel.options].forEach(o=>o.disabled=(scope==="sales"&&["week","expert","expert_product"].includes(o.value))||(scope==="production"&&["manager","source_group","source"].includes(o.value)));if(sel.selectedOptions[0]?.disabled)sel.value="overall"}
 function updatePlanKey(){const opts=contextOptions($("#planScope").value,$("#planContextType").value);$("#planContextKey").innerHTML=opts.map(o=>`<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('');buildPlanForm()}
-function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",productionResultPlan={closed_count:["План закрытых продуктов, шт","num"],closed_amount:["План суммы закрытых, BYN","money"]},defs=scope==="production"&&["week","expert","product"].includes(type)?productionResultPlan:scope==="production"&&type==="expert_product"?{closed_count:["План продуктов, шт","num"]}:scope==="sales"?SALES_LABELS:PROD_LABELS,vals=state.plans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" min="0" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
-async function savePlan(){const scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={},context=`${scope}|${context_type}|${context_key}`,button=$("#savePlan");$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));button.disabled=true;try{const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();rememberPlanWrite(context,values);state.plans=j.dict;$("#planDialog").close();renderAll()}finally{button.disabled=false}}
+function buildPlanForm(){if(!state)return;const scope=$("#planScope").value,type=$("#planContextType").value,key=$("#planContextKey").value||"",productionResultPlan={closed_count:["План закрытых продуктов, шт","num"],closed_amount:["План суммы закрытых, BYN","money"]},defs=scope==="production"&&["week","expert","product"].includes(type)?productionResultPlan:scope==="production"&&type==="expert_product"?{closed_count:["План продуктов, шт","num"]}:scope==="sales"?SALES_LABELS:PROD_LABELS,vals=planDialogPlans?.[`${scope}|${type}|${key}`]||{};$("#planForm").innerHTML=Object.entries(defs).map(([metric,[label]])=>`<div class="plan-field"><label>${esc(label)}</label><input type="number" min="0" step="0.01" data-plan-metric="${attr(metric)}" value="${vals[metric]??''}"></div>`).join('')}
+async function savePlan(){const month=$("#planMonth").value,scope=$("#planScope").value,context_type=$("#planContextType").value,context_key=$("#planContextKey").value||"",values={},context=`${scope}|${context_type}|${context_key}`,button=$("#savePlan");$$('[data-plan-metric]').forEach(i=>values[i.dataset.planMetric]=Number(i.value||0));button.disabled=true;try{const r=await fetch('/api/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month,scope,context_type,context_key,values,admin_key:$("#adminKey").value})});if(!r.ok){alert(await r.text());return}const j=await r.json();planDialogPlans=j.dict||{};if(month===state?.month_key){rememberPlanWrite(context,values);state.plans=j.dict;renderAll()}$("#planDialog").close()}finally{button.disabled=false}}
 
 function fillMonths(){
   const sel=$("#month");
@@ -1616,7 +1653,7 @@ function init(){
   document.body.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&e.target?.id==='dashboardChatQuestion'){e.preventDefault();askDashboardChat()}});
   document.body.addEventListener('change',e=>{if(e.target.matches('[data-audit-filter]'))renderCrmAuditRows()});
   $("#closeDrill").addEventListener('click',()=>$("#drillDialog").close());$("#drillSearch").addEventListener('input',renderDrillRows);
-  $("#closePlan").addEventListener('click',()=>$("#planDialog").close());$("#planScope").addEventListener('change',()=>{updatePlanContextTypes();updatePlanKey()});$("#planContextType").addEventListener('change',updatePlanKey);$("#planContextKey").addEventListener('change',buildPlanForm);$("#savePlan").addEventListener('click',savePlan);
+  $("#closePlan").addEventListener('click',()=>$("#planDialog").close());$("#planMonth").addEventListener('change',loadPlanDialogMonth);$("#planScope").addEventListener('change',()=>{updatePlanContextTypes();updatePlanKey()});$("#planContextType").addEventListener('change',updatePlanKey);$("#planContextKey").addEventListener('change',buildPlanForm);$("#savePlan").addEventListener('click',savePlan);
 
   $("#closeComment").addEventListener('click',()=>$("#commentDialog").close());
   $("#saveComment").addEventListener('click',async()=>{if(!commentTarget)return;const r=await fetch('/api/comment',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$('#month').value,scope:commentTarget.scope,metric:commentTarget.metric,comment:$('#commentText').value})});if(!r.ok){alert(await r.text());return}state.comments=(await r.json()).comments;$('#commentDialog').close();renderAll()});
