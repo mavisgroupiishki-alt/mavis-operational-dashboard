@@ -67,7 +67,9 @@ class PwaAssetTests(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
 
         self.assertIn('id="planMonth"', html)
+        self.assertIn('class="plan-month-row"', html)
         self.assertIn("function fillPlanMonthOptions", script)
+        self.assertIn("for(let offset=0;offset<=12;offset++)", script)
         self.assertIn("function loadPlanDialogMonth", script)
         self.assertIn('const month=$("#planMonth").value', script)
         self.assertIn("JSON.stringify({month,scope,context_type,context_key,values", script)

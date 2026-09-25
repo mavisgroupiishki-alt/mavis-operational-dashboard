@@ -680,7 +680,9 @@ button{touch-action:manipulation}@media(prefers-reduced-motion:reduce){*,*:befor
 /* Keep the three hub values on one desktop baseline regardless of caption length. */
 @media(min-width:761px){.operations-hero-stats>div{grid-template-rows:15px 30px minmax(44px,1fr);align-content:start}.operations-hero-stats strong{align-self:start}}
 
-@media(min-width:721px){.plan-context{grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr)}}
+@media(min-width:721px){.plan-context{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+.plan-month-row{display:flex;align-items:end;gap:18px;margin:18px 0 0;padding:13px 15px;border:1px solid #d3e1ea;border-radius:13px;background:#f6fafc}.plan-month-row label{display:grid;gap:6px;min-width:280px;color:#61778a;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}.plan-month-row select{min-height:46px;padding:10px 38px 10px 14px;border:1px solid #c8d8e4;border-radius:11px;background:#fff;color:#172433;font:inherit;font-size:16px;font-weight:600;text-transform:none;letter-spacing:0}.plan-month-row p{margin:0 0 2px;color:#61778a;font-size:13px;line-height:1.4}.plan-context{margin:14px 0 18px}@media(max-width:720px){.plan-month-row{align-items:stretch;flex-direction:column;gap:9px}.plan-month-row label{min-width:0}.plan-month-row p{margin:0}.plan-month-row select{width:100%}}
 
 /* Phone header and iPhone install guide */
 .install-hint-copy{display:grid;gap:3px}.install-ios-steps{display:none}.install-share-icon{display:inline-flex;vertical-align:-5px;width:24px;height:24px;align-items:center;justify-content:center;border:1px solid #b7d3e5;border-radius:7px;background:#edf8ff}.install-share-icon svg{width:16px;height:16px;fill:none;stroke:#147cb8;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.8}

@@ -1524,14 +1524,14 @@ function isoMonth(date){return `${date.getFullYear()}-${String(date.getMonth()+1
 function fillPlanMonthOptions(){
   const dashboardMonth=state?.month_key||$("#month").value;
   const now=new Date();now.setDate(1);now.setHours(0,0,0,0);
-  const next=new Date(now);next.setMonth(next.getMonth()+1);
-  const current=isoMonth(now),nextMonth=isoMonth(next);
-  const months=[dashboardMonth,current,nextMonth].filter((value,index,all)=>value&&all.indexOf(value)===index);
-  $("#planMonth").innerHTML=months.map(value=>{
-    const suffix=value===nextMonth?" · следующий месяц":value===dashboardMonth?" · выбран в дашборде":"";
-    return `<option value="${attr(value)}">${esc(planMonthLabel(value)+suffix)}</option>`;
-  }).join("");
-  $("#planMonth").value=dashboardMonth&&months.includes(dashboardMonth)?dashboardMonth:current;
+  const months=[dashboardMonth];
+  for(let offset=0;offset<=12;offset++){
+    const candidate=new Date(now);candidate.setMonth(candidate.getMonth()+offset);
+    const value=isoMonth(candidate);
+    if(!months.includes(value))months.push(value);
+  }
+  $("#planMonth").innerHTML=months.map(value=>`<option value="${attr(value)}">${esc(planMonthLabel(value))}</option>`).join("");
+  $("#planMonth").value=dashboardMonth&&months.includes(dashboardMonth)?dashboardMonth:isoMonth(now);
 }
 async function loadPlanDialogMonth(){
   const month=$("#planMonth").value;
