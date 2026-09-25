@@ -320,6 +320,13 @@ class Storage:
                 "deadline": deadline,
                 "priority": "high" if str(row.get("priority") or "").lower() == "high" else "normal",
                 "created_at": str(row.get("created_at") or ""),
+                "project_id": str(row.get("project_id") or ""),
+                "executor_ids": [str(item).strip() for item in (row.get("executor_ids") or []) if str(item).strip()] if isinstance(row.get("executor_ids"), list) else [],
+                "status": str(row.get("status") or ""),
+                "description": str(row.get("description") or "")[:3000],
+                "updated_at": str(row.get("updated_at") or ""),
+                "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
+                "completed_at": str(row.get("completed_at") or ""),
             })
         return out
 
@@ -357,6 +364,208 @@ class Storage:
             return False
         self._set("manual_key_tasks", kept)
         return True
+
+    # ---------- Dashboard task workspace ----------
+    # These profiles are deliberately not dashboard accounts. They are only
+    # names used to sign and assign manually maintained dashboard tasks.
+    def task_profiles(self):
+        defaults = [
+            {"id": "task-profile-tanya", "name": "Таня", "active": True},
+            {"id": "task-profile-sasha", "name": "Саша", "active": True},
+            {"id": "task-profile-anya", "name": "Аня", "active": True},
+            {"id": "task-profile-ira", "name": "Ира", "active": True},
+            {"id": "task-profile-victoria", "name": "Виктория", "active": True},
+        ]
+        value = self._get("task_workspace_profiles", defaults)
+        if not isinstance(value, list):
+            value = defaults
+        out, seen = [], set()
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            profile_id = str(row.get("id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            if not profile_id or not name or profile_id in seen:
+                continue
+            seen.add(profile_id)
+            out.append({
+                "id": profile_id,
+                "name": name[:120],
+                "active": bool(row.get("active", True)),
+                "created_at": str(row.get("created_at") or ""),
+                "deleted_at": str(row.get("deleted_at") or ""),
+            })
+        return out
+
+    def add_task_profile(self, name):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("Укажите имя сотрудника")
+        if len(name) > 120:
+            raise ValueError("Имя не должно быть длиннее 120 символов")
+        profiles = self.task_profiles()
+        current = next((row for row in profiles if row["name"].casefold() == name.casefold()), None)
+        if current:
+            if not current["active"]:
+                current["active"] = True
+                current["deleted_at"] = ""
+                self._set("task_workspace_profiles", profiles)
+            return current
+        profile = {"id": f"task-profile-{uuid.uuid4().hex}", "name": name, "active": True,
+                   "created_at": datetime.now(timezone.utc).isoformat(), "deleted_at": ""}
+        profiles.append(profile)
+        self._set("task_workspace_profiles", profiles)
+        return profile
+
+    def deactivate_task_profile(self, profile_id):
+        profile_id = str(profile_id or "").strip()
+        profiles, found = self.task_profiles(), None
+        for row in profiles:
+            if row["id"] == profile_id:
+                row["active"] = False
+                row["deleted_at"] = datetime.now(timezone.utc).isoformat()
+                found = row
+                break
+        if found:
+            self._set("task_workspace_profiles", profiles)
+        return found
+
+    def task_projects(self):
+        value = self._get("task_workspace_projects", [])
+        if not isinstance(value, list):
+            return []
+        out, seen = [], set()
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            project_id = str(row.get("id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            if not project_id or not name or project_id in seen:
+                continue
+            seen.add(project_id)
+            out.append({"id": project_id, "name": name[:160], "archived": bool(row.get("archived")),
+                        "created_at": str(row.get("created_at") or ""), "archived_at": str(row.get("archived_at") or "")})
+        return out
+
+    def add_task_project(self, name):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("Укажите название проекта")
+        if len(name) > 160:
+            raise ValueError("Название проекта не должно быть длиннее 160 символов")
+        projects = self.task_projects()
+        if any(row["name"].casefold() == name.casefold() for row in projects):
+            raise ValueError("Такой проект уже есть")
+        project = {"id": f"task-project-{uuid.uuid4().hex}", "name": name, "archived": False,
+                   "created_at": datetime.now(timezone.utc).isoformat(), "archived_at": ""}
+        projects.append(project)
+        self._set("task_workspace_projects", projects)
+        return project
+
+    def archive_task_project(self, project_id, archived=True):
+        project_id = str(project_id or "").strip()
+        projects, found = self.task_projects(), None
+        for row in projects:
+            if row["id"] == project_id:
+                row["archived"] = bool(archived)
+                row["archived_at"] = datetime.now(timezone.utc).isoformat() if archived else ""
+                found = row
+                break
+        if found:
+            self._set("task_workspace_projects", projects)
+        return found
+
+    def workspace_tasks(self):
+        """Return legacy manual tasks in the richer workspace shape without data loss."""
+        profiles = {row["id"]: row for row in self.task_profiles()}
+        legacy_names = {row["id"]: row["name"] for row in self.key_task_team()}
+        out = []
+        for row in self.manual_key_tasks():
+            responsible_id = str(row.get("responsible_id") or "").strip()
+            executor_ids = row.get("executor_ids")
+            if not isinstance(executor_ids, list):
+                executor_ids = [responsible_id] if responsible_id else []
+            executor_ids = [str(value).strip() for value in executor_ids if str(value).strip()]
+            status = str(row.get("status") or "in_progress")
+            if status not in {"new", "in_progress", "review", "done"}:
+                status = "in_progress"
+            out.append({
+                **row,
+                "project_id": str(row.get("project_id") or ""),
+                "executor_ids": list(dict.fromkeys(executor_ids)),
+                "status": status,
+                "description": str(row.get("description") or "")[:3000],
+                "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+                "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
+                "completed_at": str(row.get("completed_at") or ""),
+                "legacy_responsible_name": legacy_names.get(responsible_id, ""),
+                "profile_exists": responsible_id in profiles,
+            })
+        return out
+
+    def add_workspace_task(self, row):
+        values = dict(row or {})
+        values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
+        values["status"] = values.get("status") or "new"
+        task = self.add_manual_key_task(values)
+        all_tasks = self.manual_key_tasks()
+        for item in all_tasks:
+            if item["id"] == task["id"]:
+                item.update({
+                    "project_id": str(values.get("project_id") or ""),
+                    "executor_ids": [str(value).strip() for value in values["executor_ids"] if str(value).strip()],
+                    "status": str(values["status"]),
+                    "description": str(values.get("description") or "")[:3000],
+                    "created_by_profile_id": str(values.get("created_by_profile_id") or ""),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
+                })
+                task = item
+                break
+        self._set("manual_key_tasks", all_tasks)
+        return task
+
+    def update_workspace_task(self, task_id, values):
+        task_id = str(task_id or "").strip()
+        tasks = self.manual_key_tasks()
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description"}
+        for row in tasks:
+            if row["id"] != task_id:
+                continue
+            for key, value in (values or {}).items():
+                if key not in allowed:
+                    continue
+                if key == "title":
+                    value = str(value or "").strip()
+                    if not value:
+                        raise ValueError("Укажите название задачи")
+                    row[key] = value[:500]
+                elif key == "deadline":
+                    value = str(value or "").strip()
+                    if value:
+                        try:
+                            datetime.strptime(value, "%Y-%m-%d")
+                        except ValueError as exc:
+                            raise ValueError("Дата задачи должна быть в формате YYYY-MM-DD") from exc
+                    row[key] = value
+                elif key == "priority":
+                    row[key] = "high" if str(value).lower() == "high" else "normal"
+                elif key == "status":
+                    value = str(value or "")
+                    if value not in {"new", "in_progress", "review", "done"}:
+                        raise ValueError("Неизвестный статус задачи")
+                    row[key] = value
+                    row["completed_at"] = datetime.now(timezone.utc).isoformat() if value == "done" else ""
+                elif key == "executor_ids":
+                    row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
+                elif key == "description":
+                    row[key] = str(value or "")[:3000]
+                else:
+                    row[key] = str(value or "").strip()
+            row["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._set("manual_key_tasks", tasks)
+            return row
+        return None
 
     # ---------- Tile comments ----------
     def comments(self, month):

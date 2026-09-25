@@ -24,7 +24,7 @@ from .metrics import build_snapshot, build_trends_light, derive_production_perio
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
-from .key_tasks import build_key_tasks
+from .key_tasks import build_key_tasks, build_task_workspace
 from .settings import settings
 from .storage import Storage
 
@@ -1231,9 +1231,33 @@ class KeyTaskMemberBody(BaseModel):
 
 class KeyTaskBody(BaseModel):
     title: str
-    responsible_id: str
+    responsible_id: str = ""
     deadline: str = ""
     priority: str = "normal"
+    project_id: str = ""
+    executor_ids: list[str] = []
+    status: str = "new"
+    description: str = ""
+    created_by_profile_id: str = ""
+
+class KeyTaskPatchBody(BaseModel):
+    title: str | None = None
+    responsible_id: str | None = None
+    deadline: str | None = None
+    priority: str | None = None
+    project_id: str | None = None
+    executor_ids: list[str] | None = None
+    status: str | None = None
+    description: str | None = None
+
+class TaskProfileBody(BaseModel):
+    name: str
+
+class TaskProjectBody(BaseModel):
+    name: str
+
+class TaskProjectPatchBody(BaseModel):
+    archived: bool
 
 class DashboardChatBody(BaseModel):
     question: str
@@ -1299,26 +1323,48 @@ async def delete_key_task_team_member(user_id: str, admin_key: str = ''):
 
 @app.get('/api/key-tasks')
 async def get_key_tasks():
-    members = storage.key_task_team()
     now = datetime.now(ZoneInfo(settings.timezone))
     return {
         "ok": True,
         "generated_at": now.isoformat(),
-        "members": members,
-        "empty_team": not members,
-        **build_key_tasks(storage.manual_key_tasks(), members, now, settings.timezone),
+        **build_task_workspace(
+            storage.workspace_tasks(), storage.task_profiles(), storage.task_projects(),
+            storage.key_task_team(), now, settings.timezone,
+        ),
     }
 
 
 @app.post('/api/key-tasks')
 async def add_key_task(body: KeyTaskBody):
-    members = {row["id"]: row for row in storage.key_task_team()}
-    if body.responsible_id not in members:
-        raise HTTPException(400, 'Сначала добавьте сотрудника в раздел «Ключевые задачи»')
+    active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
+    if not body.responsible_id:
+        raise HTTPException(400, 'Выберите ответственного')
+    if body.responsible_id and body.responsible_id not in active_profiles:
+        raise HTTPException(400, 'Выберите активный рабочий профиль')
+    if any(value not in active_profiles for value in body.executor_ids):
+        raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
     try:
-        task = storage.add_manual_key_task(body.model_dump())
+        task = storage.add_workspace_task(body.model_dump())
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "task": task}
+
+
+@app.patch('/api/key-tasks/{task_id}')
+async def patch_key_task(task_id: str, body: KeyTaskPatchBody):
+    values = body.model_dump(exclude_none=True)
+    active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
+    if values.get("responsible_id") and values["responsible_id"] not in active_profiles:
+        raise HTTPException(400, 'Выберите активный рабочий профиль')
+    if any(value not in active_profiles for value in values.get("executor_ids") or []):
+        raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
+    try:
+        task = storage.update_workspace_task(task_id, values)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not task:
+        raise HTTPException(404, 'Задача не найдена')
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "task": task}
 
@@ -1329,6 +1375,44 @@ async def delete_key_task(task_id: str):
         raise HTTPException(404, 'Задача не найдена')
     await broadcast({"type": "key-tasks"})
     return {"ok": True}
+
+
+@app.post('/api/key-tasks/profiles')
+async def add_task_profile(body: TaskProfileBody):
+    try:
+        profile = storage.add_task_profile(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "profile": profile}
+
+
+@app.delete('/api/key-tasks/profiles/{profile_id}')
+async def delete_task_profile(profile_id: str):
+    profile = storage.deactivate_task_profile(profile_id)
+    if not profile:
+        raise HTTPException(404, 'Сотрудник не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "profile": profile}
+
+
+@app.post('/api/key-tasks/projects')
+async def add_task_project(body: TaskProjectBody):
+    try:
+        project = storage.add_task_project(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "project": project}
+
+
+@app.patch('/api/key-tasks/projects/{project_id}')
+async def patch_task_project(project_id: str, body: TaskProjectPatchBody):
+    project = storage.archive_task_project(project_id, body.archived)
+    if not project:
+        raise HTTPException(404, 'Проект не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "project": project}
 
 
 def _dashboard_chat_context(month: str, period: str):
