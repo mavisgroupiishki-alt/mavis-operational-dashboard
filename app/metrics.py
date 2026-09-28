@@ -579,6 +579,11 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     weeks = {k: [0, 0, 0, 0, 0] for k in [
         "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
+    # Conversion is a creation-week cohort. Keep its numerator separately
+    # from weekly sales flow: a deal from the earlier tail may be sold this
+    # week, but it must never increase this week's conversion percentage.
+    cohort_sales_by_creation_week = [0, 0, 0, 0, 0]
+    cohort_sold_by_creation_week = [0, 0, 0, 0, 0]
     for r in lead_rows:
         w = r.get("week", -1)
         if w >= 0:
@@ -613,16 +618,25 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 weeks["sold_products"][w] += pr["quantity"]
                 weeks["sold_product_amount"][w] += pr["amount"]
 
+    for r in cohort_sales_rows:
+        w = r.get("creation_week", -1)
+        if w < 0:
+            continue
+        cohort_sales_by_creation_week[w] += 1
+        for pr in r.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_by_creation_week[w] += pr["quantity"]
+
     weeks["qualified_rate"] = [pct(weeks["qualified"][i], weeks["leads"][i]) for i in range(5)]
     weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
-    weeks["lead_to_sale_rate"] = [pct(weeks["sales"][i], weeks["leads"][i]) for i in range(5)]
-    weeks["qualified_to_sale_rate"] = [pct(weeks["sales"][i], weeks["qualified"][i]) for i in range(5)]
-    # Weekly deal->sale is a flow view for the selected reporting cohort.
-    weeks["deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
+    weeks["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["leads"][i]) for i in range(5)]
+    weeks["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["qualified"][i]) for i in range(5)]
+    weeks["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["deals"][i]) for i in range(5)]
     weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
     weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]
     weeks["average_product_check"] = [round(weeks["sold_product_amount"][i] / weeks["sold_products"][i], 2) if weeks["sold_products"][i] else 0 for i in range(5)]
-    weeks["product_sale_rate"] = [pct(weeks["sold_products"][i], weeks["products"][i]) for i in range(5)]
+    weeks["product_sale_rate"] = [pct(cohort_sold_by_creation_week[i], weeks["products"][i]) for i in range(5)]
 
     # Daily dynamics for the selected month. This powers expandable
     # report-period/source/week views in the dashboard.
@@ -631,6 +645,8 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount",
         "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
+    cohort_sales_by_creation_day = [0 for _ in range(day_count)]
+    cohort_sold_by_creation_day = [0 for _ in range(day_count)]
 
     def _day_idx(v):
         d = parse_dt(v, month_start.tzinfo if month_start else None)
@@ -674,11 +690,21 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 days_map["sold_products"][di] += pr["quantity"]
                 days_map["sold_product_amount"][di] += pr["amount"]
 
+    for r in cohort_sales_rows:
+        di = _day_idx(r.get("created"))
+        if di < 0:
+            continue
+        cohort_sales_by_creation_day[di] += 1
+        for pr in r.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_by_creation_day[di] += pr["quantity"]
+
     days_map["qualified_rate"] = [pct(days_map["qualified"][i], days_map["leads"][i]) for i in range(day_count)]
     days_map["lead_to_deal_rate"] = [pct(days_map["deals"][i], days_map["qualified"][i]) for i in range(day_count)]
-    days_map["lead_to_sale_rate"] = [pct(days_map["sales"][i], days_map["leads"][i]) for i in range(day_count)]
-    days_map["qualified_to_sale_rate"] = [pct(days_map["sales"][i], days_map["qualified"][i]) for i in range(day_count)]
-    days_map["deal_to_sale_rate"] = [pct(days_map["sales"][i], days_map["deals"][i]) for i in range(day_count)]
+    days_map["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["leads"][i]) for i in range(day_count)]
+    days_map["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["qualified"][i]) for i in range(day_count)]
+    days_map["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["deals"][i]) for i in range(day_count)]
     days_map["products_per_deal"] = [
         round(days_map["products"][i] / days_map["deals"][i], 2) if days_map["deals"][i] else 0
         for i in range(day_count)
@@ -692,7 +718,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         for i in range(day_count)
     ]
     days_map["product_sale_rate"] = [
-        pct(days_map["sold_products"][i], days_map["products"][i]) for i in range(day_count)
+        pct(cohort_sold_by_creation_day[i], days_map["products"][i]) for i in range(day_count)
     ]
 
     return {"metrics": m, "weeks": weeks, "days": days_map}

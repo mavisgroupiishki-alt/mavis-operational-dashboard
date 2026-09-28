@@ -826,6 +826,7 @@ function rnpWeekTable(cfg,g,periodType="current"){
           const fact=weeks[k]?.[w.index]||0,plan=periodType==="previous"?0:rnpWeekPlan(cfg.key,k,w.index);
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
+        <p class="rnp-cohort-note">Конверсии считаются только по объектам, созданным на этой неделе; продажи из хвоста в процент не входят.</p>
         ${rnpDailyTable(cfg,g,w,periodType,metrics)}
       </div>
     </details>`;
@@ -1816,7 +1817,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.6.0";
+    b.textContent="v3.6.1";
     top.appendChild(b);
   }
 });

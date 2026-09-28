@@ -559,6 +559,7 @@ td{padding:11px 9px}
 .rnp-week-facts{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:9px}
 .rnp-week-facts>div{background:#f5f8fa;border-radius:8px;padding:7px 8px;display:flex;flex-direction:column}
 .rnp-week-facts span{font-size:10px;color:#748797}.rnp-week-facts strong{font-size:12px}.rnp-week-facts small{font-size:9px;color:#8a9aa7}
+.rnp-cohort-note{margin:3px 0 10px;padding:7px 8px;border-left:3px solid #77bde5;background:#edf7fc;color:#4d7086;font-size:10px;line-height:1.45}
 .rnp-daily-table{min-width:950px;font-size:11px}
 .rnp-daily-table th,.rnp-daily-table td{padding:7px 6px}
 .rnp-source-toolbar{padding:9px 11px 3px}
