@@ -539,6 +539,67 @@ class Storage:
         self._set("task_workspace_templates", kept)
         return True
 
+    def task_saved_views(self):
+        value = self._get("task_workspace_saved_views", [])
+        if not isinstance(value, list):
+            return []
+        allowed_filters = {"executor", "responsible", "deadline", "status"}
+        out, seen = [], set()
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            view_id = str(row.get("id") or "").strip()
+            name = str(row.get("name") or "").strip()
+            profile_id = str(row.get("profile_id") or "").strip()
+            raw_filters = row.get("filters") or {}
+            if not view_id or not name or not profile_id or not isinstance(raw_filters, dict) or view_id in seen:
+                continue
+            seen.add(view_id)
+            filters = {key: str(raw_filters.get(key) or "") for key in allowed_filters}
+            out.append({
+                "id": view_id,
+                "name": name[:80],
+                "profile_id": profile_id,
+                "filters": filters,
+                "created_at": str(row.get("created_at") or ""),
+            })
+        return out
+
+    def add_task_saved_view(self, values):
+        values = dict(values or {})
+        name = str(values.get("name") or "").strip()
+        profile_id = str(values.get("profile_id") or "").strip()
+        raw_filters = values.get("filters") or {}
+        if not name:
+            raise ValueError("Укажите название представления")
+        if not profile_id:
+            raise ValueError("Выберите рабочий профиль")
+        if not isinstance(raw_filters, dict):
+            raise ValueError("Фильтры представления не распознаны")
+        views = self.task_saved_views()
+        if any(row["profile_id"] == profile_id and row["name"].casefold() == name.casefold() for row in views):
+            raise ValueError("У вас уже есть представление с таким названием")
+        allowed_filters = {"executor", "responsible", "deadline", "status"}
+        row = {
+            "id": f"task-view-{uuid.uuid4().hex}",
+            "name": name[:80],
+            "profile_id": profile_id,
+            "filters": {key: str(raw_filters.get(key) or "") for key in allowed_filters},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        views.append(row)
+        self._set("task_workspace_saved_views", views)
+        return row
+
+    def remove_task_saved_view(self, view_id, profile_id):
+        view_id, profile_id = str(view_id or "").strip(), str(profile_id or "").strip()
+        views = self.task_saved_views()
+        kept = [row for row in views if not (row["id"] == view_id and row["profile_id"] == profile_id)]
+        if len(kept) == len(views):
+            return False
+        self._set("task_workspace_saved_views", kept)
+        return True
+
     def workspace_tasks(self):
         """Return legacy manual tasks in the richer workspace shape without data loss."""
         profiles = {row["id"]: row for row in self.task_profiles()}
@@ -551,7 +612,9 @@ class Storage:
                 executor_ids = [responsible_id] if responsible_id else []
             executor_ids = [str(value).strip() for value in executor_ids if str(value).strip()]
             status = str(row.get("status") or "in_progress")
-            if status not in {"new", "in_progress", "review", "done"}:
+            if row.get("backlog"):
+                status = "backlog"
+            if status not in {"backlog", "new", "planned", "in_progress", "waiting", "review", "ready", "done"}:
                 status = "in_progress"
             out.append({
                 **row,
@@ -564,7 +627,7 @@ class Storage:
                 "completed_at": str(row.get("completed_at") or ""),
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
-                "backlog": bool(row.get("backlog")),
+                "backlog": status == "backlog",
                 "legacy_responsible_name": legacy_names.get(responsible_id, ""),
                 "profile_exists": responsible_id in profiles,
             })
@@ -577,7 +640,7 @@ class Storage:
         project_id = str(values.get("project_id") or "").strip()
         responsible_id = str(values.get("responsible_id") or "").strip()
         executor_ids = [str(value).strip() for value in values.get("executor_ids") or [] if str(value).strip()]
-        backlog = bool(values.get("backlog"))
+        backlog = bool(values.get("backlog")) or str(values.get("status") or "") == "backlog"
         if not title:
             raise ValueError("Укажите название задачи")
         if not project_id:
@@ -591,7 +654,7 @@ class Storage:
         if not backlog and not str(values.get("deadline") or "").strip():
             raise ValueError("Укажите срок или отметьте задачу как бэклог")
         values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
-        values["status"] = values.get("status") or "new"
+        values["status"] = "backlog" if backlog else (values.get("status") or "new")
         values["recurrence"] = str(values.get("recurrence") or "none")
         values["backlog"] = backlog
         if values["recurrence"] not in {"none", "weekly", "monthly"}:
@@ -610,7 +673,7 @@ class Storage:
                     "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
                     "recurrence": str(values.get("recurrence") or "none"),
                     "recurrence_spawned_at": "",
-                    "backlog": backlog,
+                    "backlog": values["status"] == "backlog",
                 })
                 task = item
                 break
@@ -644,9 +707,10 @@ class Storage:
                     row[key] = "high" if str(value).lower() == "high" else "normal"
                 elif key == "status":
                     value = str(value or "")
-                    if value not in {"new", "in_progress", "review", "done"}:
+                    if value not in {"backlog", "new", "planned", "in_progress", "waiting", "review", "ready", "done"}:
                         raise ValueError("Неизвестный статус задачи")
                     row[key] = value
+                    row["backlog"] = value == "backlog"
                     row["completed_at"] = datetime.now(timezone.utc).isoformat() if value == "done" else ""
                 elif key == "executor_ids":
                     row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
@@ -659,6 +723,10 @@ class Storage:
                     row[key] = value
                 elif key == "backlog":
                     row[key] = bool(value)
+                    if row[key]:
+                        row["status"] = "backlog"
+                    elif row.get("status") == "backlog":
+                        row["status"] = "new"
                 else:
                     row[key] = str(value or "").strip()
             row["updated_at"] = datetime.now(timezone.utc).isoformat()

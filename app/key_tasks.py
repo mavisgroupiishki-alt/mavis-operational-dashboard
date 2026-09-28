@@ -113,9 +113,13 @@ def build_key_tasks(
 
 
 TASK_STATUSES = (
+    ("backlog", "Бэклог"),
     ("new", "Новая"),
+    ("planned", "Запланирована"),
     ("in_progress", "В работе"),
+    ("waiting", "Ожидание"),
     ("review", "На проверке"),
+    ("ready", "Готово"),
     ("done", "Завершена"),
 )
 
@@ -154,6 +158,8 @@ def build_task_workspace(
                 people[person_id] = {"id": person_id, "name": row.get("legacy_responsible_name") or "Сотрудник", "active": False, "legacy": True}
         deadline = parse_task_date(row.get("deadline"), tz)
         status = str(row.get("status") or "in_progress")
+        if row.get("backlog"):
+            status = "backlog"
         status = status if status in dict(TASK_STATUSES) else "in_progress"
         recurrence = str(row.get("recurrence") or "none")
         recurrence = recurrence if recurrence in {"none", "weekly", "monthly"} else "none"
@@ -170,7 +176,7 @@ def build_task_workspace(
             "status": status,
             "status_label": dict(TASK_STATUSES)[status],
             "deadline": deadline.date().isoformat() if deadline else "",
-            "is_overdue": bool(deadline and deadline.date() < now.date() and status != "done"),
+            "is_overdue": bool(deadline and deadline.date() < now.date() and status not in {"backlog", "done"}),
             "project_id": project_id,
             "project": {"id": project_id, "name": str(project.get("name") or "Без проекта"), "archived": bool(project.get("archived"))} if project else None,
             "responsible": person_payload(responsible_id) if responsible_id else None,
@@ -180,7 +186,7 @@ def build_task_workspace(
             "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
             "recurrence": recurrence,
             "recurrence_label": {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}[recurrence],
-            "backlog": bool(row.get("backlog")),
+            "backlog": status == "backlog",
         })
     out.sort(key=lambda item: (item["status"] == "done", not item["is_overdue"], item["deadline"] or "9999-12-31", item["title"].casefold()))
     project_summaries = []
@@ -192,7 +198,7 @@ def build_task_workspace(
             "name": str(project.get("name") or "Без проекта"),
             "archived": bool(project.get("archived")),
             "active_count": sum(task["status"] != "done" for task in rows),
-            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in rows),
+            "backlog_count": sum(task["status"] == "backlog" for task in rows),
             "overdue_count": sum(bool(task["is_overdue"]) for task in rows),
             "done_count": sum(task["status"] == "done" for task in rows),
         })
@@ -203,7 +209,7 @@ def build_task_workspace(
             "name": "Без проекта",
             "archived": False,
             "active_count": sum(task["status"] != "done" for task in unassigned),
-            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in unassigned),
+            "backlog_count": sum(task["status"] == "backlog" for task in unassigned),
             "overdue_count": sum(bool(task["is_overdue"]) for task in unassigned),
             "done_count": sum(task["status"] == "done" for task in unassigned),
         })
@@ -217,7 +223,7 @@ def build_task_workspace(
             "active": bool(profile.get("active")),
             "open_count": sum(task["status"] != "done" for task in assigned),
             "overdue_count": sum(bool(task["is_overdue"]) for task in assigned),
-            "backlog_count": sum(bool(task["backlog"]) and task["status"] != "done" for task in assigned),
+            "backlog_count": sum(task["status"] == "backlog" for task in assigned),
         })
     return {
         "tasks": out,

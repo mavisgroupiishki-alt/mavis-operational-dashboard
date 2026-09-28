@@ -11,6 +11,7 @@ class FakeStorage:
         self.comments = {}
         self.activity = {}
         self.templates = []
+        self.saved_views = []
 
     def task_profiles(self):
         return [{"id": "profile-7", "name": "Роман", "active": True}]
@@ -30,6 +31,19 @@ class FakeStorage:
         before = len(self.templates)
         self.templates = [row for row in self.templates if row["id"] != template_id]
         return len(self.templates) != before
+
+    def task_saved_views(self):
+        return list(self.saved_views)
+
+    def add_task_saved_view(self, values):
+        row = {"id": f"view-{len(self.saved_views) + 1}", **values}
+        self.saved_views.append(row)
+        return row
+
+    def remove_task_saved_view(self, view_id, profile_id):
+        before = len(self.saved_views)
+        self.saved_views = [row for row in self.saved_views if not (row["id"] == view_id and row["profile_id"] == profile_id)]
+        return len(self.saved_views) != before
 
     def workspace_tasks(self):
         return list(self.rows)
@@ -110,6 +124,18 @@ class ManualKeyTaskApiTests(unittest.TestCase):
                 title="Идея", description="Проверить позже", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"], backlog=True
             )))
         self.assertTrue(created["task"]["backlog"])
+
+    def test_saved_view_is_owned_by_selected_profile(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            created = asyncio.run(main.add_task_saved_view(main.TaskSavedViewBody(
+                name="Мои просроченные", profile_id="profile-7", filters={"executor": "profile-7", "deadline": "overdue"}
+            )))
+            deleted = asyncio.run(main.delete_task_saved_view(created["view"]["id"], "profile-7"))
+
+        self.assertEqual(created["view"]["filters"]["deadline"], "overdue")
+        self.assertEqual(deleted, {"ok": True})
+        self.assertEqual(storage.saved_views, [])
 
     def test_comment_is_signed_by_selected_profile_and_kept_with_task(self):
         storage = FakeStorage()

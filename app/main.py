@@ -1274,6 +1274,11 @@ class TaskTemplateBody(BaseModel):
     description: str
     priority: str = "normal"
 
+class TaskSavedViewBody(BaseModel):
+    name: str
+    profile_id: str
+    filters: dict[str, str] = {}
+
 class DashboardChatBody(BaseModel):
     question: str
     month: str = ""
@@ -1309,7 +1314,10 @@ def _active_task_profile(profile_id: str, required: bool = True):
 def _task_change_events(before: dict, after: dict, profiles: list[dict], projects: list[dict]):
     names = {str(row.get("id") or ""): str(row.get("name") or "Сотрудник") for row in profiles}
     project_names = {str(row.get("id") or ""): str(row.get("name") or "Без проекта") for row in projects}
-    status_names = {"new": "Новая", "in_progress": "В работе", "review": "На проверке", "done": "Завершена"}
+    status_names = {
+        "backlog": "Бэклог", "new": "Новая", "planned": "Запланирована", "in_progress": "В работе",
+        "waiting": "Ожидание", "review": "На проверке", "ready": "Готово", "done": "Завершена",
+    }
     recurrence_names = {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}
     events = []
     if before.get("title") != after.get("title"):
@@ -1383,6 +1391,7 @@ async def get_key_tasks():
             storage.key_task_team(), now, settings.timezone,
         ),
         "templates": storage.task_templates(),
+        "saved_views": storage.task_saved_views(),
     }
 
 
@@ -1394,7 +1403,8 @@ async def add_key_task(body: KeyTaskBody):
         raise HTTPException(400, 'Выберите активный проект')
     if not str(body.description or '').strip():
         raise HTTPException(400, 'Добавьте описание задачи')
-    if not body.backlog and not body.deadline:
+    is_backlog = body.backlog or body.status == "backlog"
+    if not is_backlog and not body.deadline:
         raise HTTPException(400, 'Укажите срок или отметьте задачу как бэклог')
     if not body.responsible_id:
         raise HTTPException(400, 'Выберите ответственного')
@@ -1533,6 +1543,25 @@ async def add_task_template(body: TaskTemplateBody):
 async def delete_task_template(template_id: str):
     if not storage.remove_task_template(template_id):
         raise HTTPException(404, 'Шаблон не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True}
+
+
+@app.post('/api/key-tasks/views')
+async def add_task_saved_view(body: TaskSavedViewBody):
+    _active_task_profile(body.profile_id)
+    try:
+        view = storage.add_task_saved_view(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "view": view}
+
+
+@app.delete('/api/key-tasks/views/{view_id}')
+async def delete_task_saved_view(view_id: str, profile_id: str):
+    if not storage.remove_task_saved_view(view_id, profile_id):
+        raise HTTPException(404, 'Представление не найдено')
     await broadcast({"type": "key-tasks"})
     return {"ok": True}
 

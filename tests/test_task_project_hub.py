@@ -46,6 +46,31 @@ class TaskProjectHubStorageTests(unittest.TestCase):
         self.assertTrue(self.storage.remove_task_template(template["id"]))
         self.assertEqual(self.storage.task_templates(), [])
 
+    def test_saved_view_persists_filters_for_its_owner(self):
+        view = self.storage.add_task_saved_view({
+            "name": "Срочные у Тани", "profile_id": self.profile["id"],
+            "filters": {"executor": self.profile["id"], "deadline": "week"},
+        })
+
+        self.assertEqual(self.storage.task_saved_views()[0]["filters"]["deadline"], "week")
+        self.assertTrue(self.storage.remove_task_saved_view(view["id"], self.profile["id"]))
+        self.assertEqual(self.storage.task_saved_views(), [])
+
+    def test_task_can_move_between_expanded_kanban_stages(self):
+        task = self.storage.add_workspace_task({
+            "title": "Проверить макет", "description": "Отдать на согласование",
+            "responsible_id": self.profile["id"], "executor_ids": [self.profile["id"]],
+            "project_id": self.project["id"], "priority": "normal", "deadline": "2026-09-28",
+        })
+
+        moved = self.storage.update_workspace_task(task["id"], {"status": "backlog"})
+        self.assertEqual(moved["status"], "backlog")
+        self.assertTrue(moved["backlog"])
+
+        restored = self.storage.update_workspace_task(task["id"], {"status": "ready"})
+        self.assertEqual(restored["status"], "ready")
+        self.assertFalse(restored["backlog"])
+
 
 class TaskProjectHubPresentationTests(unittest.TestCase):
     def test_workspace_includes_project_summary_and_person_load(self):
@@ -64,6 +89,16 @@ class TaskProjectHubPresentationTests(unittest.TestCase):
         self.assertEqual(summary["overdue_count"], 1)
         self.assertEqual(result["workload"][0]["open_count"], 2)
         self.assertTrue(next(row for row in result["tasks"] if row["id"] == "b")["backlog"])
+
+    def test_legacy_backlog_is_shown_as_a_separate_stage(self):
+        result = build_task_workspace(
+            [{"id": "idea", "title": "Идея", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "new", "backlog": True}],
+            [{"id": "tanya", "name": "Таня", "active": True}], [], [], NOW, "Europe/Minsk",
+        )
+
+        task = result["tasks"][0]
+        self.assertEqual(task["status"], "backlog")
+        self.assertEqual(task["status_label"], "Бэклог")
 
 
 if __name__ == "__main__":
