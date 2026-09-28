@@ -59,7 +59,7 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
             "deadline": "2026-09-30", "status": "new", "recurrence": "weekly", "project_id": project["id"], "description": "Собрать показатели",
         })
 
-        self.storage.update_workspace_task(task["id"], {"status": "done"})
+        self.storage.update_workspace_task(task["id"], {"status": "done", "actual_hours": 1})
         next_task = self.storage.create_next_recurrence_task(task["id"])
 
         self.assertEqual(next_task["deadline"], "2026-10-07")
@@ -73,7 +73,7 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
         task = self.storage.add_workspace_task({
             "title": "Месячный отчёт", "responsible_id": profile["id"], "executor_ids": [profile["id"]], "deadline": "2026-01-31", "recurrence": "monthly", "project_id": project["id"], "description": "Собрать показатели",
         })
-        self.storage.update_workspace_task(task["id"], {"status": "done"})
+        self.storage.update_workspace_task(task["id"], {"status": "done", "actual_hours": 1})
 
         next_task = self.storage.create_next_recurrence_task(task["id"])
         comment = self.storage.add_task_comment(task["id"], "Данные проверены", profile["id"], profile["name"])

@@ -16,6 +16,23 @@ def parse_task_date(raw: Any, tz: ZoneInfo) -> datetime | None:
         return None
 
 
+def parse_task_timestamp(raw: Any, tz: ZoneInfo) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return value.replace(tzinfo=tz) if value.tzinfo is None else value.astimezone(tz)
+    except (TypeError, ValueError):
+        return None
+
+
+def numeric_hours(raw: Any) -> float:
+    try:
+        return round(max(0.0, min(1000.0, float(raw or 0))), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def monday(value: date) -> date:
     return value - timedelta(days=value.weekday())
 
@@ -145,6 +162,9 @@ def build_task_workspace(
         if person_id and person_id not in people:
             people[person_id] = {"id": person_id, "name": str(row.get("name") or "Без имени"), "active": False, "legacy": True}
     projects_by_id = {str(row.get("id") or ""): dict(row) for row in projects}
+    today = now.date()
+    week_start = monday(today)
+    week_end = week_start + timedelta(days=6)
     out = []
     for source in tasks:
         row = dict(source)
@@ -157,6 +177,7 @@ def build_task_workspace(
             if person_id and person_id not in people:
                 people[person_id] = {"id": person_id, "name": row.get("legacy_responsible_name") or "Сотрудник", "active": False, "legacy": True}
         deadline = parse_task_date(row.get("deadline"), tz)
+        completed_at = parse_task_timestamp(row.get("completed_at"), tz)
         status = str(row.get("status") or "in_progress")
         if row.get("backlog"):
             status = "backlog"
@@ -165,6 +186,14 @@ def build_task_workspace(
         recurrence = recurrence if recurrence in {"none", "weekly", "monthly"} else "none"
         project_id = str(row.get("project_id") or "")
         project = projects_by_id.get(project_id)
+        reminder_kind = ""
+        if status not in {"backlog", "done"} and deadline:
+            if deadline.date() < today:
+                reminder_kind = "overdue"
+            elif deadline.date() == today:
+                reminder_kind = "today"
+            elif deadline.date() <= today + timedelta(days=2):
+                reminder_kind = "soon"
         def person_payload(person_id: str) -> dict[str, Any]:
             person = people.get(person_id) or {"id": person_id, "name": "Сотрудник", "active": False}
             return {"id": person_id, "name": str(person.get("name") or "Сотрудник"), "active": bool(person.get("active")), "dismissed": not bool(person.get("active")) and not bool(person.get("legacy"))}
@@ -183,6 +212,10 @@ def build_task_workspace(
             "executors": [person_payload(person_id) for person_id in executor_ids],
             "created_at": str(row.get("created_at") or ""),
             "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+            "completed_at": completed_at.isoformat() if completed_at else "",
+            "planned_hours": numeric_hours(row.get("planned_hours")),
+            "actual_hours": numeric_hours(row.get("actual_hours")),
+            "reminder_kind": reminder_kind,
             "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
             "recurrence": recurrence,
             "recurrence_label": {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}[recurrence],
@@ -217,6 +250,18 @@ def build_task_workspace(
     for profile in profile_rows:
         profile_id = str(profile.get("id") or "")
         assigned = [task for task in out if any(person.get("id") == profile_id for person in task["executors"])]
+        planned_this_week = [
+            task for task in assigned
+            if task["status"] not in {"backlog", "done"}
+            and (deadline := parse_task_date(task.get("deadline"), tz))
+            and week_start <= deadline.date() <= week_end
+        ]
+        completed_this_week = [
+            task for task in assigned
+            if task["status"] == "done"
+            and (completed := parse_task_timestamp(task.get("completed_at"), tz))
+            and week_start <= completed.date() <= week_end
+        ]
         workload.append({
             "id": profile_id,
             "name": str(profile.get("name") or "Сотрудник"),
@@ -224,7 +269,14 @@ def build_task_workspace(
             "open_count": sum(task["status"] != "done" for task in assigned),
             "overdue_count": sum(bool(task["is_overdue"]) for task in assigned),
             "backlog_count": sum(task["status"] == "backlog" for task in assigned),
+            "week_planned_hours": round(sum(task["planned_hours"] for task in planned_this_week), 2),
+            "week_planned_task_count": len(planned_this_week),
+            "week_actual_hours": round(sum(task["actual_hours"] for task in completed_this_week), 2),
+            "week_done_task_count": len(completed_this_week),
         })
+    reminder_items = [task for task in out if task["reminder_kind"]]
+    reminder_rank = {"overdue": 0, "today": 1, "soon": 2}
+    reminder_items.sort(key=lambda task: (reminder_rank[task["reminder_kind"]], task["deadline"], task["title"].casefold()))
     return {
         "tasks": out,
         "profiles": profile_rows,
@@ -233,4 +285,11 @@ def build_task_workspace(
         "statuses": [{"id": key, "name": name} for key, name in TASK_STATUSES],
         "project_summaries": project_summaries,
         "workload": workload,
+        "week": {"start": week_start.isoformat(), "end": week_end.isoformat()},
+        "reminders": {
+            "overdue_count": sum(task["reminder_kind"] == "overdue" for task in reminder_items),
+            "today_count": sum(task["reminder_kind"] == "today" for task in reminder_items),
+            "soon_count": sum(task["reminder_kind"] == "soon" for task in reminder_items),
+            "items": reminder_items[:8],
+        },
     }

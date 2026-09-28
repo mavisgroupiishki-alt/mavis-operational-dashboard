@@ -71,6 +71,22 @@ class TaskProjectHubStorageTests(unittest.TestCase):
         self.assertEqual(restored["status"], "ready")
         self.assertFalse(restored["backlog"])
 
+    def test_finishing_task_requires_actual_hours_and_keeps_effort(self):
+        task = self.storage.add_workspace_task({
+            "title": "Подготовить смету", "description": "Сверить все строки",
+            "responsible_id": self.profile["id"], "executor_ids": [self.profile["id"]],
+            "project_id": self.project["id"], "priority": "normal", "deadline": "2026-09-28",
+            "planned_hours": 3.5,
+        })
+
+        with self.assertRaisesRegex(ValueError, "фактически затраченные"):
+            self.storage.update_workspace_task(task["id"], {"status": "done"})
+
+        done = self.storage.update_workspace_task(task["id"], {"status": "done", "actual_hours": 2.25})
+        self.assertEqual(done["planned_hours"], 3.5)
+        self.assertEqual(done["actual_hours"], 2.25)
+        self.assertTrue(done["completed_at"])
+
 
 class TaskProjectHubPresentationTests(unittest.TestCase):
     def test_workspace_includes_project_summary_and_person_load(self):
@@ -99,6 +115,26 @@ class TaskProjectHubPresentationTests(unittest.TestCase):
         task = result["tasks"][0]
         self.assertEqual(task["status"], "backlog")
         self.assertEqual(task["status_label"], "Бэклог")
+
+    def test_workspace_calculates_weekly_hours_and_dashboard_reminders(self):
+        profile = {"id": "tanya", "name": "Таня", "active": True}
+        result = build_task_workspace(
+            [
+                {"id": "plan", "title": "Срок завтра", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "in_progress", "deadline": "2026-09-26", "planned_hours": 3.5},
+                {"id": "done", "title": "Закрыта", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "done", "deadline": "2026-09-22", "completed_at": "2026-09-23T11:00:00+03:00", "actual_hours": 2.25},
+                {"id": "today", "title": "Сегодня", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "new", "deadline": "2026-09-25"},
+                {"id": "late", "title": "Просрочена", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "new", "deadline": "2026-09-24"},
+                {"id": "soon", "title": "Скоро", "responsible_id": "tanya", "executor_ids": ["tanya"], "status": "new", "deadline": "2026-09-27"},
+            ],
+            [profile], [], [], NOW, "Europe/Minsk",
+        )
+
+        load = result["workload"][0]
+        self.assertEqual(load["week_planned_hours"], 3.5)
+        self.assertEqual(load["week_actual_hours"], 2.25)
+        self.assertEqual(result["reminders"]["overdue_count"], 1)
+        self.assertEqual(result["reminders"]["today_count"], 1)
+        self.assertEqual(result["reminders"]["soon_count"], 2)
 
 
 if __name__ == "__main__":

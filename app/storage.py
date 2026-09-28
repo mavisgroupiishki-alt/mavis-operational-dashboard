@@ -15,6 +15,23 @@ DEFAULT_MANAGERS = ["Ирина Богомольцева", "Роман Авсе�
 DEFAULT_EXPERTS = ["Екатерина Николаева", "Елизавета Горбатова", "Ольга Панькова"]
 
 
+def task_hours(value: Any, label: str, strict: bool = False) -> float:
+    """Normalise dashboard-only task effort without breaking old task rows."""
+    if value in (None, ""):
+        return 0.0
+    try:
+        hours = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        if strict:
+            raise ValueError(f"{label} укажите числом")
+        return 0.0
+    if hours < 0 or hours > 1000:
+        if strict:
+            raise ValueError(f"{label} должен быть от 0 до 1000 часов")
+        return 0.0
+    return round(hours, 2)
+
+
 class Storage:
     """Persistent settings storage.
 
@@ -331,6 +348,8 @@ class Storage:
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
                 "backlog": bool(row.get("backlog")),
+                "planned_hours": task_hours(row.get("planned_hours"), "План"),
+                "actual_hours": task_hours(row.get("actual_hours"), "Факт"),
             })
         return out
 
@@ -657,8 +676,12 @@ class Storage:
         values["status"] = "backlog" if backlog else (values.get("status") or "new")
         values["recurrence"] = str(values.get("recurrence") or "none")
         values["backlog"] = backlog
+        values["planned_hours"] = task_hours(values.get("planned_hours"), "План", strict=True)
+        values["actual_hours"] = task_hours(values.get("actual_hours"), "Факт", strict=True)
         if values["recurrence"] not in {"none", "weekly", "monthly"}:
             raise ValueError("Неизвестный режим повторения")
+        if values["status"] == "done" and values["actual_hours"] <= 0:
+            raise ValueError("При завершении укажите фактически затраченные часы")
         task = self.add_manual_key_task(values)
         all_tasks = self.manual_key_tasks()
         for item in all_tasks:
@@ -671,6 +694,8 @@ class Storage:
                     "created_by_profile_id": str(values.get("created_by_profile_id") or ""),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
+                    "planned_hours": values["planned_hours"],
+                    "actual_hours": values["actual_hours"],
                     "recurrence": str(values.get("recurrence") or "none"),
                     "recurrence_spawned_at": "",
                     "backlog": values["status"] == "backlog",
@@ -683,10 +708,11 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours"}
         for row in tasks:
             if row["id"] != task_id:
                 continue
+            previous_status = str(row.get("status") or "in_progress")
             for key, value in (values or {}).items():
                 if key not in allowed:
                     continue
@@ -711,7 +737,10 @@ class Storage:
                         raise ValueError("Неизвестный статус задачи")
                     row[key] = value
                     row["backlog"] = value == "backlog"
-                    row["completed_at"] = datetime.now(timezone.utc).isoformat() if value == "done" else ""
+                    if value == "done" and previous_status != "done":
+                        row["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    elif value != "done":
+                        row["completed_at"] = ""
                 elif key == "executor_ids":
                     row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
                 elif key == "description":
@@ -727,8 +756,14 @@ class Storage:
                         row["status"] = "backlog"
                     elif row.get("status") == "backlog":
                         row["status"] = "new"
+                elif key == "planned_hours":
+                    row[key] = task_hours(value, "План", strict=True)
+                elif key == "actual_hours":
+                    row[key] = task_hours(value, "Факт", strict=True)
                 else:
                     row[key] = str(value or "").strip()
+            if previous_status != "done" and row.get("status") == "done" and task_hours(row.get("actual_hours"), "Факт") <= 0:
+                raise ValueError("При завершении укажите фактически затраченные часы")
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._set("manual_key_tasks", tasks)
             return row
@@ -852,6 +887,8 @@ class Storage:
             "updated_at": now,
             "created_by_profile_id": source.get("created_by_profile_id") or "",
             "completed_at": "",
+            "planned_hours": task_hours(source.get("planned_hours"), "План"),
+            "actual_hours": 0.0,
             "recurrence": source["recurrence"],
             "recurrence_spawned_at": "",
             "backlog": bool(source.get("backlog")),

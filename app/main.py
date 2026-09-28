@@ -1241,6 +1241,8 @@ class KeyTaskBody(BaseModel):
     created_by_profile_id: str = ""
     recurrence: str = "none"
     backlog: bool = False
+    planned_hours: float = 0
+    actual_hours: float = 0
 
 class KeyTaskPatchBody(BaseModel):
     title: str | None = None
@@ -1253,6 +1255,8 @@ class KeyTaskPatchBody(BaseModel):
     description: str | None = None
     recurrence: str | None = None
     backlog: bool | None = None
+    planned_hours: float | None = None
+    actual_hours: float | None = None
     changed_by_profile_id: str = ""
 
 class TaskCommentBody(BaseModel):
@@ -1339,6 +1343,10 @@ def _task_change_events(before: dict, after: dict, profiles: list[dict], project
         events.append("Обновлено описание")
     if before.get("recurrence") != after.get("recurrence"):
         events.append(f"Повторение: {recurrence_names.get(after.get('recurrence'), 'Не повторяется')}")
+    if float(before.get("planned_hours") or 0) != float(after.get("planned_hours") or 0):
+        events.append(f"План трудозатрат: {after.get('planned_hours') or 0:g} ч")
+    if float(before.get("actual_hours") or 0) != float(after.get("actual_hours") or 0):
+        events.append(f"Факт трудозатрат: {after.get('actual_hours') or 0:g} ч")
     return events
 
 @app.get('/api/team')
