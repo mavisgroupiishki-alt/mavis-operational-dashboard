@@ -313,12 +313,14 @@ async function addTaskComment(taskId){const input=$("#taskCommentText"),text=(in
 async function deleteKeyTask(taskId){if(!window.confirm("Удалить эту задачу из дашборда? Это действие нельзя отменить."))return;const response=await fetch(`/api/key-tasks/${encodeURIComponent(taskId)}`,{method:'DELETE'});if(!response.ok){alert(await response.text());return}keyTasksData=null;await loadKeyTasks(true)}
 async function askDashboardChat(){const input=$("#dashboardChatQuestion"),question=(input?.value||dashboardChatDraft).trim();if(!question||dashboardChatPending)return;dashboardChatDraft="";dashboardChatHistory.push({role:'user',content:question});dashboardChatHistory=dashboardChatHistory.slice(-8);dashboardChatPending=true;dashboardChatOpen=true;persistDashboardChatState();renderDashboardChat();try{const response=await fetch('/api/dashboard-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,month:$('#month').value,period:$('#period').value,history:dashboardChatHistory.slice(0,-1).map(({role,content})=>({role,content}))})}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.error||'Не удалось получить ответ');dashboardChatHistory.push({role:'assistant',content:payload.answer||'',facts:payload.facts||[],recommendations:payload.recommendations||[],links:payload.links||[]});dashboardChatHistory=dashboardChatHistory.slice(-8)}catch(error){dashboardChatHistory.push({role:'assistant',content:error.message||'Чат временно недоступен. Попробуйте ещё раз.'})}finally{dashboardChatPending=false;persistDashboardChatState();renderDashboardChat()}}
 function integrationState(status){return ({not_configured:"Интеграция ещё не настроена",invalid_configuration:"Некорректная настройка интеграции",unavailable:"Источник временно недоступен",stale:"Показаны последние полученные данные"})[status]||"Данные обновляются"}
+function hasJarvisEmbed(){return Boolean($("#sales-calls .jarvis-embed iframe"))}
 function renderCallsPlaceholder(){
-  $("#sales-calls").innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">Здесь появятся показатели Jarvis по последнему дню звонков.</p><div class="integration-state">Загрузка данных Jarvis…</div></div>`;
+  if(!hasJarvisEmbed())$("#sales-calls").innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">Здесь появятся показатели Jarvis по последнему дню звонков.</p><div class="integration-state">Загрузка данных Jarvis…</div></div>`;
   $("#expert-calls").innerHTML=`<div class="section-page"><h2>Звонки эксперты</h2><p class="section-page-lead">Данные и правила оценки ещё не настроены. Раздел оставлен пустым намеренно — показатели появятся после подключения источника.</p><div class="integration-state">Нет подключённых данных</div></div>`;
 }
 async function loadJarvisExperience(){
   const target=$("#sales-calls");if(!target)return;
+  if(hasJarvisEmbed())return;
   target.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><div><div class="loading-title">Открываю Jarvis</div><div class="muted">Загружаю полный интерфейс звонков: записи, расшифровки и рекомендации.</div></div></div>`;
   try{const response=await fetch("/api/jarvis",{cache:"no-store"});const payload=await response.json();if(!response.ok||!payload.ok){target.innerHTML=`<div class="section-page"><h2>Звонки продажи</h2><p class="section-page-lead">${esc(integrationState(payload.status))}.</p></div>`;return}target.innerHTML=`<section class="jarvis-embed"><header><div><h2>Звонки продаж</h2><p>Карточки звонков, записи, расшифровки, оценка и рекомендации — прямо внутри операционного дашборда.</p></div></header><iframe title="Джарвис — звонки продаж" src="${attr(payload.url)}" allow="autoplay" referrerpolicy="no-referrer"></iframe></section>`}catch(e){target.innerHTML=`<div class="error">Jarvis временно недоступен. Повтори загрузку через несколько секунд.</div>`}}
 function callsSummaryCard(label,value,note=""){return `<div class="call-summary-card"><span>${esc(label)}</span><strong>${fmt(value)}</strong>${note?`<small>${esc(note)}</small>`:""}</div>`}
@@ -1817,7 +1819,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.6.1";
+    b.textContent="v3.6.2";
     top.appendChild(b);
   }
 });
