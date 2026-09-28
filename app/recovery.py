@@ -36,7 +36,10 @@ SEPTEMBER_2026_DORMANT_BASELINE = {
     "source": "confirmed_manual",
     "confirmed_to_return_count": 3,
     "confirmed_to_production_count": 7,
-    "confirmed_revision": 2,
+    # The dashboard showed these reconciled totals on 25 September.  New
+    # transitions are added from Bitrix history after this moment.
+    "confirmed_through": "2026-09-25T23:59:59+03:00",
+    "confirmed_revision": 3,
 }
 
 

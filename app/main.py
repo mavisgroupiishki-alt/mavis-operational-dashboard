@@ -690,11 +690,31 @@ def _stuck_flow(month, details, observed_at=None):
     base_count = int(baseline.get("count") or 0)
     confirmed_returns = baseline.get("confirmed_to_return_count")
     confirmed_production = baseline.get("confirmed_to_production_count")
+
+    def confirmed_total(confirmed, rows):
+        """Extend a manually reconciled total without recounting its history.
+
+        September's first-day cohort was unavailable, so its first transition
+        totals were confirmed by hand.  The confirmation has an explicit
+        cut-off: subsequent Bitrix history rows are new work and must increase
+        the tile, while older rows would only duplicate the hand count.
+        """
+        if confirmed is None:
+            return len(rows)
+        cutoff = parse_dt(baseline.get("confirmed_through"), observed_at.tzinfo)
+        if not cutoff:
+            return int(confirmed)
+        additions = [
+            row for row in rows
+            if (completed_at := parse_dt(row.get("completion_at"), observed_at.tzinfo))
+            and completed_at > cutoff
+        ]
+        return int(confirmed) + len(additions)
     # The September cohort was reconciled manually because its first-day list
-    # is no longer available. Keep those confirmed totals authoritative while
-    # all cohorts with saved deal IDs continue to use live history.
-    returns_count = int(confirmed_returns) if confirmed_returns is not None else len(to_returns)
-    production_count = int(confirmed_production) if confirmed_production is not None else len(to_production)
+    # is no longer available.  Preserve that confirmed result and add only
+    # transitions made after the reconciliation date.
+    returns_count = confirmed_total(confirmed_returns, to_returns)
+    production_count = confirmed_total(confirmed_production, to_production)
     return {
         "available": bool(baseline),
         "baseline_date": baseline.get("baseline_date") or f"{month}-01",

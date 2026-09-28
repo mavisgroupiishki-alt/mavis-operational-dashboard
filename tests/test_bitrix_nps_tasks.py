@@ -7,6 +7,26 @@ from app.bitrix import BitrixClient
 
 
 class BitrixNpsTaskFetchTests(unittest.TestCase):
+    def test_meta_keeps_inactive_users_for_historical_reporting(self):
+        async def check():
+            client = BitrixClient("https://example.bitrix24.by/rest/1/token")
+            client.list_all = AsyncMock(side_effect=[
+                [{"ID": "1", "NAME": "Активный", "LAST_NAME": "Эксперт"}],
+                [{"ID": "2", "NAME": "Иоланта", "LAST_NAME": "Кананович"}],
+                [],
+            ])
+            client.call = AsyncMock(side_effect=[{"result": {}}, {"result": {}}])
+            try:
+                meta = await client.meta()
+            finally:
+                await client.close()
+
+            self.assertEqual(meta["users"]["1"], "Активный Эксперт")
+            self.assertEqual(meta["users"]["2"], "Иоланта Кананович")
+            self.assertEqual(client.list_all.await_args_list[1].args[1]["FILTER"], {"ACTIVE": False})
+
+        asyncio.run(check())
+
     def test_fetches_project_tasks_without_server_side_status_or_date_filters(self):
         async def check():
             client = BitrixClient("https://example.bitrix24.by/rest/1/token")

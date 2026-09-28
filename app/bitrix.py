@@ -154,13 +154,17 @@ class BitrixClient:
         return out
     async def meta(self,force=False):
         if self._meta and not force and time.monotonic()-self._meta_at<600:return self._meta
-        users,statuses,df,lf=await asyncio.gather(
+        active_users,inactive_users,statuses,df,lf=await asyncio.gather(
             self.list_all("user.get",{"FILTER":{"ACTIVE":True}}),
+            # Historical production reports must keep the names of employees
+            # who have since been dismissed.  Restricting the directory to
+            # active people made those records impossible to add or display.
+            self.list_all("user.get",{"FILTER":{"ACTIVE":False}}),
             self.list_all("crm.status.list",{"order":{"SORT":"ASC"}}),
             self.call("crm.deal.fields"),
             self.call("crm.lead.fields"))
         um={}
-        for u in users or []:
+        for u in list(active_users or []) + list(inactive_users or []):
             n=" ".join(x for x in [u.get("NAME"),u.get("LAST_NAME")] if x).strip()
             um[str(u.get("ID"))]=n or f"ID {u.get('ID')}"
         sm={}; sources={}; status_by_entity={}

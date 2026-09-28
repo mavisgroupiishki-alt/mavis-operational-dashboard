@@ -64,6 +64,30 @@ class DormantFlowTests(unittest.TestCase):
         self.assertEqual(flow["to_returns_count"], 3)
         self.assertEqual(flow["to_production_count"], 7)
 
+    def test_september_adds_transitions_after_manual_reconciliation(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage):
+            main._capture_dormant_baseline("2026-09", {"production": {}})
+            flow = main._stuck_flow(
+                "2026-09",
+                {"production": {
+                    "dormant": [],
+                    "dormant_to_return": [
+                        {"id": "old-return", "completion_at": "2026-09-25T10:00:00+03:00"},
+                        {"id": "new-return", "completion_at": "2026-09-27T10:00:00+03:00"},
+                    ],
+                    "dormant_to_production": [
+                        {"id": "old-production", "completion_at": "2026-09-25T10:00:00+03:00"},
+                        {"id": "new-production-1", "completion_at": "2026-09-27T10:00:00+03:00"},
+                        {"id": "new-production-2", "completion_at": "2026-09-27T11:00:00+03:00"},
+                    ],
+                }},
+                datetime(2026, 9, 28, tzinfo=ZoneInfo("Europe/Minsk")),
+            )
+
+        self.assertEqual(flow["to_returns_count"], 4)
+        self.assertEqual(flow["to_production_count"], 9)
+
 
 if __name__ == "__main__":
     unittest.main()
