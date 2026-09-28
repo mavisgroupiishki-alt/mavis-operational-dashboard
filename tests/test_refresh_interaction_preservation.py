@@ -28,6 +28,11 @@ class RefreshInteractionPreservationTests(unittest.TestCase):
         self.assertIn("es.addEventListener('update',scheduleBackgroundLoad)", script)
         self.assertIn("setInterval(scheduleBackgroundLoad,120000)", script)
 
+    def test_background_refresh_keeps_the_embedded_jarvis_frame(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('if(viewId==="sales-calls")return true;', script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1788,6 +1788,9 @@ function renderCurrentViewInto(sandbox,viewId){
 function softRenderCurrentView(){
   const viewId=requestedView(),liveView=document.getElementById(viewId);
   if(!liveView||!liveView.childNodes.length)return false;
+  // Jarvis is a signed cross-origin iframe. Reconciliation creates an empty
+  // sandbox for this view and used to erase the live frame on every refresh.
+  if(viewId==="sales-calls")return true;
   const sandbox=document.createElement("div");
   document.querySelectorAll(".view").forEach(view=>{
     const copy=document.createElement(view.tagName);
