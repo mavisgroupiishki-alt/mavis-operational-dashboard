@@ -25,6 +25,7 @@ class FastStartupTests(unittest.TestCase):
             "new": [
                 {"id": "1", "prod_start": "2026-09-02T00:00:00+03:00", "created": "2026-09-02T00:00:00+03:00", "amount": 100},
                 {"id": "2", "prod_start": "2026-09-12T00:00:00+03:00", "created": "2026-09-12T00:00:00+03:00", "amount": 200},
+                {"id": "august", "prod_start": "2026-09-02T00:00:00+03:00", "created": "2026-08-21T00:00:00+03:00", "amount": 300},
             ],
             "closed": [
                 {"id": "1", "close": "2026-09-03T00:00:00+03:00", "amount": 100},

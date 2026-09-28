@@ -1180,14 +1180,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     now = datetime.now(tz)
     arrival_end = observed_period_end(range_end, now)
 
-    # "Пришло в производство" = дата начала оказания услуг / передачи в производство.
-    # Для старых карточек, где это поле не заполнено, используем DATE_CREATE как fallback.
-    # Это фактический показатель: будущие даты текущего периода не учитываются.
-    new_by_start_task = client.deal_list({
-        "CATEGORY_ID": PROD_CATEGORY,
-        f">={F_PROD_START}": iso(range_start),
-        f"<{F_PROD_START}": iso(arrival_end),
-    }, DEAL_SELECT)
+    # «Пришло в производство» = карточка создана в воронке производства.
+    # F_PROD_START is the planned start of work, not the transfer date; it
+    # may be changed after creation and must not move an old product into a
+    # later reporting period.
     new_by_created_task = client.deal_list({
         "CATEGORY_ID": PROD_CATEGORY,
         ">=DATE_CREATE": iso(range_start),
@@ -1227,11 +1223,11 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         "filter": {"CATEGORY_ID": PROD_CATEGORY, ">=CREATED_TIME": iso(month_start), "<CREATED_TIME": iso(dormant_flow_end)},
         "select": history_select,
     })
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = await asyncio.gather(
-        new_by_start_task, new_by_created_task, closed_task, returns_task, active_task, production_at_start_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task, dormant_to_production_target_history_task
+    new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = await asyncio.gather(
+        new_by_created_task, closed_task, returns_task, active_task, production_at_start_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task, dormant_to_production_target_history_task
     )
-    new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = [
-        x or [] for x in [new_by_start_raw, new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw]
+    new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = [
+        x or [] for x in [new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw]
     ]
     dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
     production_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_28", {})
@@ -1244,17 +1240,11 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     dormant_to_production_in_period_ids = set(history_owner_ids(
         unique_history_rows_by_owner(period_completed_to_production + period_direct_to_production)
     ))
-    # Объединяем без дублей. Карточку по DATE_CREATE добавляем только если
-    # дата начала оказания услуг не заполнена — это именно fallback.
-    new_map = {str(d.get("ID")): d for d in new_by_start_raw}
-    for d in new_by_created_raw:
-        if not d.get(F_PROD_START):
-            new_map.setdefault(str(d.get("ID")), d)
     # The flow KPI measures hand-offs from the Sales department only.  A
     # production card created directly (or by a technical import) has no link
     # to the sales deal and must not inflate «Пришло продуктов» or its amount.
     new_raw = exclude_dormant_to_production(
-        [deal for deal in new_map.values() if has_sales_origin(deal)],
+        [deal for deal in new_by_created_raw if has_sales_origin(deal)],
         dormant_to_production_in_period_ids,
     )
 
@@ -1452,7 +1442,7 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
 
     return {
         "period_label": period_label,
-        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки. Переходы из «Зависших» исключены по истории Bitrix",
+        "arrival_rule": "Передача из отдела продаж: дата создания карточки в производстве. Переходы из «Зависших» исключены по истории Bitrix",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
         "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
@@ -1520,7 +1510,7 @@ def derive_production_period(
     all_new = copied("new")
     new = [
         row for row in all_new
-        if (value := parse_dt(row.get("prod_start"), tz) or parse_dt(row.get("created"), tz))
+        if (value := parse_dt(row.get("created"), tz))
         and range_start <= value < arrival_end
     ]
     closed = between(copied("closed"), "close", range_end)
@@ -1705,7 +1695,7 @@ def derive_production_period(
     }
     derived = {
         "period_label": period_label,
-        "arrival_rule": "Передача из отдела продаж: дата начала оказания услуг; если поле пустое — дата создания карточки. Переходы из «Зависших» исключены по истории Bitrix",
+        "arrival_rule": "Передача из отдела продаж: дата создания карточки в производстве. Переходы из «Зависших» исключены по истории Bitrix",
         "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
         "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
         "experts": experts, "stages": stage_rows,
