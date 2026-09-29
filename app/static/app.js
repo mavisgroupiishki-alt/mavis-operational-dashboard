@@ -1398,7 +1398,11 @@ function snapshotKey(month=$("#month")?.value||"",period=$("#period")?.value||"m
 function preserveSalesDetails(previous,nextSales,key){
   const next={...(nextSales||{})};
   if(previous?.details_loaded&&previous.details_key===key){
-    return {...previous,...next,details_loaded:true,details_key:key};
+    const previousManagers=new Map((previous.managers||[]).map(manager=>[manager.name,manager]));
+    const managers=Array.isArray(next.managers)
+      ? next.managers.map(manager=>({...previousManagers.get(manager.name),...manager}))
+      : previous.managers;
+    return {...previous,...next,managers,details_loaded:true,details_key:key};
   }
   return next;
 }
