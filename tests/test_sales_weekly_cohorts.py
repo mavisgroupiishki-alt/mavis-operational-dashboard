@@ -67,11 +67,13 @@ class SalesWeeklyCohortTests(unittest.TestCase):
         self.assertEqual(weeks["lead_to_sale_rate"][0], 0)
         self.assertEqual(weeks["qualified_to_sale_rate"][0], 0)
         self.assertEqual(weeks["deal_to_sale_rate"][0], 0)
+        self.assertEqual(weeks["closing_flow_deal_to_sale_rate"][0], 50)
         self.assertEqual(weeks["product_sale_rate"][0], 0)
 
         self.assertEqual(weeks["lead_to_sale_rate"][1], 100)
         self.assertEqual(weeks["qualified_to_sale_rate"][1], 100)
         self.assertEqual(weeks["deal_to_sale_rate"][1], 100)
+        self.assertEqual(weeks["closing_flow_deal_to_sale_rate"][1], 0)
         self.assertEqual(weeks["product_sale_rate"][1], 100)
 
         # Day 10 (index 9) keeps the same cohort rule as the weekly tile.

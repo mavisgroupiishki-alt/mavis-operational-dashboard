@@ -416,7 +416,7 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
         return {"ok": False, "status": "unavailable"}
 
 
-SNAPSHOT_SCHEMA_VERSION = "sales-tail-v2"
+SNAPSHOT_SCHEMA_VERSION = "sales-tail-v3"
 
 
 def persistent_snapshot_key(month: str, period: str, custom_start: str = "", custom_end: str = ""):

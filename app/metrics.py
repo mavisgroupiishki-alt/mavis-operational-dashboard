@@ -655,7 +655,13 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
     weeks["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["leads"][i]) for i in range(5)]
     weeks["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["qualified"][i]) for i in range(5)]
+    # Keep both interpretations visible in the weekly breakdown:
+    # - cohort: only deals created in this same week and later won;
+    # - closing flow: every sale closed this week, including deals created
+    #   earlier in the month and the historical tail.  The latter can exceed
+    #   100%, so it must never be presented as the cohort conversion.
     weeks["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["deals"][i]) for i in range(5)]
+    weeks["closing_flow_deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
     weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
     weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]
     weeks["average_product_check"] = [round(weeks["sold_product_amount"][i] / weeks["sold_products"][i], 2) if weeks["sold_products"][i] else 0 for i in range(5)]
@@ -736,6 +742,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     days_map["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["leads"][i]) for i in range(day_count)]
     days_map["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["qualified"][i]) for i in range(day_count)]
     days_map["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["deals"][i]) for i in range(day_count)]
+    days_map["closing_flow_deal_to_sale_rate"] = [pct(days_map["sales"][i], days_map["deals"][i]) for i in range(day_count)]
     days_map["products_per_deal"] = [
         round(days_map["products"][i] / days_map["deals"][i], 2) if days_map["deals"][i] else 0
         for i in range(day_count)
@@ -1843,7 +1850,7 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
         if day is not None:
             rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
         return rows
-    if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue","total_deal_to_sale_rate"}:
+    if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue","total_deal_to_sale_rate","closing_flow_deal_to_sale_rate"}:
         rows=[r for r in sales_universe if is_success_sale_record(r)]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
         if day is not None:

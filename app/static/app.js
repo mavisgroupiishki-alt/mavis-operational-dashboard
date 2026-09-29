@@ -69,7 +69,7 @@ const SALES_LABELS={
   lead_to_sale_rate:["Лид → продажа","pct"],qualified_to_sale_rate:["Квал. → продажа","pct"],
   deals:["Сделки","num"],lost_deals:["Слитые сделки","num"],deal_amount:["Сумма созданных сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
   cohort_sales:["Продажи из созданных сделок","num"],tail_sales:["Продажи из хвоста","num"],
-  deal_to_sale_rate:["Сделка → продажа","pct"],tail_deal_to_sale_rate:["Конверсия хвоста","pct"],total_deal_to_sale_rate:["Конверсия с хвостом","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
+  deal_to_sale_rate:["Сделка → продажа","pct"],closing_flow_deal_to_sale_rate:["Конверсия всех закрытий недели","pct"],tail_deal_to_sale_rate:["Конверсия хвоста","pct"],total_deal_to_sale_rate:["Конверсия с хвостом","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
@@ -775,7 +775,7 @@ const RNP_METRIC_LOGIC={
 const RNP_CONVERSION_LOGIC="Отчётный период: продажи из сделок, созданных в периоде ÷ эти сделки. Итого: все успешные продажи периода вместе с хвостом ÷ все сделки периода вместе с хвостом.";
 
 function rnpGroup(name){return (state.sales.groups||[]).find(x=>x.name===name)}
-function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","tail_deal_to_sale_rate","total_deal_to_sale_rate","product_sale_rate"].includes(k)}
+function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","closing_flow_deal_to_sale_rate","tail_deal_to_sale_rate","total_deal_to_sale_rate","product_sale_rate"].includes(k)}
 function isAvgMetric(k){return ["average_check","average_product_check","products_per_deal"].includes(k)}
 function isAdditiveMetric(k){return !isPctMetric(k)&&!isAvgMetric(k)}
 
@@ -882,9 +882,10 @@ function rnpWeekTable(cfg,g,periodType="current"){
     ? [
       ...cfg.metrics.filter(([k])=>!["sales","sales_amount","average_check","deal_to_sale_rate"].includes(k)),
       ["cohort_sales","Продажи из сделок, созданных на этой неделе","num"],
-      ["deal_to_sale_rate","Конверсия созданных сделок в продажу","pct"],
+      ["deal_to_sale_rate","Конверсия созданных сделок в продажу в периоде","pct"],
       ["sales","Все продажи, закрытые на этой неделе","num"],
       ["tail_sales","Из них продажи из хвоста","num"],
+      ["closing_flow_deal_to_sale_rate","Конверсия по всем закрытиям недели","pct"],
       ["sales_amount","Выручка всех закрытий","money"],
       ["average_check","Средний чек по всем закрытиям","money"]
     ]
@@ -898,7 +899,7 @@ function rnpWeekTable(cfg,g,periodType="current"){
           const fact=weeks[k]?.[w.index]||0,plan=periodType==="previous"?0:rnpWeekPlan(cfg.key,k,w.index);
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
-        <p class="rnp-cohort-note">«Продажи из сделок, созданных на этой неделе» — числитель конверсии. «Все продажи, закрытые на этой неделе» — поток закрытий по дате продажи и может включать сделки, созданные раньше, в том числе хвост.</p>
+        <p class="rnp-cohort-note">«Конверсия созданных сделок в продажу в периоде» = продажи из сделок, созданных на этой неделе ÷ сделки, созданные на этой неделе. «Конверсия по всем закрытиям недели» берёт все продажи по дате закрытия, в том числе сделки, созданные раньше; поэтому она может быть выше 100%.</p>
         ${rnpDailyTable(cfg,g,w,periodType,metrics)}
       </div>
     </details>`;
