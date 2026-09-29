@@ -65,6 +65,9 @@ key_task_cache_time = {}
 key_task_refresh_tasks = {}
 key_task_users_cache = []
 key_task_users_cache_time = 0.0
+communication_gap_cache = {}
+COMMUNICATION_GAP_REFRESH_SECONDS = 5 * 60
+COMMUNICATION_GAP_DAYS = 14
 
 
 def current_month():
@@ -485,6 +488,137 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
         if previous:
             return {**previous, "status": "stale"}
         return {"ok": False, "status": "unavailable"}
+
+
+async def _recent_call_activities(owner_type_id: int, owner_ids: list[str], since: datetime):
+    """Return recent call activities for a bounded set of CRM owners.
+
+    Activity history can be much larger than the sales funnel.  Querying only
+    active sales deals and their companies keeps the assistant's read-only
+    context small while still answering the manager's follow-up question.
+    """
+    unique_ids = list(dict.fromkeys(str(value) for value in owner_ids if str(value).strip()))
+    if not unique_ids:
+        return []
+    fields = ["ID", "OWNER_ID", "OWNER_TYPE_ID", "TYPE_ID", "CREATED", "LAST_UPDATED", "COMPLETED"]
+
+    async def load_chunk(chunk):
+        return await client.list_all("crm.activity.list", {
+            "order": {"CREATED": "DESC", "ID": "DESC"},
+            "filter": {
+                "TYPE_ID": 2,
+                "OWNER_TYPE_ID": owner_type_id,
+                "OWNER_ID": chunk,
+                "COMPLETED": "Y",
+                ">=CREATED": since.isoformat(),
+            },
+            "select": fields,
+        }) or []
+
+    rows = await asyncio.gather(*(load_chunk(unique_ids[offset:offset + 50]) for offset in range(0, len(unique_ids), 50)))
+    return [row for group in rows for row in group if isinstance(row, dict)]
+
+
+async def load_sales_communication_gaps(now: datetime | None = None):
+    """Build an exact, compact answer to "which active companies were not called".
+
+    A company is in the gap list only when it has an open deal in the sales
+    funnel and neither that deal nor the company itself has a CRM call activity
+    during the last 14 days.  The check intentionally uses live CRM activities,
+    rather than the dashboard's sales snapshot or the one-day Jarvis feed.
+    """
+    now = now or datetime.now(ZoneInfo(settings.timezone))
+    cache_key = now.date().isoformat()
+    cached = communication_gap_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < COMMUNICATION_GAP_REFRESH_SECONDS:
+        return copy.deepcopy(cached[1])
+
+    since = now - timedelta(days=COMMUNICATION_GAP_DAYS)
+    try:
+        deals = await client.deal_list({"CATEGORY_ID": 0, "CLOSED": "N"}, [
+            "ID", "TITLE", "COMPANY_ID", "ASSIGNED_BY_ID", "STAGE_ID",
+        ]) or []
+        company_deals = {}
+        without_company = 0
+        for deal in deals:
+            company_id = str(deal.get("COMPANY_ID") or "").strip()
+            if not company_id:
+                without_company += 1
+                continue
+            company_deals.setdefault(company_id, []).append(deal)
+
+        company_ids = list(company_deals)
+        company_rows = []
+        for offset in range(0, len(company_ids), 50):
+            company_rows.extend(await client.list_all("crm.company.list", {
+                "order": {"ID": "ASC"},
+                "filter": {"@ID": company_ids[offset:offset + 50]},
+                "select": ["ID", "TITLE"],
+            }) or [])
+        company_names = {
+            str(row.get("ID") or ""): str(row.get("TITLE") or f"Компания {row.get('ID')}")
+            for row in company_rows if isinstance(row, dict) and row.get("ID")
+        }
+
+        deal_calls, company_calls, meta = await asyncio.gather(
+            _recent_call_activities(2, [str(deal.get("ID") or "") for deal in deals], since),
+            _recent_call_activities(4, company_ids, since),
+            client.meta(),
+        )
+        recent_company_ids = set()
+        deal_company = {
+            str(deal.get("ID") or ""): company_id
+            for company_id, rows in company_deals.items() for deal in rows
+        }
+        for activity in deal_calls:
+            company_id = deal_company.get(str(activity.get("OWNER_ID") or ""))
+            if company_id:
+                recent_company_ids.add(company_id)
+        for activity in company_calls:
+            company_id = str(activity.get("OWNER_ID") or "")
+            if company_id in company_deals:
+                recent_company_ids.add(company_id)
+
+        gaps = []
+        stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {}
+        for company_id, rows in company_deals.items():
+            if company_id in recent_company_ids:
+                continue
+            primary = rows[0]
+            manager_id = primary.get("ASSIGNED_BY_ID")
+            gaps.append({
+                "company_id": company_id,
+                "company": company_names.get(company_id) or f"Компания {company_id}",
+                "active_deals": len(rows),
+                "deal_id": str(primary.get("ID") or ""),
+                "deal_title": str(primary.get("TITLE") or ""),
+                "manager": user_name(meta, manager_id),
+                "stage": stage_labels.get(str(primary.get("STAGE_ID") or "")) or str(primary.get("STAGE_ID") or ""),
+                "url": f"{client.portal}/crm/deal/details/{primary.get('ID')}/" if primary.get("ID") else "",
+            })
+        gaps.sort(key=lambda row: (row["manager"], row["company"].casefold(), row["company_id"]))
+        result = {
+            "status": "online",
+            "checked_at": now.isoformat(),
+            "days_without_call": COMMUNICATION_GAP_DAYS,
+            "active_companies": len(company_deals),
+            "active_deals_without_company": without_company,
+            "companies_without_call_count": len(gaps),
+            "companies_without_call": gaps[:80],
+            "scope_note": (
+                "Проверены только компании с активными сделками отдела продаж. "
+                "Компания попадает в список, если в CRM нет завершённого звонка (активность TYPE_ID=2) "
+                "по её активной сделке или по самой компании за последние 14 дней."
+            ),
+        }
+    except Exception:
+        result = {
+            "status": "unavailable",
+            "days_without_call": COMMUNICATION_GAP_DAYS,
+            "scope_note": "История звонков CRM временно недоступна; число компаний не рассчитано.",
+        }
+    communication_gap_cache[cache_key] = (time.monotonic(), copy.deepcopy(result))
+    return result
 
 
 SNAPSHOT_SCHEMA_VERSION = "sales-tail-v3"
@@ -1668,7 +1802,7 @@ async def delete_task_saved_view(view_id: str, profile_id: str):
     return {"ok": True}
 
 
-def _dashboard_chat_context(month: str, period: str):
+async def _dashboard_chat_context(month: str, period: str):
     """Only approved, compact operational facts are sent to the AI gateway."""
     key = (month, period, "", "")
     snapshot = cache.get(key) or {}
@@ -1696,6 +1830,7 @@ def _dashboard_chat_context(month: str, period: str):
     team = storage.key_task_team()
     task_cache_key = _key_task_cache_key(team)
     tasks = key_task_cache.get(task_cache_key) or {}
+    communications = await load_sales_communication_gaps()
     return {
         "period": {"month": month, "kind": period},
         "sales": {
@@ -1710,7 +1845,8 @@ def _dashboard_chat_context(month: str, period: str):
             "generated_at": tasks.get("generated_at") or "",
             "people": tasks.get("people") or [],
         },
-        "scope_note": "Это read-only агрегаты и ограниченный список активных сделок. Если данных нет в контексте, нужно сказать об этом, а не предполагать.",
+        "communications": communications,
+        "scope_note": "Это read-only агрегаты, компактный список активных сделок и проверка звонков по активным компаниям продаж. Если данных нет в контексте, нужно сказать об этом, а не предполагать.",
     }
 
 
@@ -1733,7 +1869,7 @@ async def dashboard_chat(body: DashboardChatBody):
         text = str(item.get("content") or "").strip()
         if role in {"user", "assistant"} and text:
             history.append({"role": role, "content": text[:1400]})
-    payload = {"question": question, "history": history, "context": _dashboard_chat_context(month, body.period)}
+    payload = {"question": question, "history": history, "context": await _dashboard_chat_context(month, body.period)}
     try:
         async with httpx.AsyncClient(timeout=45.0, follow_redirects=False) as session:
             response = await session.post(
