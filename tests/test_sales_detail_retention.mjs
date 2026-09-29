@@ -4,7 +4,18 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8");
-const match = source.match(/function preserveSalesDetails\(previous,nextSales,key\)\{[\s\S]*?\n\}(?=\nfunction renderSalesPlaceholder)/);
+const match = source.match(/function preserveSalesDetails\(previous,nextSales,key\)\{[\s\S]*?\n\}(?=\nfunction salesDetailsNeedRefresh)/);
+const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,snapshotUpdatedAt\)\{[\s\S]*?\n\}/);
+
+test("loaded sales details are refreshed when the snapshot revision changes", () => {
+  assert.ok(freshnessMatch, "salesDetailsNeedRefresh must exist");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`${freshnessMatch[0]};globalThis.salesDetailsNeedRefresh=salesDetailsNeedRefresh;`, context);
+  assert.equal(context.salesDetailsNeedRefresh({ details_loaded: true, details_revision: "old" }, "new"), true);
+  assert.equal(context.salesDetailsNeedRefresh({ details_loaded: true, details_revision: "new" }, "new"), false);
+  assert.equal(context.salesDetailsNeedRefresh({ details_loaded: false }, "new"), false);
+});
 
 test("a compact background snapshot retains the loaded sales detail for its period", () => {
   assert.ok(match, "preserveSalesDetails must exist");

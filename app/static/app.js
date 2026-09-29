@@ -1407,22 +1407,26 @@ function preserveSalesDetails(previous,nextSales,key){
   }
   return next;
 }
+function salesDetailsNeedRefresh(sales,snapshotUpdatedAt){
+  return Boolean(sales?.details_loaded&&snapshotUpdatedAt&&sales.details_revision!==snapshotUpdatedAt);
+}
 function renderSalesPlaceholder(message="Загружаю детализацию продаж…",retry=false){
   const target=$("#sales");if(!target)return;
   target.innerHTML=`<div class="section-page sales-loading"><div class="eyebrow">ОТДЕЛ ПРОДАЖ</div><h2>Продажи</h2><p class="section-page-lead">${esc(message)}</p><div class="integration-state">Основные показатели уже доступны на главном экране. Загружаю расшифровку менеджеров, источников и сделок только для этого раздела.</div>${retry?'<button type="button" class="btn primary" data-retry-sales-section="1">Повторить</button>':''}</div>`;
 }
-async function loadSalesSection(){
+async function loadSalesSection({force=false,silent=false}={}){
   if(!state?.ok)return;
   if(marketerAccess()){
     renderSalesPlaceholder("Реальные показатели и детализация продаж скрыты для роли «Маркетолог». В разделе «Маркетинг» доступны фактические данные.");
     return;
   }
   const key=snapshotKey();
-  if(state.sales?.details_loaded&&state.sales?.details_key===key){renderSales();return}
+  const needsRefresh=force||state.sales?.details_stale;
+  if(state.sales?.details_loaded&&state.sales?.details_key===key&&!needsRefresh){renderSales();return}
   if(salesDetailsRequest===key)return;
   if(salesDetailsRetry){clearTimeout(salesDetailsRetry);salesDetailsRetry=null}
   salesDetailsRequest=key;
-  renderSalesPlaceholder();
+  if(!silent)renderSalesPlaceholder();
   try{
     const response=await fetch(`/api/sales-section?month=${encodeURIComponent($("#month").value)}&period=${encodeURIComponent($("#period").value)}${customQueryParams()}`,{cache:"no-store"});
     const payload=await response.json();
@@ -1433,7 +1437,7 @@ async function loadSalesSection(){
       return;
     }
     if(!response.ok||!payload.ok)throw new Error(payload.detail||payload.error||"Не удалось загрузить детализацию продаж");
-    state.sales={...(state.sales||{}),...(payload.sales||{}),details_loaded:true,details_key:key};
+    state.sales={...(state.sales||{}),...(payload.sales||{}),details_loaded:true,details_key:key,details_stale:false,details_revision:state.updated_at||""};
     renderSales();
   }catch(error){
     if(key===snapshotKey()&&requestedView()==="sales")renderSalesPlaceholder(error.message||"Детализация продаж временно недоступна",true);
@@ -1484,11 +1488,14 @@ async function load({background=false}={}){
     }
     if(!r.ok)throw new Error(j.detail||j.error||JSON.stringify(j));
 
-    state={...j,sales:preserveSalesDetails(state?.sales,j.sales,requestKey),plans:reconcilePendingPlans(j.plans)};
+    const sales=preserveSalesDetails(state?.sales,j.sales,requestKey);
+    const details_stale=salesDetailsNeedRefresh(sales,j.updated_at);
+    state={...j,sales:{...sales,details_stale},plans:reconcilePendingPlans(j.plans)};
     activeSnapshotKey=requestKey;
     saveBrowserSnapshot(state);
     if(background)lastBackgroundRefreshAt=Date.now();
     renderAll();
+    if(details_stale&&requestedView()==="sales")void loadSalesSection({force:true,silent:true});
     if(offlineSnapshot){
       $("#liveDot").className="bad";
       $("#liveText").textContent="ПОКАЗАНА ПОСЛЕДНЯЯ ВЕРСИЯ · НЕТ СЕТИ";
