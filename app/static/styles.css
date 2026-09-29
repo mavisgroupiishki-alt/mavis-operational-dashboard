@@ -526,20 +526,28 @@ td{padding:11px 9px}
 .rnp-result-strip strong{font-size:17px;color:#172637}
 .rnp-result-strip small{font-size:11px;color:#7d8d9a}
 .rnp-result-strip .rnp-total{background:var(--rnp-soft)}
-.rnp-month-table{padding:12px 13px}
+.rnp-month-table{padding:16px 18px}
 .rnp-month-head,.rnp-month-row{
   display:grid;grid-template-columns:minmax(150px,1.7fr) .78fr .7fr .78fr 1.05fr;
-  align-items:center;gap:5px
+  align-items:center;gap:12px
 }
 .rnp-month-head{
-  padding:7px 8px;background:#f2f6f9;border-radius:8px;
-  color:#728697;font-size:10px;text-transform:uppercase;font-weight:800
+  padding:10px 12px;background:#edf3f7;border-radius:9px;
+  color:#62798b;font-size:12px;text-transform:uppercase;font-weight:800;letter-spacing:.02em
 }
 .rnp-month-head>span:not(:first-child){text-align:right}
-.rnp-month-row{padding:7px 8px;border-bottom:1px solid #e5ecf1;font-size:12px}
-.rnp-month-row:last-child{border-bottom:0}
+.rnp-month-table.no-plan .rnp-month-head,.rnp-month-table.no-plan .rnp-month-row{grid-template-columns:minmax(220px,2.1fr) 1fr 1fr 1fr}
+.rnp-metric-details{border-bottom:1px solid #dce7ee}
+.rnp-metric-details:last-child{border-bottom:0}
+.rnp-metric-details>summary{cursor:pointer;list-style:none}
+.rnp-metric-details>summary::-webkit-details-marker{display:none}
+.rnp-month-row{padding:12px;font-size:15px;line-height:1.25}
 .rnp-month-row>span:not(:first-child),.rnp-month-row>strong{text-align:right}
-.rnp-month-row>strong{color:var(--rnp-accent);font-size:13px}
+.rnp-month-row>strong{color:var(--rnp-accent);font-size:17px}
+.rnp-metric-label{display:flex;align-items:center;gap:9px;font-weight:700;color:#203346}
+.rnp-metric-label small{color:var(--rnp-accent);font-size:11px;font-weight:750;white-space:nowrap}
+.rnp-metric-details[open]>.rnp-month-row{background:#f4fafc}
+.rnp-metric-logic{padding:10px 12px 13px 18px;background:#f4fafc;color:#527083;font-size:13px;line-height:1.45}
 .rnp-subdetails{border-top:1px solid #dde7ee}
 .rnp-subdetails>summary{
   cursor:pointer;list-style:none;padding:12px 14px;display:flex;justify-content:space-between;gap:10px;

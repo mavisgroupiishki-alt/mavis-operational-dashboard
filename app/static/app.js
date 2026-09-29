@@ -759,6 +759,21 @@ const RNP_GROUPS=[
   }
 ];
 
+const RNP_METRIC_LOGIC={
+  leads:"Лиды, созданные в выбранном отчётном периоде.",
+  qualified:"Лиды выбранного периода, которые отмечены в CRM как квалифицированные.",
+  qualified_rate:"Квалифицированные лиды ÷ все лиды выбранного периода.",
+  lead_to_deal_rate:"Созданные сделки ÷ квалифицированные лиды выбранного периода.",
+  deals:"Сделки, созданные в периоде. В столбце «Хвост» — сделки, созданные раньше, но учитываемые в текущем месяце.",
+  lost_deals:"Сделки, переведённые в проигрыш в выбранном периоде.",
+  sales:"Успешно закрытые сделки по дате закрытия: отдельно из сделок периода и из более раннего хвоста.",
+  lead_to_sale_rate:"Продажи из сделок, созданных из лидов периода ÷ все лиды периода.",
+  qualified_to_sale_rate:"Продажи из сделок, созданных из квалифицированных лидов периода ÷ квалифицированные лиды периода.",
+  average_check:"Выручка успешных продаж ÷ количество успешных продаж в соответствующей колонке.",
+  sales_amount:"Сумма успешных сделок по дате их закрытия в соответствующей колонке. План сравнивается с итогом.",
+};
+const RNP_CONVERSION_LOGIC="Отчётный период: продажи из сделок, созданных в периоде ÷ эти сделки. Итого: все успешные продажи периода вместе с хвостом ÷ все сделки периода вместе с хвостом.";
+
 function rnpGroup(name){return (state.sales.groups||[]).find(x=>x.name===name)}
 function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","tail_deal_to_sale_rate","total_deal_to_sale_rate","product_sale_rate"].includes(k)}
 function isAvgMetric(k){return ["average_check","average_product_check","products_per_deal"].includes(k)}
@@ -797,18 +812,12 @@ function rnpWeekPlan(groupKey,metric,weekIndex){
   const w=rnpWeekRanges()[weekIndex];
   return w?plan*w.workdays/rnpTotalWorkdays():0;
 }
-function rnpPlanCell(groupKey,metric,type,fact){
-  const p=getPlan("sales",metric,"source_group",groupKey);
-  return `<span>${p?format(p,type):"—"}</span><strong>${format(fact,type)}</strong><span>${p?pct(Number(fact||0)/p*100):"—"}</span>`;
-}
 function rnpCombinedMetric(key,current,previous,total){
   if(isAdditiveMetric(key))return Number(current||0)+Number(previous||0);
   return Number(total||0);
 }
-function rnpMetricFacts(key,type,c,p,t){
-  const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(key);
-  const total=rnpCombinedMetric(key,c[key],p[key],t[key]);
-  return `<span>${format(c[key]||0,type)}</span><span>${hasTail?format(p[key]||0,type):"—"}</span><strong>${format(total,type)}</strong>`;
+function rnpMetricDetailRow({label,current,previous,total,plan,logic,showPlan=true}){
+  return `<details class="rnp-metric-details"><summary class="rnp-month-row"><span class="rnp-metric-label">${esc(label)}<small>Как считаем</small></span><span>${current}</span><span>${previous}</span><strong>${total}</strong>${showPlan?`<span>${plan||"—"}</span>`:""}</summary><div class="rnp-metric-logic">${esc(logic)}</div></details>`;
 }
 function rnpTotalDealToSaleRate(c,p,t){
   const stored=t?.total_deal_to_sale_rate;
@@ -816,18 +825,35 @@ function rnpTotalDealToSaleRate(c,p,t){
   const deals=Number(c.deals||0)+Number(p.deals||0);
   return deals?(Number(c.sales||0)+Number(p.sales||0))/deals*100:0;
 }
-function rnpConversionRows(c,p,t){
-  return `<div class="rnp-month-row rnp-conversion-row"><span>Конверсия сделки в продажу</span><span>${format(c.deal_to_sale_rate||0,"pct")}</span><span>${format(p.deal_to_sale_rate||0,"pct")}</span><strong>${format(rnpTotalDealToSaleRate(c,p,t),"pct")}</strong><span>—</span></div>`;
+function rnpConversionRows(c,p,t,{showPlan=true}={}){
+  return rnpMetricDetailRow({
+    label:"Конверсия сделки в продажу",
+    current:format(c.deal_to_sale_rate||0,"pct"),
+    previous:"—",
+    total:format(rnpTotalDealToSaleRate(c,p,t),"pct"),
+    plan:"—",
+    logic:RNP_CONVERSION_LOGIC,
+    showPlan,
+  });
 }
 function rnpMonthlyTable(cfg,g,{showPlan=true}={}){
   const c=g?.current?.metrics||{},p=g?.previous?.metrics||{},t=g?.total?.metrics||{};
-  return `<div class="rnp-month-table">
-    <div class="rnp-month-head"><span>Показатель</span><span>Отчётный период</span><span>Хвост</span><span>Итого</span><span>План / выполнение</span></div>
+  return `<div class="rnp-month-table${showPlan?"":" no-plan"}">
+    <div class="rnp-month-head"><span>Показатель</span><span>Отчётный период</span><span>Хвост</span><span>Итого</span>${showPlan?"<span>План / выполнение</span>":""}</div>
     ${cfg.metrics.filter(([k])=>k!=="deal_to_sale_rate").map(([k,label,type])=>{
       const plan=showPlan?getPlan("sales",k,"source_group",cfg.key):0, total=rnpCombinedMetric(k,c[k],p[k],t[k]);
-      return `<div class="rnp-month-row"><span>${esc(label)}</span>${rnpMetricFacts(k,type,c,p,t)}<span>${plan?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—"}</span></div>`;
+      const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(k);
+      return rnpMetricDetailRow({
+        label,
+        current:format(c[k]||0,type),
+        previous:hasTail?format(p[k]||0,type):"—",
+        total:format(total,type),
+        plan:plan?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—",
+        logic:RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24.",
+        showPlan,
+      });
     }).join("")}
-    ${rnpConversionRows(c,p,t)}
+    ${rnpConversionRows(c,p,t,{showPlan})}
   </div>`;
 }
 function rnpDailyTable(cfg,g,week,periodType="current",metrics=cfg.metrics){
