@@ -7,7 +7,7 @@ const source = readFileSync(new URL("../app/static/app.js", import.meta.url), "u
 const match = source.match(/function preserveSalesDetails\(previous,nextSales,key\)\{[\s\S]*?\n\}(?=\nfunction salesDetailsNeedRefresh)/);
 const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,snapshotUpdatedAt\)\{[\s\S]*?\n\}/);
 const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
-const allocationMatch = source.match(/function allocateCleanRevenue\(crmAmount,crmTotal,cleanRevenue\)\{[\s\S]*?\n\}/);
+const cleanRevenueMatch = source.match(/function rnpCleanRevenue\(filter=\{\}\)\{[\s\S]*?\n\}/);
 
 test("loaded sales details are refreshed when the snapshot revision changes", () => {
   assert.ok(freshnessMatch, "salesDetailsNeedRefresh must exist");
@@ -27,13 +27,23 @@ test("total conversion with tail is calculated from the two visible cohorts", ()
   assert.ok(Math.abs(context.rnpTotalDealToSaleRate({ deals: 96, sales: 24 }, { deals: 96, sales: 10 }, { total_deal_to_sale_rate: 0 }) - (34 / 192 * 100)) < 1e-9);
 });
 
-test("clean revenue allocation preserves the financial total", () => {
-  assert.ok(allocationMatch, "allocateCleanRevenue must exist");
-  const context = {};
+test("clean revenue is summed from the linked payment-schedule deals, not allocated by CRM amount", () => {
+  assert.ok(cleanRevenueMatch, "rnpCleanRevenue must exist");
+  const context = { state: { clean_revenue: {
+    status: "online",
+    deal_revenue_available: true,
+    deal_revenue_rows: [
+      { group: "Холодные продажи", period_type: "current", clean_revenue: 890 },
+      { group: "Холодные продажи", period_type: "previous", clean_revenue: 4700 },
+      { group: "Входящий трафик продажи", period_type: "current", clean_revenue: 40340 },
+    ],
+  } } };
   vm.createContext(context);
-  vm.runInContext(`${allocationMatch[0]};globalThis.allocateCleanRevenue=allocateCleanRevenue;`, context);
-  const values = [5590, 40340, 69565].map(value => context.allocateCleanRevenue(value, 115495, 94360));
-  assert.equal(values.reduce((total, value) => total + value, 0), 94360);
+  vm.runInContext(`${cleanRevenueMatch[0]};globalThis.rnpCleanRevenue=rnpCleanRevenue;`, context);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.rnpCleanRevenue({ group: "Холодные продажи" }))),
+    { current: 890, previous: 4700, total: 5590 },
+  );
 });
 
 test("a compact background snapshot retains the loaded sales detail for its period", () => {

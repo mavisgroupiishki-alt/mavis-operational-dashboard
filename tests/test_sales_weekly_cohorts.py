@@ -67,13 +67,14 @@ class SalesWeeklyCohortTests(unittest.TestCase):
         self.assertEqual(weeks["lead_to_sale_rate"][0], 0)
         self.assertEqual(weeks["qualified_to_sale_rate"][0], 0)
         self.assertEqual(weeks["deal_to_sale_rate"][0], 0)
-        self.assertEqual(weeks["closing_flow_deal_to_sale_rate"][0], 50)
+        self.assertEqual(weeks["week_tail_deals"][0], 1)
+        self.assertEqual(weeks["total_deal_to_sale_rate"][0], 33.3)
         self.assertEqual(weeks["product_sale_rate"][0], 0)
 
         self.assertEqual(weeks["lead_to_sale_rate"][1], 100)
         self.assertEqual(weeks["qualified_to_sale_rate"][1], 100)
         self.assertEqual(weeks["deal_to_sale_rate"][1], 100)
-        self.assertEqual(weeks["closing_flow_deal_to_sale_rate"][1], 0)
+        self.assertEqual(weeks["total_deal_to_sale_rate"][1], 0)
         self.assertEqual(weeks["product_sale_rate"][1], 100)
 
         # Day 10 (index 9) keeps the same cohort rule as the weekly tile.
@@ -101,6 +102,8 @@ class SalesWeeklyCohortTests(unittest.TestCase):
         self.assertEqual(result["weeks"]["cohort_sales"][0], 1)
         self.assertEqual(result["weeks"]["tail_sales"][1], 1)
         self.assertEqual(result["weeks"]["sales"][1], 2)
+        self.assertEqual(result["weeks"]["week_tail_deals"][1], 2)
+        self.assertEqual(result["weeks"]["total_deal_to_sale_rate"][1], 100)
 
     def test_client_type_breakdown_keeps_its_own_tail(self):
         current = deal("new", 2, sold=True, close_day=10)

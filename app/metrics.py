@@ -592,7 +592,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     }
 
     weeks = {k: [0, 0, 0, 0, 0] for k in [
-        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount", "week_tail_deals", "week_tail_sales", "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
     # Conversion is a creation-week cohort. Keep its numerator separately
     # from weekly sales flow: a deal from the earlier tail may be sold this
@@ -655,12 +655,38 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
     weeks["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["leads"][i]) for i in range(5)]
     weeks["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["qualified"][i]) for i in range(5)]
-    # Keep both interpretations visible in the weekly breakdown:
+    # A weekly tail is every deal already in work at the beginning of that
+    # calendar week, including deals created earlier in the same month. It is
+    # wider than the month-level ``previous`` cohort used in the summary.
+    first_monday = month_start.date() - timedelta(days=month_start.weekday()) if month_start else None
+    for index in range(5):
+        if not first_monday:
+            continue
+        week_start = datetime.combine(first_monday + timedelta(days=index * 7), datetime.min.time(), tzinfo=month_start.tzinfo)
+        tail_rows = []
+        for row in all_deals:
+            created = parse_dt(row.get("created"), month_start.tzinfo)
+            closed = parse_dt(row.get("close"), month_start.tzinfo)
+            if created and created < week_start and (not closed or closed >= week_start):
+                tail_rows.append(row)
+        tail_ids = {row.get("id") for row in tail_rows}
+        weeks["week_tail_deals"][index] = len(tail_rows)
+        weeks["week_tail_sales"][index] = sum(
+            1 for row in sales_rows
+            if row.get("sale_week") == index and row.get("id") in tail_ids
+        )
+
+    # Keep both agreed interpretations visible in the weekly breakdown:
     # - cohort: only deals created in this same week and later won;
-    # - closing flow: every sale closed this week, including deals created
-    #   earlier in the month and the historical tail.  The latter can exceed
-    #   100%, so it must never be presented as the cohort conversion.
+    # - total with tail: all closures in the week ÷ new deals plus every deal
+    #   that was already in work at the start of the week.
     weeks["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["deals"][i]) for i in range(5)]
+    weeks["total_deal_to_sale_rate"] = [
+        pct(weeks["sales"][i], weeks["deals"][i] + weeks["week_tail_deals"][i])
+        for i in range(5)
+    ]
+    # Retained for old API consumers; the UI no longer presents this as a
+    # conversion because it ignores the weekly tail denominator.
     weeks["closing_flow_deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
     weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
     weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]

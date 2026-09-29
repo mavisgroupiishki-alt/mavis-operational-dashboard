@@ -505,21 +505,16 @@ function salesOverdueSchedule(){
   return `<details class="sales-overdue-schedule" aria-labelledby="sales-overdue-title"><summary><div><h3 id="sales-overdue-title">Просроченные оплаты по графику <span>${fmt(rows.length)}</span></h3><p>Непогашенные строки с датой оплаты раньше сегодняшней.</p></div><div class="sales-overdue-summary-total"><strong>${money(total)}</strong><span>Открыть список</span><i aria-hidden="true"></i></div></summary><div class="scroll-x"><table><thead><tr><th>Дата</th><th>Сделка</th><th>Стадия</th><th class="num">По графику</th><th class="num">Банк</th><th class="num">Вручную</th><th class="num">Остаток</th></tr></thead><tbody>${body||`<tr><td colspan="7" class="empty">Просроченных оплат по графику нет.</td></tr>`}</tbody></table></div></details>`;
 }
 
-function allocatedManagerCleanRevenue(managerSales,totalSales){
-  const finance=state?.clean_revenue||{};
-  if(!["online","stale"].includes(finance.status))return null;
-  const cleanRevenue=Number(finance.value),sales=Number(managerSales||0),total=Number(totalSales||0);
-  if(!Number.isFinite(cleanRevenue)||total<=0)return null;
-  return cleanRevenue*sales/total;
+function managerCleanRevenue(manager){
+  return rnpCleanRevenue({manager}).total;
 }
 
 function salesOperationalManagerTable(){
   const overall=state.sales.overall.total.metrics;
-  const total=Number(overall.sales_amount||0);
   const team=managers();
   const rows=team.map(manager=>{
     const metrics=manager.total.metrics;
-    const cleanRevenue=allocatedManagerCleanRevenue(metrics.sales_amount,total);
+    const cleanRevenue=managerCleanRevenue(manager.name);
     return `<tr><td>${esc(manager.name)}</td><td class="num">${tdLink(metrics.deals,"sales","deals","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales,"sales","sales","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales_amount,"sales","sales_amount","money",{period_type:"total",manager:manager.name})}</td><td class="num">${cleanRevenue===null?"—":money(cleanRevenue)}</td></tr>`;
   }).join("");
   const teamDeals=team.reduce((sum,manager)=>sum+Number(manager.total.metrics.deals||0),0);
@@ -770,7 +765,7 @@ const RNP_METRIC_LOGIC={
   lead_to_sale_rate:"Продажи из сделок, созданных из лидов периода ÷ все лиды периода.",
   qualified_to_sale_rate:"Продажи из сделок, созданных из квалифицированных лидов периода ÷ квалифицированные лиды периода.",
   average_check:"Выручка успешных продаж ÷ количество успешных продаж в соответствующей колонке.",
-  sales_amount:"Сумма успешных сделок CRM по дате их закрытия в соответствующей колонке. В блоках продаж финансовый итог распределяется из чистой выручки пропорционально этим CRM-суммам.",
+  sales_amount:"Точная чистая выручка по строкам «Графика платежей», связанным со сделками этого блока. Подрядчики вычитаются только у той сделки, к которой относятся.",
 };
 const RNP_CONVERSION_LOGIC="Отчётный период: продажи из сделок, созданных в периоде ÷ эти сделки. Итого: все успешные продажи периода вместе с хвостом ÷ все сделки периода вместе с хвостом.";
 
@@ -816,17 +811,13 @@ function rnpCombinedMetric(key,current,previous,total){
   if(isAdditiveMetric(key))return Number(current||0)+Number(previous||0);
   return Number(total||0);
 }
-function allocateCleanRevenue(crmAmount,crmTotal,cleanRevenue){
-  const amount=Number(crmAmount||0),total=Number(crmTotal||0),revenue=Number(cleanRevenue);
-  return Number.isFinite(revenue)&&total>0?amount/total*revenue:null;
-}
-function rnpAllocatedRevenue(g){
-  const c=g?.current?.metrics||{},p=g?.previous?.metrics||{};
-  const crmTotal=Number(state?.sales?.overall?.total?.metrics?.sales_amount||0);
-  const cleanRevenue=financeValue("value");
-  const current=allocateCleanRevenue(c.sales_amount,crmTotal,cleanRevenue);
-  const previous=allocateCleanRevenue(p.sales_amount,crmTotal,cleanRevenue);
-  return {current,previous,total:current===null||previous===null?null:current+previous};
+function rnpCleanRevenue(filter={}){
+  const finance=state?.clean_revenue||{};
+  if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return {current:null,previous:null,total:null};
+  const rows=finance.deal_revenue_rows.filter(row=>Object.entries(filter).every(([key,value])=>row?.[key]===value));
+  const current=rows.filter(row=>row.period_type==="current").reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
+  const previous=rows.filter(row=>row.period_type!=="current").reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
+  return {current,previous,total:current+previous};
 }
 function optionalMoney(value){return value===null?"—":money(value)}
 function rnpMetricDetailRow({label,current,previous,total,plan,logic,showPlan=true}){
@@ -858,23 +849,23 @@ function rnpConversionRows(c,p,t,{showPlan=true}={}){
     }),
   ].join("");
 }
-function rnpMonthlyTable(cfg,g,{showPlan=true}={}){
+function rnpMonthlyTable(cfg,g,{showPlan=true,financeFilter={group:cfg.key}}={}){
   const c=g?.current?.metrics||{},p=g?.previous?.metrics||{},t=g?.total?.metrics||{};
-  const allocatedRevenue=rnpAllocatedRevenue(g);
+  const cleanRevenue=rnpCleanRevenue(financeFilter);
   return `<div class="rnp-month-table${showPlan?"":" no-plan"}">
     <div class="rnp-month-head"><span>Показатель</span><span>Отчётный период</span><span>Хвост</span><span>Итого</span>${showPlan?"<span>План / выполнение</span>":""}</div>
     ${cfg.metrics.filter(([k])=>k!=="deal_to_sale_rate").map(([k,label,type])=>{
       const isRevenue=k==="sales_amount";
       const plan=showPlan?getPlan("sales",k,"source_group",cfg.key):0;
-      const current=isRevenue?allocatedRevenue.current:c[k],previous=isRevenue?allocatedRevenue.previous:p[k],total=isRevenue?allocatedRevenue.total:rnpCombinedMetric(k,c[k],p[k],t[k]);
+      const current=isRevenue?cleanRevenue.current:c[k],previous=isRevenue?cleanRevenue.previous:p[k],total=isRevenue?cleanRevenue.total:rnpCombinedMetric(k,c[k],p[k],t[k]);
       const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(k);
       return rnpMetricDetailRow({
-        label:isRevenue?"Распределённая чистая выручка":label,
+        label:isRevenue?"Чистая выручка":label,
         current:isRevenue?optionalMoney(current):format(current||0,type),
         previous:hasTail?(isRevenue?optionalMoney(previous):format(previous||0,type)):"—",
         total:isRevenue?optionalMoney(total):format(total,type),
         plan:plan&&total!==null?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—",
-        logic:isRevenue?"Чистая выручка из «Графика платежей», распределённая между блоками пропорционально суммам закрытых сделок CRM. Итого трёх блоков равен чистой выручке месяца.":(RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24."),
+        logic:isRevenue?"Сумма строк «Графика платежей», у которых указанная сделка относится к этому блоку. Вычтенный подрядчик остаётся у этой же сделки. Отчётный период и хвост определяются датой создания сделки; пропорционального распределения нет.":(RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24."),
         showPlan,
       });
     }).join("")}
@@ -897,9 +888,10 @@ function rnpWeekTable(cfg,g,periodType="current"){
       ...cfg.metrics.filter(([k])=>!["sales","sales_amount","average_check","deal_to_sale_rate"].includes(k)),
       ["cohort_sales","Продажи из сделок, созданных на этой неделе","num"],
       ["deal_to_sale_rate","Конверсия созданных сделок в продажу в периоде","pct"],
+      ["week_tail_deals","Сделки хвоста в работе на начало недели","num"],
       ["sales","Все продажи, закрытые на этой неделе","num"],
-      ["tail_sales","Из них продажи из хвоста","num"],
-      ["closing_flow_deal_to_sale_rate","Конверсия по всем закрытиям недели","pct"],
+      ["week_tail_sales","Из них продажи из хвоста недели","num"],
+      ["total_deal_to_sale_rate","Конверсия итого с хвостом","pct"],
       ["sales_amount","Выручка всех закрытий","money"],
       ["average_check","Средний чек по всем закрытиям","money"]
     ]
@@ -913,8 +905,8 @@ function rnpWeekTable(cfg,g,periodType="current"){
           const fact=weeks[k]?.[w.index]||0,plan=periodType==="previous"?0:rnpWeekPlan(cfg.key,k,w.index);
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
-        <p class="rnp-cohort-note">«Конверсия созданных сделок в продажу в периоде» = продажи из сделок, созданных на этой неделе ÷ сделки, созданные на этой неделе. «Конверсия по всем закрытиям недели» берёт все продажи по дате закрытия, в том числе сделки, созданные раньше; поэтому она может быть выше 100%.</p>
-        ${rnpDailyTable(cfg,g,w,periodType,metrics)}
+        <p class="rnp-cohort-note">«Конверсия созданных сделок в продажу в периоде» = продажи из сделок, созданных на этой неделе ÷ сделки, созданные на этой неделе. «Конверсия итого с хвостом» = все продажи, закрытые на неделе ÷ сделки, созданные на неделе + сделки, которые уже были в работе в начале недели. Хвост включает и сделки, созданные раньше в этом же месяце.</p>
+        ${rnpDailyTable(cfg,g,w,periodType,metrics.filter(([key])=>!['week_tail_deals','week_tail_sales','total_deal_to_sale_rate'].includes(key)))}
       </div>
     </details>`;
   }).join("")}</div>`;
@@ -931,14 +923,14 @@ function rnpClientTypeList(cfg){
   return `<details class="rnp-subdetails"><summary><strong>Типы клиентов</strong><span>${rows.length} тип. · отчётный период / хвост / итого</span></summary>
     <div class="rnp-source-list">${rows.map(r=>{
       const c=r.current.metrics||{},p=r.previous.metrics||{},t=r.total.metrics||{};
-      return `<details><summary><span>${esc(r.name)}</span><span>${fmt(c.sales)} + ${fmt(p.sales)} = ${fmt(t.sales)} продаж · ${money(t.sales_amount)}</span></summary>${rnpMonthlyTable(cfg,r,{showPlan:false})}</details>`;
+      return `<details><summary><span>${esc(r.name)}</span><span>${fmt(c.sales)} + ${fmt(p.sales)} = ${fmt(t.sales)} продаж · ${money(t.sales_amount)}</span></summary>${rnpMonthlyTable(cfg,r,{showPlan:false,financeFilter:{group:cfg.key,client_type:r.name}})}</details>`;
     }).join("")||'<div class="empty-inline">Типы клиентов не заполнены</div>'}</div>
   </details>`;
 }
 function rnpBlock(cfg){
   const g=rnpGroup(cfg.key)||{current:{metrics:{},weeks:{},days:{}},previous:{metrics:{}},total:{metrics:{}}};
   const c=g.current.metrics||{},p=g.previous.metrics||{},t=g.total.metrics||{};
-  const revenue=rnpAllocatedRevenue(g);
+  const revenue=rnpCleanRevenue({group:cfg.key});
   const plan=getPlan("sales","sales_amount","source_group",cfg.key);
 
   return `<details class="rnp-block ${cfg.cls}">
@@ -989,6 +981,19 @@ function rnpBlock(cfg){
   </details>`;
 }
 
+function salesCleanRevenueReconciliation(){
+  const finance=state?.clean_revenue||{};
+  if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return "";
+  const linked=finance.deal_revenue_rows.reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
+  const classified=RNP_GROUPS.reduce((sum,cfg)=>sum+Number(rnpCleanRevenue({group:cfg.key}).total||0),0);
+  const unclassified=linked-classified;
+  const ledgerGap=Number(finance.value||0)-linked;
+  const notes=[];
+  if(Math.abs(unclassified)>0.009)notes.push(`не отнесено к трём блокам ${money(unclassified)}`);
+  if(Math.abs(ledgerGap)>0.009)notes.push(`не связано со сделкой ${money(ledgerGap)}`);
+  return `<p class="sales-semantics-note"><strong>Сверка чистой выручки:</strong> по сделкам «Графика платежей» ${money(linked)}${notes.length?` · ${notes.join(" · ")}`:" · вся сумма распределена по трём блокам продаж"}.</p>`;
+}
+
 function rnpManagerMatrix(){
   return managers().map(m=>{
     const groups=RNP_GROUPS.map(cfg=>({cfg,g:(m.groups||[]).find(x=>x.name===cfg.key)}));
@@ -1029,13 +1034,14 @@ function renderSales(){
     <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «Чистая выручка». Суммы в разбивках по менеджерам, источникам, неделям и дням остаются CRM-расшифровкой: подрядчики не распределяются по конкретному менеджеру, источнику или дню.</div>
     ${salesOverdueSchedule()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
+    ${salesCleanRevenueReconciliation()}
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
     <section class="sales-operational-grid" aria-label="Оперативная работа отдела продаж">
       ${salesActiveDealsCard()}
       ${panel("Стадии продаж",`<div class="scroll-x">${salesStages()}</div>`,"актуально на момент обновления")}
     </section>
-    ${panel("Менеджеры продаж",`${salesOperationalManagerTable()}<p class="sales-manager-note">* Чистая выручка распределена пропорционально сумме продаж CRM. Это расчётный показатель: подрядчики не привязаны к конкретному менеджеру в исходных данных. «Прочие / не назначены» — сделки менеджеров вне состава дашборда или без ответственного.</p>`,"продажи и расчётная чистая выручка")}
+    ${panel("Менеджеры продаж",`${salesOperationalManagerTable()}<p class="sales-manager-note">* Чистая выручка — сумма строк «Графика платежей», связанных со сделками менеджера; подрядчик вычитается из той же сделки. «Прочие / не назначены» — сделки менеджеров вне состава дашборда или без ответственного.</p>`,"продажи и чистая выручка по графику платежей")}
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>

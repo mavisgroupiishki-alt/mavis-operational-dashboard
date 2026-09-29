@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
-from .metrics import build_snapshot, build_trends_light, derive_production_period, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, week_of_month
+from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
@@ -234,6 +234,72 @@ def clean_revenue_overdue_rows(payload: dict) -> list[dict]:
     return sorted(rows, key=lambda row: (row["date"], row["deal_title"], row["deal_id"]))
 
 
+def clean_revenue_deal_rows(payload: dict) -> list[dict]:
+    """Normalize exact per-deal values emitted by the payment schedule."""
+    rows = []
+    for source in payload.get("dealRevenueRows") or []:
+        if not isinstance(source, dict):
+            continue
+        deal_id = str(source.get("dealId") or "").strip()
+        try:
+            bank_confirmed = float(source.get("bankConfirmed") or 0)
+            manual_confirmed = float(source.get("manualConfirmed") or 0)
+            contractor_applied = float(source.get("contractorApplied") or 0)
+            clean_revenue = float(source.get("cleanRevenue") or 0)
+        except (TypeError, ValueError):
+            continue
+        values = (bank_confirmed, manual_confirmed, contractor_applied, clean_revenue)
+        if not (deal_id.isdigit() and all(math.isfinite(value) for value in values)):
+            continue
+        rows.append({
+            "deal_id": deal_id,
+            "deal_title": str(source.get("dealTitle") or f"Сделка №{deal_id}")[:500],
+            "bank_confirmed": round(bank_confirmed, 2),
+            "manual_confirmed": round(manual_confirmed, 2),
+            "contractor_applied": round(contractor_applied, 2),
+            "clean_revenue": round(clean_revenue, 2),
+        })
+    return sorted(rows, key=lambda row: (row["deal_title"], row["deal_id"]))
+
+
+async def enrich_clean_revenue_deal_rows(month: str, rows: list[dict]) -> list[dict]:
+    """Attach the dashboard's exact sales-group classification to ledger rows."""
+    if not rows:
+        return []
+    month_start, _, _, _ = month_bounds(month, settings.timezone)
+    deal_ids = list(dict.fromkeys(row["deal_id"] for row in rows))
+    try:
+        meta = await client.meta()
+        raw_deals = []
+        for offset in range(0, len(deal_ids), 50):
+            raw_deals.extend(await client.deal_list({"@ID": deal_ids[offset:offset + 50]}, DEAL_SELECT) or [])
+        deals = {str(deal.get("ID") or ""): deal for deal in raw_deals}
+    except Exception:
+        # Financial values stay valid even if the CRM lookup is briefly down;
+        # the browser will show them as not yet classified instead of guessing.
+        deals = {}
+        meta = {}
+
+    enriched = []
+    for row in rows:
+        deal = deals.get(row["deal_id"]) or {}
+        created = parse_dt(deal.get("DATE_CREATE"), month_start.tzinfo)
+        category_id = int(deal.get("CATEGORY_ID") or 0) if deal else None
+        source = source_name(meta, deal) if deal else ""
+        client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, deal.get(F_DEAL_CLIENT_TYPE)) if deal else ""
+        group = sales_block(client_type, source) if category_id == 0 else "Не распределено"
+        period_type = "current" if created and month_start <= created else "previous"
+        enriched.append({
+            **row,
+            "group": group if deal else "Не распределено",
+            "period_type": period_type,
+            "manager": user_name(meta, deal.get("ASSIGNED_BY_ID")) if deal else "",
+            "source": source,
+            "client_type": client_type or "Не указан",
+        })
+    return enriched
+
+
 async def load_clean_revenue(month: str):
     """Fetch the single financial source of truth without exposing it to the browser."""
     if not settings.clean_revenue_url or not settings.clean_revenue_token:
@@ -276,6 +342,7 @@ async def load_clean_revenue(month: str):
         contractor_amount = float(payload.get("contractorAmount"))
         if not payload.get("ok") or not math.isfinite(value) or not math.isfinite(contractor_amount):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
+        deal_revenue_rows = await enrich_clean_revenue_deal_rows(month, clean_revenue_deal_rows(payload))
         result = {
             "status": "online",
             "value": round(value, 2),
@@ -290,6 +357,10 @@ async def load_clean_revenue(month: str):
             "generated_at": str(payload.get("generatedAt") or ""),
             "overdue_schedule_available": isinstance(payload.get("overdueScheduleRows"), list),
             "overdue_schedule_rows": clean_revenue_overdue_rows(payload),
+            "deal_revenue_available": isinstance(payload.get("dealRevenueRows"), list),
+            # Exact schedule-ledger net revenue, connected to the deal and
+            # classified by the same rules as the sales dashboard.
+            "deal_revenue_rows": deal_revenue_rows,
         }
         clean_revenue_cache[month] = result
         clean_revenue_cache_time[month] = time.monotonic()

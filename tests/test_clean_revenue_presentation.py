@@ -20,6 +20,32 @@ class CleanRevenuePresentationTests(unittest.TestCase):
             "url": "https://portal.bitrix24.by/crm/deal/details/44/",
         }])
 
+    def test_deal_linked_finance_is_classified_without_proportional_allocation(self):
+        payload = {"dealRevenueRows": [{
+            "dealId": "44", "dealTitle": "Сделка партнёра", "bankConfirmed": 1200,
+            "manualConfirmed": 0, "contractorApplied": 200, "cleanRevenue": 1000,
+        }]}
+        rows = main.clean_revenue_deal_rows(payload)
+        meta = {
+            "users": {"7": "Ирина"},
+            "sources": {"22": "Партнёрка Белтехэкспертиза"},
+            "enums": {main.F_DEAL_CLIENT_TYPE: {"1": "Новый клиент"}},
+        }
+        deal = {
+            "ID": "44", "CATEGORY_ID": 0, "DATE_CREATE": "2026-09-11T10:00:00+03:00",
+            "SOURCE_ID": "22", main.F_DEAL_CLIENT_TYPE: "1", "ASSIGNED_BY_ID": "7",
+        }
+        with (
+            patch.object(main.client, "meta", new=AsyncMock(return_value=meta)),
+            patch.object(main.client, "deal_list", new=AsyncMock(return_value=[deal])),
+        ):
+            enriched = asyncio.run(main.enrich_clean_revenue_deal_rows("2026-09", rows))
+
+        self.assertEqual(enriched[0]["clean_revenue"], 1000.0)
+        self.assertEqual(enriched[0]["group"], "Холодные продажи")
+        self.assertEqual(enriched[0]["period_type"], "current")
+        self.assertEqual(enriched[0]["manager"], "Ирина")
+
     def test_operational_snapshot_derives_confirmed_incoming_from_finance_ledger(self):
         snap = {
             "sales": {
