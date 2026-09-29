@@ -770,7 +770,7 @@ const RNP_METRIC_LOGIC={
   lead_to_sale_rate:"Продажи из сделок, созданных из лидов периода ÷ все лиды периода.",
   qualified_to_sale_rate:"Продажи из сделок, созданных из квалифицированных лидов периода ÷ квалифицированные лиды периода.",
   average_check:"Выручка успешных продаж ÷ количество успешных продаж в соответствующей колонке.",
-  sales_amount:"Сумма успешных сделок по дате их закрытия в соответствующей колонке. План сравнивается с итогом.",
+  sales_amount:"Сумма успешных сделок CRM по дате их закрытия в соответствующей колонке. В блоках продаж финансовый итог распределяется из чистой выручки пропорционально этим CRM-суммам.",
 };
 const RNP_CONVERSION_LOGIC="Отчётный период: продажи из сделок, созданных в периоде ÷ эти сделки. Итого: все успешные продажи периода вместе с хвостом ÷ все сделки периода вместе с хвостом.";
 
@@ -816,12 +816,23 @@ function rnpCombinedMetric(key,current,previous,total){
   if(isAdditiveMetric(key))return Number(current||0)+Number(previous||0);
   return Number(total||0);
 }
+function allocateCleanRevenue(crmAmount,crmTotal,cleanRevenue){
+  const amount=Number(crmAmount||0),total=Number(crmTotal||0),revenue=Number(cleanRevenue);
+  return Number.isFinite(revenue)&&total>0?amount/total*revenue:null;
+}
+function rnpAllocatedRevenue(g){
+  const c=g?.current?.metrics||{},p=g?.previous?.metrics||{};
+  const crmTotal=Number(state?.sales?.overall?.total?.metrics?.sales_amount||0);
+  const cleanRevenue=financeValue("value");
+  const current=allocateCleanRevenue(c.sales_amount,crmTotal,cleanRevenue);
+  const previous=allocateCleanRevenue(p.sales_amount,crmTotal,cleanRevenue);
+  return {current,previous,total:current===null||previous===null?null:current+previous};
+}
+function optionalMoney(value){return value===null?"—":money(value)}
 function rnpMetricDetailRow({label,current,previous,total,plan,logic,showPlan=true}){
   return `<details class="rnp-metric-details"><summary class="rnp-month-row"><span class="rnp-metric-label">${esc(label)}<small>Как считаем</small></span><span>${current}</span><span>${previous}</span><strong>${total}</strong>${showPlan?`<span>${plan||"—"}</span>`:""}</summary><div class="rnp-metric-logic">${esc(logic)}</div></details>`;
 }
 function rnpTotalDealToSaleRate(c,p,t){
-  const stored=t?.total_deal_to_sale_rate;
-  if(stored!==undefined&&stored!==null&&stored!=="")return Number(stored);
   const deals=Number(c.deals||0)+Number(p.deals||0);
   return deals?(Number(c.sales||0)+Number(p.sales||0))/deals*100:0;
 }
@@ -849,18 +860,21 @@ function rnpConversionRows(c,p,t,{showPlan=true}={}){
 }
 function rnpMonthlyTable(cfg,g,{showPlan=true}={}){
   const c=g?.current?.metrics||{},p=g?.previous?.metrics||{},t=g?.total?.metrics||{};
+  const allocatedRevenue=rnpAllocatedRevenue(g);
   return `<div class="rnp-month-table${showPlan?"":" no-plan"}">
     <div class="rnp-month-head"><span>Показатель</span><span>Отчётный период</span><span>Хвост</span><span>Итого</span>${showPlan?"<span>План / выполнение</span>":""}</div>
     ${cfg.metrics.filter(([k])=>k!=="deal_to_sale_rate").map(([k,label,type])=>{
-      const plan=showPlan?getPlan("sales",k,"source_group",cfg.key):0, total=rnpCombinedMetric(k,c[k],p[k],t[k]);
+      const isRevenue=k==="sales_amount";
+      const plan=showPlan?getPlan("sales",k,"source_group",cfg.key):0;
+      const current=isRevenue?allocatedRevenue.current:c[k],previous=isRevenue?allocatedRevenue.previous:p[k],total=isRevenue?allocatedRevenue.total:rnpCombinedMetric(k,c[k],p[k],t[k]);
       const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(k);
       return rnpMetricDetailRow({
-        label,
-        current:format(c[k]||0,type),
-        previous:hasTail?format(p[k]||0,type):"—",
-        total:format(total,type),
-        plan:plan?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—",
-        logic:RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24.",
+        label:isRevenue?"Распределённая чистая выручка":label,
+        current:isRevenue?optionalMoney(current):format(current||0,type),
+        previous:hasTail?(isRevenue?optionalMoney(previous):format(previous||0,type)):"—",
+        total:isRevenue?optionalMoney(total):format(total,type),
+        plan:plan&&total!==null?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—",
+        logic:isRevenue?"Чистая выручка из «Графика платежей», распределённая между блоками пропорционально суммам закрытых сделок CRM. Итого трёх блоков равен чистой выручке месяца.":(RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24."),
         showPlan,
       });
     }).join("")}
@@ -924,6 +938,7 @@ function rnpClientTypeList(cfg){
 function rnpBlock(cfg){
   const g=rnpGroup(cfg.key)||{current:{metrics:{},weeks:{},days:{}},previous:{metrics:{}},total:{metrics:{}}};
   const c=g.current.metrics||{},p=g.previous.metrics||{},t=g.total.metrics||{};
+  const revenue=rnpAllocatedRevenue(g);
   const plan=getPlan("sales","sales_amount","source_group",cfg.key);
 
   return `<details class="rnp-block ${cfg.cls}">
@@ -940,24 +955,24 @@ function rnpBlock(cfg){
 
       <div class="rnp-result-strip rnp-summary-strip">
         <div>
-          <span>Отчётный период</span>
-          <strong>${money(c.sales_amount||0)}</strong>
+          <span>Чистая выручка периода</span>
+          <strong>${optionalMoney(revenue.current)}</strong>
           <small>${fmt(c.sales||0)} продаж</small>
         </div>
         <div>
-          <span>Предыдущий период / хвост</span>
-          <strong>${money(p.sales_amount||0)}</strong>
+          <span>Чистая выручка / хвост</span>
+          <strong>${optionalMoney(revenue.previous)}</strong>
           <small>${fmt(p.sales||0)} продаж</small>
         </div>
         <div class="rnp-total">
-          <span>Итого продажи месяца</span>
-          <strong>${money(t.sales_amount||0)}</strong>
+          <span>Итого чистая выручка</span>
+          <strong>${optionalMoney(revenue.total)}</strong>
           <small>${fmt(t.sales||0)} продаж</small>
         </div>
         <div>
-          <span>План выручки</span>
+          <span>План чистой выручки</span>
           <strong>${plan?money(plan):"—"}</strong>
-          <small>${plan?pct((t.sales_amount||0)/plan*100):"не заполнен"}</small>
+          <small>${plan&&revenue.total!==null?pct(revenue.total/plan*100):"не заполнен"}</small>
         </div>
       </div>
     </summary>

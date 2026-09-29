@@ -6,6 +6,8 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8");
 const match = source.match(/function preserveSalesDetails\(previous,nextSales,key\)\{[\s\S]*?\n\}(?=\nfunction salesDetailsNeedRefresh)/);
 const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,snapshotUpdatedAt\)\{[\s\S]*?\n\}/);
+const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
+const allocationMatch = source.match(/function allocateCleanRevenue\(crmAmount,crmTotal,cleanRevenue\)\{[\s\S]*?\n\}/);
 
 test("loaded sales details are refreshed when the snapshot revision changes", () => {
   assert.ok(freshnessMatch, "salesDetailsNeedRefresh must exist");
@@ -15,6 +17,23 @@ test("loaded sales details are refreshed when the snapshot revision changes", ()
   assert.equal(context.salesDetailsNeedRefresh({ details_loaded: true, details_revision: "old" }, "new"), true);
   assert.equal(context.salesDetailsNeedRefresh({ details_loaded: true, details_revision: "new" }, "new"), false);
   assert.equal(context.salesDetailsNeedRefresh({ details_loaded: false }, "new"), false);
+});
+
+test("total conversion with tail is calculated from the two visible cohorts", () => {
+  assert.ok(totalConversionMatch, "rnpTotalDealToSaleRate must exist");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`${totalConversionMatch[0]};globalThis.rnpTotalDealToSaleRate=rnpTotalDealToSaleRate;`, context);
+  assert.ok(Math.abs(context.rnpTotalDealToSaleRate({ deals: 96, sales: 24 }, { deals: 96, sales: 10 }, { total_deal_to_sale_rate: 0 }) - (34 / 192 * 100)) < 1e-9);
+});
+
+test("clean revenue allocation preserves the financial total", () => {
+  assert.ok(allocationMatch, "allocateCleanRevenue must exist");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`${allocationMatch[0]};globalThis.allocateCleanRevenue=allocateCleanRevenue;`, context);
+  const values = [5590, 40340, 69565].map(value => context.allocateCleanRevenue(value, 115495, 94360));
+  assert.equal(values.reduce((total, value) => total + value, 0), 94360);
 });
 
 test("a compact background snapshot retains the loaded sales detail for its period", () => {
