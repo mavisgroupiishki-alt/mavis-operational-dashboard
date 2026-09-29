@@ -8,6 +8,7 @@ const match = source.match(/function preserveSalesDetails\(previous,nextSales,ke
 const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,snapshotUpdatedAt\)\{[\s\S]*?\n\}/);
 const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
 const cleanRevenueMatch = source.match(/function rnpCleanRevenue\(filter=\{\}\)\{[\s\S]*?\n\}/);
+const managerTableMatch = source.match(/function salesOperationalManagerTable\(\)\{[\s\S]*?\n\}/);
 
 test("loaded sales details are refreshed when the snapshot revision changes", () => {
   assert.ok(freshnessMatch, "salesDetailsNeedRefresh must exist");
@@ -44,6 +45,23 @@ test("clean revenue is summed from the linked payment-schedule deals, not alloca
     JSON.parse(JSON.stringify(context.rnpCleanRevenue({ group: "Холодные продажи" }))),
     { current: 890, previous: 4700, total: 5590 },
   );
+});
+
+test("manager table renders when there are sales outside the selected team", () => {
+  assert.ok(managerTableMatch, "salesOperationalManagerTable must exist");
+  const context = {
+    state: { sales: { overall: { total: { metrics: { deals: 3, sales: 2, sales_amount: 300 } } } } },
+    managers: () => [{ name: "Ирина", total: { metrics: { deals: 1, sales: 1, sales_amount: 100 } } }],
+    managerCleanRevenue: () => 80,
+    otherManagersCleanRevenue: () => 160,
+    esc: x => x,
+    tdLink: x => String(x),
+    fmt: x => String(x),
+    money: x => String(x),
+  };
+  vm.createContext(context);
+  vm.runInContext(`${managerTableMatch[0]};globalThis.salesOperationalManagerTable=salesOperationalManagerTable;`, context);
+  assert.doesNotThrow(() => context.salesOperationalManagerTable());
 });
 
 test("a compact background snapshot retains the loaded sales detail for its period", () => {

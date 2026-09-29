@@ -509,6 +509,15 @@ function managerCleanRevenue(manager){
   return rnpCleanRevenue({manager}).total;
 }
 
+function otherManagersCleanRevenue(selectedManagers){
+  const finance=state?.clean_revenue||{};
+  if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return null;
+  const selected=new Set(selectedManagers);
+  return finance.deal_revenue_rows
+    .filter(row=>!selected.has(row.manager))
+    .reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
+}
+
 function salesOperationalManagerTable(){
   const overall=state.sales.overall.total.metrics;
   const team=managers();
@@ -522,8 +531,8 @@ function salesOperationalManagerTable(){
   const teamAmount=team.reduce((sum,manager)=>sum+Number(manager.total.metrics.sales_amount||0),0);
   const otherDeals=Math.max(0,Number(overall.deals||0)-teamDeals);
   const otherSales=Math.max(0,Number(overall.sales||0)-teamSales);
-  const otherAmount=Math.max(0,total-teamAmount);
-  const otherCleanRevenue=allocatedManagerCleanRevenue(otherAmount,total);
+  const otherAmount=Math.max(0,Number(overall.sales_amount||0)-teamAmount);
+  const otherCleanRevenue=otherManagersCleanRevenue(team.map(manager=>manager.name));
   const otherRow=(otherDeals||otherSales||otherAmount)?`<tr class="sales-manager-other"><td>Прочие / не назначены</td><td class="num">${fmt(otherDeals)}</td><td class="num">${fmt(otherSales)}</td><td class="num">${money(otherAmount)}</td><td class="num">${otherCleanRevenue===null?"—":money(otherCleanRevenue)}</td></tr>`:"";
   return `<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Сумма продаж CRM</th><th class="num">Чистая выручка*</th></tr></thead><tbody>${rows||"<tr><td colspan='5'>Нет выбранных менеджеров</td></tr>"}${otherRow}</tbody></table></div>`;
 }
