@@ -196,7 +196,9 @@ def build_task_workspace(
                 reminder_kind = "soon"
         def person_payload(person_id: str) -> dict[str, Any]:
             person = people.get(person_id) or {"id": person_id, "name": "Сотрудник", "active": False}
-            return {"id": person_id, "name": str(person.get("name") or "Сотрудник"), "active": bool(person.get("active")), "dismissed": not bool(person.get("active")) and not bool(person.get("legacy"))}
+            name = str(person.get("name") or "Сотрудник")
+            role = str(person.get("role") or "").strip()
+            return {"id": person_id, "name": name, "role": role, "label": role or name, "active": bool(person.get("active")), "dismissed": not bool(person.get("active")) and not bool(person.get("legacy"))}
         out.append({
             "id": str(row.get("id") or ""),
             "title": str(row.get("title") or "Без названия"),
@@ -220,36 +222,42 @@ def build_task_workspace(
             "recurrence": recurrence,
             "recurrence_label": {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}[recurrence],
             "backlog": status == "backlog",
+            "archived": bool(row.get("archived_at")),
+            "archived_at": str(row.get("archived_at") or ""),
         })
     out.sort(key=lambda item: (item["status"] == "done", not item["is_overdue"], item["deadline"] or "9999-12-31", item["title"].casefold()))
     project_summaries = []
     for project in projects:
         project_id = str(project.get("id") or "")
         rows = [task for task in out if task["project_id"] == project_id]
+        active_rows = [task for task in rows if not task["archived"]]
         project_summaries.append({
             "id": project_id,
             "name": str(project.get("name") or "Без проекта"),
             "archived": bool(project.get("archived")),
-            "active_count": sum(task["status"] != "done" for task in rows),
-            "backlog_count": sum(task["status"] == "backlog" for task in rows),
-            "overdue_count": sum(bool(task["is_overdue"]) for task in rows),
-            "done_count": sum(task["status"] == "done" for task in rows),
+            "active_count": sum(task["status"] != "done" for task in active_rows),
+            "backlog_count": sum(task["status"] == "backlog" for task in active_rows),
+            "overdue_count": sum(bool(task["is_overdue"]) for task in active_rows),
+            "done_count": sum(task["status"] == "done" for task in active_rows),
+            "archived_count": len(rows) - len(active_rows),
         })
     unassigned = [task for task in out if not task["project_id"] or task["project_id"] not in projects_by_id]
     if unassigned:
+        active_unassigned = [task for task in unassigned if not task["archived"]]
         project_summaries.append({
             "id": "",
             "name": "Без проекта",
             "archived": False,
-            "active_count": sum(task["status"] != "done" for task in unassigned),
-            "backlog_count": sum(task["status"] == "backlog" for task in unassigned),
-            "overdue_count": sum(bool(task["is_overdue"]) for task in unassigned),
-            "done_count": sum(task["status"] == "done" for task in unassigned),
+            "active_count": sum(task["status"] != "done" for task in active_unassigned),
+            "backlog_count": sum(task["status"] == "backlog" for task in active_unassigned),
+            "overdue_count": sum(bool(task["is_overdue"]) for task in active_unassigned),
+            "done_count": sum(task["status"] == "done" for task in active_unassigned),
+            "archived_count": len(unassigned) - len(active_unassigned),
         })
     workload = []
     for profile in profile_rows:
         profile_id = str(profile.get("id") or "")
-        assigned = [task for task in out if any(person.get("id") == profile_id for person in task["executors"])]
+        assigned = [task for task in out if not task["archived"] and any(person.get("id") == profile_id for person in task["executors"])]
         planned_this_week = [
             task for task in assigned
             if task["status"] not in {"backlog", "done"}
@@ -265,6 +273,8 @@ def build_task_workspace(
         workload.append({
             "id": profile_id,
             "name": str(profile.get("name") or "Сотрудник"),
+            "role": str(profile.get("role") or "").strip(),
+            "label": str(profile.get("role") or profile.get("name") or "Сотрудник"),
             "active": bool(profile.get("active")),
             "open_count": sum(task["status"] != "done" for task in assigned),
             "overdue_count": sum(bool(task["is_overdue"]) for task in assigned),
@@ -273,8 +283,12 @@ def build_task_workspace(
             "week_planned_task_count": len(planned_this_week),
             "week_actual_hours": round(sum(task["actual_hours"] for task in completed_this_week), 2),
             "week_done_task_count": len(completed_this_week),
+            "project_counts": [
+                {"project_id": str(project.get("id") or ""), "project_name": str(project.get("name") or "Без проекта"), "count": sum(task["project_id"] == str(project.get("id") or "") for task in assigned)}
+                for project in project_summaries if sum(task["project_id"] == str(project.get("id") or "") for task in assigned)
+            ],
         })
-    reminder_items = [task for task in out if task["reminder_kind"]]
+    reminder_items = [task for task in out if not task["archived"] and task["reminder_kind"]]
     reminder_rank = {"overdue": 0, "today": 1, "soon": 2}
     reminder_items.sort(key=lambda task: (reminder_rank[task["reminder_kind"]], task["deadline"], task["title"].casefold()))
     return {

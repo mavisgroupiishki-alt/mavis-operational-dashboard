@@ -36,6 +36,27 @@ class TaskProjectHubStorageTests(unittest.TestCase):
                 "project_id": self.project["id"], "priority": "high",
             })
 
+    def test_task_without_project_and_archived_task_are_preserved(self):
+        task = self.storage.add_workspace_task({
+            "title": "Общая задача", "description": "Не относится к проекту",
+            "responsible_id": self.profile["id"], "executor_ids": [self.profile["id"]],
+            "priority": "normal", "deadline": "2026-09-28",
+        })
+        archived = self.storage.update_workspace_task(task["id"], {"archived": True})
+        self.assertTrue(archived["archived_at"])
+        restored = self.storage.update_workspace_task(task["id"], {"archived": False})
+        self.assertEqual(restored["archived_at"], "")
+
+    def test_task_profile_keeps_role_for_workspace_labels(self):
+        profile = self.storage.add_task_profile("Ирина", "РОП")
+        updated = self.storage.update_task_profile(profile["id"], role="РЭКС")
+
+        self.assertEqual(updated["role"], "РЭКС")
+        self.assertEqual(
+            next(row for row in self.storage.task_profiles() if row["id"] == profile["id"])["role"],
+            "РЭКС",
+        )
+
     def test_templates_persist_and_can_be_deleted(self):
         template = self.storage.add_task_template({
             "name": "Еженедельный отчёт", "title": "Подготовить отчёт",
@@ -105,6 +126,20 @@ class TaskProjectHubPresentationTests(unittest.TestCase):
         self.assertEqual(summary["overdue_count"], 1)
         self.assertEqual(result["workload"][0]["open_count"], 2)
         self.assertTrue(next(row for row in result["tasks"] if row["id"] == "b")["backlog"])
+
+    def test_workspace_uses_role_labels_and_excludes_archived_from_load(self):
+        result = build_task_workspace(
+            [
+                {"id": "active", "title": "Работа", "responsible_id": "lead", "executor_ids": ["lead"], "project_id": "launch", "status": "new"},
+                {"id": "archived", "title": "Архив", "responsible_id": "lead", "executor_ids": ["lead"], "status": "new", "archived_at": "2026-09-20T10:00:00+03:00"},
+            ],
+            [{"id": "lead", "name": "Таня", "role": "РОП", "active": True}], [{"id": "launch", "name": "Запуск", "archived": False}], [], NOW, "Europe/Minsk",
+        )
+
+        self.assertEqual(result["tasks"][0]["responsible"]["label"], "РОП")
+        self.assertEqual(result["workload"][0]["label"], "РОП")
+        self.assertEqual(result["workload"][0]["open_count"], 1)
+        self.assertEqual(result["project_summaries"][0]["active_count"], 1)
 
     def test_legacy_backlog_is_shown_as_a_separate_stage(self):
         result = build_task_workspace(

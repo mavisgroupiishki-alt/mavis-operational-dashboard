@@ -66,6 +66,8 @@ class FakeStorage:
         for row in self.rows:
             if row["id"] == task_id:
                 row.update(values)
+                if "archived" in values:
+                    row["archived_at"] = "2026-09-29T10:00:00+00:00" if values["archived"] else ""
                 return row
         return None
 
@@ -124,6 +126,18 @@ class ManualKeyTaskApiTests(unittest.TestCase):
                 title="Идея", description="Проверить позже", project_id="project-1", responsible_id="profile-7", executor_ids=["profile-7"], backlog=True
             )))
         self.assertTrue(created["task"]["backlog"])
+
+    def test_api_allows_task_without_project_and_archives_it(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            created = asyncio.run(main.add_key_task(main.KeyTaskBody(
+                title="Общая задача", description="Без проекта", responsible_id="profile-7",
+                executor_ids=["profile-7"], deadline="2026-09-29",
+            )))
+            archived = asyncio.run(main.patch_key_task(created["task"]["id"], main.KeyTaskPatchBody(archived=True)))
+
+        self.assertEqual(created["task"]["project_id"], "")
+        self.assertTrue(archived["task"]["archived_at"])
 
     def test_saved_view_is_owned_by_selected_profile(self):
         storage = FakeStorage()

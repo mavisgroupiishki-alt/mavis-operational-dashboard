@@ -1485,6 +1485,7 @@ class KeyTaskPatchBody(BaseModel):
     backlog: bool | None = None
     planned_hours: float | None = None
     actual_hours: float | None = None
+    archived: bool | None = None
     changed_by_profile_id: str = ""
 
 class TaskCommentBody(BaseModel):
@@ -1493,6 +1494,11 @@ class TaskCommentBody(BaseModel):
 
 class TaskProfileBody(BaseModel):
     name: str
+    role: str = ""
+
+class TaskProfilePatchBody(BaseModel):
+    name: str | None = None
+    role: str | None = None
 
 class TaskProjectBody(BaseModel):
     name: str
@@ -1544,7 +1550,7 @@ def _active_task_profile(profile_id: str, required: bool = True):
 
 
 def _task_change_events(before: dict, after: dict, profiles: list[dict], projects: list[dict]):
-    names = {str(row.get("id") or ""): str(row.get("name") or "Сотрудник") for row in profiles}
+    names = {str(row.get("id") or ""): str(row.get("role") or row.get("name") or "Сотрудник") for row in profiles}
     project_names = {str(row.get("id") or ""): str(row.get("name") or "Без проекта") for row in projects}
     status_names = {
         "backlog": "Бэклог", "new": "Новая", "planned": "Запланирована", "in_progress": "В работе",
@@ -1575,6 +1581,8 @@ def _task_change_events(before: dict, after: dict, profiles: list[dict], project
         events.append(f"План трудозатрат: {after.get('planned_hours') or 0:g} ч")
     if float(before.get("actual_hours") or 0) != float(after.get("actual_hours") or 0):
         events.append(f"Факт трудозатрат: {after.get('actual_hours') or 0:g} ч")
+    if bool(before.get("archived_at")) != bool(after.get("archived_at")):
+        events.append("Задача перенесена в архив" if after.get("archived_at") else "Задача возвращена из архива")
     return events
 
 @app.get('/api/team')
@@ -1635,7 +1643,7 @@ async def get_key_tasks():
 async def add_key_task(body: KeyTaskBody):
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
     active_projects = {row["id"] for row in storage.task_projects() if not row.get("archived")}
-    if not body.project_id or body.project_id not in active_projects:
+    if body.project_id and body.project_id not in active_projects:
         raise HTTPException(400, 'Выберите активный проект')
     if not str(body.description or '').strip():
         raise HTTPException(400, 'Добавьте описание задачи')
@@ -1663,6 +1671,9 @@ async def patch_key_task(task_id: str, body: KeyTaskPatchBody):
     values = body.model_dump(exclude_none=True)
     changed_by_profile_id = str(values.pop("changed_by_profile_id", "") or "")
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
+    active_projects = {row["id"] for row in storage.task_projects() if not row.get("archived")}
+    if values.get("project_id") and values["project_id"] not in active_projects:
+        raise HTTPException(400, 'Выберите активный проект')
     if values.get("responsible_id") and values["responsible_id"] not in active_profiles:
         raise HTTPException(400, 'Выберите активный рабочий профиль')
     if any(value not in active_profiles for value in values.get("executor_ids") or []):
@@ -1725,9 +1736,21 @@ async def delete_key_task(task_id: str):
 @app.post('/api/key-tasks/profiles')
 async def add_task_profile(body: TaskProfileBody):
     try:
-        profile = storage.add_task_profile(body.name)
+        profile = storage.add_task_profile(body.name, body.role)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "profile": profile}
+
+
+@app.patch('/api/key-tasks/profiles/{profile_id}')
+async def patch_task_profile(profile_id: str, body: TaskProfilePatchBody):
+    try:
+        profile = storage.update_task_profile(profile_id, body.name, body.role)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not profile:
+        raise HTTPException(404, 'Сотрудник не найден')
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "profile": profile}
 

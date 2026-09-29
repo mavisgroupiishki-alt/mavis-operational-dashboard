@@ -414,31 +414,56 @@ class Storage:
             out.append({
                 "id": profile_id,
                 "name": name[:120],
+                "role": str(row.get("role") or "").strip()[:120],
                 "active": bool(row.get("active", True)),
                 "created_at": str(row.get("created_at") or ""),
                 "deleted_at": str(row.get("deleted_at") or ""),
             })
         return out
 
-    def add_task_profile(self, name):
+    def add_task_profile(self, name, role=""):
         name = str(name or "").strip()
+        role = str(role or "").strip()
         if not name:
             raise ValueError("Укажите имя сотрудника")
         if len(name) > 120:
             raise ValueError("Имя не должно быть длиннее 120 символов")
+        if len(role) > 120:
+            raise ValueError("Роль не должна быть длиннее 120 символов")
         profiles = self.task_profiles()
         current = next((row for row in profiles if row["name"].casefold() == name.casefold()), None)
         if current:
             if not current["active"]:
                 current["active"] = True
                 current["deleted_at"] = ""
-                self._set("task_workspace_profiles", profiles)
+            if role:
+                current["role"] = role
+            self._set("task_workspace_profiles", profiles)
             return current
         profile = {"id": f"task-profile-{uuid.uuid4().hex}", "name": name, "active": True,
-                   "created_at": datetime.now(timezone.utc).isoformat(), "deleted_at": ""}
+                   "role": role, "created_at": datetime.now(timezone.utc).isoformat(), "deleted_at": ""}
         profiles.append(profile)
         self._set("task_workspace_profiles", profiles)
         return profile
+
+    def update_task_profile(self, profile_id, name=None, role=None):
+        profile_id = str(profile_id or "").strip()
+        profiles, found = self.task_profiles(), None
+        for row in profiles:
+            if row["id"] != profile_id:
+                continue
+            if name is not None:
+                normalized_name = str(name or "").strip()
+                if not normalized_name:
+                    raise ValueError("Укажите имя сотрудника")
+                row["name"] = normalized_name[:120]
+            if role is not None:
+                row["role"] = str(role or "").strip()[:120]
+            found = row
+            break
+        if found:
+            self._set("task_workspace_profiles", profiles)
+        return found
 
     def deactivate_task_profile(self, profile_id):
         profile_id = str(profile_id or "").strip()
@@ -647,6 +672,7 @@ class Storage:
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
                 "backlog": status == "backlog",
+                "archived_at": str(row.get("archived_at") or ""),
                 "legacy_responsible_name": legacy_names.get(responsible_id, ""),
                 "profile_exists": responsible_id in profiles,
             })
@@ -662,8 +688,6 @@ class Storage:
         backlog = bool(values.get("backlog")) or str(values.get("status") or "") == "backlog"
         if not title:
             raise ValueError("Укажите название задачи")
-        if not project_id:
-            raise ValueError("Выберите проект")
         if not responsible_id:
             raise ValueError("Выберите ответственного")
         if not executor_ids:
@@ -699,6 +723,7 @@ class Storage:
                     "recurrence": str(values.get("recurrence") or "none"),
                     "recurrence_spawned_at": "",
                     "backlog": values["status"] == "backlog",
+                    "archived_at": "",
                 })
                 task = item
                 break
@@ -708,7 +733,7 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours", "archived"}
         for row in tasks:
             if row["id"] != task_id:
                 continue
@@ -760,6 +785,8 @@ class Storage:
                     row[key] = task_hours(value, "План", strict=True)
                 elif key == "actual_hours":
                     row[key] = task_hours(value, "Факт", strict=True)
+                elif key == "archived":
+                    row["archived_at"] = datetime.now(timezone.utc).isoformat() if bool(value) else ""
                 else:
                     row[key] = str(value or "").strip()
             if previous_status != "done" and row.get("status") == "done" and task_hours(row.get("actual_hours"), "Факт") <= 0:
