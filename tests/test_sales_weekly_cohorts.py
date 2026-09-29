@@ -78,6 +78,41 @@ class SalesWeeklyCohortTests(unittest.TestCase):
         self.assertEqual(days["deal_to_sale_rate"][9], 100)
         self.assertEqual(days["lead_to_sale_rate"][9], 100)
 
+    def test_sales_flow_exposes_tail_separately_from_creation_cohort(self):
+        records = {
+            "leads": [],
+            "deals": [
+                # Created in week 1 but sold in week 2: it is a conversion
+                # of the first week's cohort, not a week-2 created sale.
+                deal("current", 2, sold=True, close_day=10),
+                # A historical deal sold in week 2 must be visible as tail,
+                # without inflating the current creation cohort.
+                deal("tail", 20, sold=True, close_day=10, previous=True),
+            ],
+        }
+
+        result = aggregate_sales(records, "total", month_start=MONTH_START)
+
+        self.assertEqual(result["metrics"]["deal_to_sale_rate"], 100)
+        self.assertEqual(result["metrics"]["tail_deal_to_sale_rate"], 100)
+        self.assertEqual(result["metrics"]["total_deal_to_sale_rate"], 100)
+        self.assertEqual(result["weeks"]["cohort_sales"][0], 1)
+        self.assertEqual(result["weeks"]["tail_sales"][1], 1)
+        self.assertEqual(result["weeks"]["sales"][1], 2)
+
+    def test_client_type_breakdown_keeps_its_own_tail(self):
+        current = deal("new", 2, sold=True, close_day=10)
+        current["client_type"] = "Новый"
+        tail = deal("repeat", 20, sold=True, close_day=10, previous=True)
+        tail["client_type"] = "Повторный"
+        records = {"leads": [], "deals": [current, tail]}
+
+        result = aggregate_sales(records, "total", client_type="Повторный", month_start=MONTH_START)
+
+        self.assertEqual(result["metrics"]["sales"], 1)
+        self.assertEqual(result["metrics"]["tail_sales"], 1)
+        self.assertEqual(result["metrics"]["cohort_sales"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

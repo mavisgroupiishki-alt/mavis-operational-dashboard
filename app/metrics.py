@@ -62,7 +62,7 @@ SALES_METRICS = [
     "leads", "qualified", "qualified_rate", "lead_to_deal_rate",
     "lead_to_sale_rate", "qualified_to_sale_rate",
     "deals", "lost_deals", "deal_amount",
-    "sales", "sales_amount", "average_check", "deal_to_sale_rate", "products_per_deal",
+    "sales", "sales_amount", "average_check", "deal_to_sale_rate", "tail_deal_to_sale_rate", "total_deal_to_sale_rate", "products_per_deal",
     "products", "product_amount", "sold_products", "sold_product_amount", "average_product_check",
     "product_sale_rate", "paid_amount", "net_revenue"
 ]
@@ -468,7 +468,7 @@ def make_lead_url(portal: str, lead_id: Any) -> str:
 
 
 def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total", manager=None, group=None,
-                    source=None, product_cat=None, month_start=None) -> Dict[str, Any]:
+                    source=None, client_type=None, product_cat=None, month_start=None) -> Dict[str, Any]:
     """Aggregate OP metrics for one selected month.
 
     Main dashboard semantics (period_type='total'):
@@ -491,6 +491,8 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         if group and r.get("group") != group:
             return False
         if source and r.get("source") != source:
+            return False
+        if client_type and r.get("client_type") != client_type:
             return False
         return True
 
@@ -521,6 +523,8 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
 
     sales_rows = [r for r in sales_universe if is_success_sale_record(r)]
     cohort_sales_rows = [r for r in current_deals if is_success_sale_record(r)]
+    tail_sales_rows = [r for r in previous_deals if is_success_sale_record(r)]
+    all_deals = current_deals + previous_deals
 
     products = []
     for d in deal_rows:
@@ -549,6 +553,10 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     cohort_sold_qty = sum(pr["quantity"] for pr in cohort_sold_products)
     lost_rows = [r for r in deal_rows if r.get("lost_in_report_month")]
 
+    cohort_deal_to_sale_rate = pct(len(cohort_sales_rows), len(current_deals))
+    tail_deal_to_sale_rate = pct(len(tail_sales_rows), len(previous_deals))
+    total_deal_to_sale_rate = pct(len(sales_rows), len(all_deals))
+
     m = {
         "leads": len(lead_rows),
         "qualified": len(qual_rows),
@@ -563,7 +571,14 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
         "sales_amount": sales_amount,
         "average_check": round(sales_amount / len(sales_rows), 2) if sales_rows else 0,
         # Cohort conversion: sales from deals created in the month / deals created in the month.
-        "deal_to_sale_rate": pct(len(cohort_sales_rows), len(current_deals)),
+        # This is intentionally independent from the old-deal tail.
+        "deal_to_sale_rate": tail_deal_to_sale_rate if period_type == "previous" else cohort_deal_to_sale_rate,
+        "tail_deal_to_sale_rate": tail_deal_to_sale_rate,
+        "total_deal_to_sale_rate": total_deal_to_sale_rate,
+        "cohort_sales": len(cohort_sales_rows),
+        "cohort_sales_amount": round(sum(r["amount"] for r in cohort_sales_rows), 2),
+        "tail_sales": len(tail_sales_rows),
+        "tail_sales_amount": round(sum(r["amount"] for r in tail_sales_rows), 2),
         "products_per_deal": round(product_qty / len(deal_rows), 2) if deal_rows else 0,
         "products": round(product_qty, 2),
         "product_amount": round(sum(pr["amount"] for pr in products), 2),
@@ -577,7 +592,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     }
 
     weeks = {k: [0, 0, 0, 0, 0] for k in [
-        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount", "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
     # Conversion is a creation-week cohort. Keep its numerator separately
     # from weekly sales flow: a deal from the earlier tail may be sold this
@@ -618,11 +633,19 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 weeks["sold_products"][w] += pr["quantity"]
                 weeks["sold_product_amount"][w] += pr["amount"]
 
+    for r in tail_sales_rows:
+        w = r.get("sale_week", -1)
+        if w >= 0:
+            weeks["tail_sales"][w] += 1
+            weeks["tail_sales_amount"][w] += r["amount"]
+
     for r in cohort_sales_rows:
         w = r.get("creation_week", -1)
         if w < 0:
             continue
         cohort_sales_by_creation_week[w] += 1
+        weeks["cohort_sales"][w] += 1
+        weeks["cohort_sales_amount"][w] += r["amount"]
         for pr in r.get("products", []):
             if product_cat and pr.get("category") != product_cat:
                 continue
@@ -642,7 +665,7 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
     # report-period/source/week views in the dashboard.
     day_count = calendar.monthrange(month_start.year, month_start.month)[1] if month_start else 31
     days_map = {k: [0 for _ in range(day_count)] for k in [
-        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount",
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount",
         "products", "product_amount", "sold_products", "sold_product_amount"
     ]}
     cohort_sales_by_creation_day = [0 for _ in range(day_count)]
@@ -690,11 +713,19 @@ def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total
                 days_map["sold_products"][di] += pr["quantity"]
                 days_map["sold_product_amount"][di] += pr["amount"]
 
+    for r in tail_sales_rows:
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["tail_sales"][di] += 1
+            days_map["tail_sales_amount"][di] += r["amount"]
+
     for r in cohort_sales_rows:
         di = _day_idx(r.get("created"))
         if di < 0:
             continue
         cohort_sales_by_creation_day[di] += 1
+        days_map["cohort_sales"][di] += 1
+        days_map["cohort_sales_amount"][di] += r["amount"]
         for pr in r.get("products", []):
             if product_cat and pr.get("category") != product_cat:
                 continue
@@ -905,6 +936,25 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
                 row[p] = aggregate_sales(rec, p, source=src_name, month_start=month_start)
             source_blocks.append(row)
 
+    client_type_blocks = []
+    for g in sales_blocks:
+        client_types = sorted({
+            r.get("client_type") or "Не указан"
+            for r in leads + deals
+            if r.get("group") == g
+        })
+        for client_type in client_types:
+            row = {"name": client_type, "group": g}
+            for p in ["total", "current", "previous"]:
+                row[p] = aggregate_sales(
+                    records,
+                    p,
+                    group=g,
+                    client_type=client_type,
+                    month_start=month_start,
+                )
+            client_type_blocks.append(row)
+
     managers = []
     for m in sorted({r["manager"] for r in leads + deals if r.get("manager")}):
         row = {"name": m}
@@ -969,7 +1019,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
     records["active"] = active_records
 
     return {
-        "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "managers": managers,
+        "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "client_type_blocks": client_type_blocks, "managers": managers,
         "available_sources": sorted({r.get("source") for r in leads + deals if r.get("source")}),
         "product_categories": product_categories, "product_managers": product_managers,
         "stages": stage_rows, "active_deals_count": len(active),
@@ -1781,7 +1831,19 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
         if day is not None:
             rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
         return rows
-    if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue"}:
+    if metric in {"cohort_sales", "cohort_sales_amount", "deal_to_sale_rate"}:
+        rows=[r for r in current_deals if is_success_sale_record(r)]
+        if week is not None: rows=[r for r in rows if r.get("creation_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
+        return rows
+    if metric in {"tail_sales", "tail_sales_amount", "tail_deal_to_sale_rate"}:
+        rows=[r for r in previous_deals if is_success_sale_record(r)]
+        if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
+        return rows
+    if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue","total_deal_to_sale_rate"}:
         rows=[r for r in sales_universe if is_success_sale_record(r)]
         if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
         if day is not None:

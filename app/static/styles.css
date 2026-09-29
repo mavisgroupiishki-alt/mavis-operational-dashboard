@@ -528,7 +528,7 @@ td{padding:11px 9px}
 .rnp-result-strip .rnp-total{background:var(--rnp-soft)}
 .rnp-month-table{padding:12px 13px}
 .rnp-month-head,.rnp-month-row{
-  display:grid;grid-template-columns:minmax(150px,1.8fr) .72fr .72fr .55fr;
+  display:grid;grid-template-columns:minmax(150px,1.7fr) .78fr .7fr .78fr 1.05fr;
   align-items:center;gap:5px
 }
 .rnp-month-head{

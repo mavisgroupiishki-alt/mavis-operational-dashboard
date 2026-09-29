@@ -68,7 +68,8 @@ const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
   lead_to_sale_rate:["Лид → продажа","pct"],qualified_to_sale_rate:["Квал. → продажа","pct"],
   deals:["Сделки","num"],lost_deals:["Слитые сделки","num"],deal_amount:["Сумма созданных сделок","money"],sales:["Продажи","num"],sales_amount:["Сумма продаж","money"],average_check:["Средний чек","money"],
-  deal_to_sale_rate:["Сделка → продажа","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
+  cohort_sales:["Продажи из созданных сделок","num"],tail_sales:["Продажи из хвоста","num"],
+  deal_to_sale_rate:["Сделка → продажа","pct"],tail_deal_to_sale_rate:["Конверсия хвоста","pct"],total_deal_to_sale_rate:["Конверсия с хвостом","pct"],products_per_deal:["Продуктов / сделку","num"],products:["Продукты в сделках","num"],product_amount:["Сумма продуктов в сделках","money"],
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
@@ -721,8 +722,9 @@ const RNP_GROUPS=[
       ["qualified","Число квал. лидов","num"],
       ["lead_to_deal_rate","% из квал. лида в сделку","pct"],
       ["deals","Число созданных сделок","num"],
-      ["sales","Число продаж в отчётном периоде","num"],
+      ["sales","Продажи, закрытые в периоде","num"],
       ["lead_to_sale_rate","% из лида в продажу","pct"],
+      ["deal_to_sale_rate","Конверсия созданных сделок в продажу","pct"],
       ["average_check","Средний чек","money"],
       ["sales_amount","Выручка","money"]
     ]
@@ -736,8 +738,9 @@ const RNP_GROUPS=[
       ["qualified","Число квал. лидов","num"],
       ["lead_to_deal_rate","% из квал. лида в сделку","pct"],
       ["deals","Число созданных сделок","num"],
-      ["sales","Число продаж в отчётном периоде","num"],
+      ["sales","Продажи, закрытые в периоде","num"],
       ["qualified_to_sale_rate","% из квал. лида в продажу","pct"],
+      ["deal_to_sale_rate","Конверсия созданных сделок в продажу","pct"],
       ["average_check","Средний чек","money"],
       ["sales_amount","Выручка","money"]
     ]
@@ -748,7 +751,7 @@ const RNP_GROUPS=[
     metrics:[
       ["deals","Число созданных сделок","num"],
       ["lost_deals","Число слитых сделок","num"],
-      ["sales","Число продаж в отчётном периоде","num"],
+      ["sales","Продажи, закрытые в периоде","num"],
       ["deal_to_sale_rate","Конверсия из созданной сделки в продажу","pct"],
       ["average_check","Средний чек","money"],
       ["sales_amount","Выручка","money"]
@@ -757,7 +760,7 @@ const RNP_GROUPS=[
 ];
 
 function rnpGroup(name){return (state.sales.groups||[]).find(x=>x.name===name)}
-function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","product_sale_rate"].includes(k)}
+function isPctMetric(k){return ["qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate","deal_to_sale_rate","tail_deal_to_sale_rate","total_deal_to_sale_rate","product_sale_rate"].includes(k)}
 function isAvgMetric(k){return ["average_check","average_product_check","products_per_deal"].includes(k)}
 function isAdditiveMetric(k){return !isPctMetric(k)&&!isAvgMetric(k)}
 
@@ -798,11 +801,31 @@ function rnpPlanCell(groupKey,metric,type,fact){
   const p=getPlan("sales",metric,"source_group",groupKey);
   return `<span>${p?format(p,type):"—"}</span><strong>${format(fact,type)}</strong><span>${p?pct(Number(fact||0)/p*100):"—"}</span>`;
 }
-function rnpMonthlyTable(cfg,g){
-  const m=g?.current?.metrics||{};
+function rnpCombinedMetric(key,current,previous,total){
+  if(isAdditiveMetric(key))return Number(current||0)+Number(previous||0);
+  return Number(total||0);
+}
+function rnpMetricFacts(key,type,c,p,t){
+  const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(key);
+  const total=rnpCombinedMetric(key,c[key],p[key],t[key]);
+  return `<span>${format(c[key]||0,type)}</span><span>${hasTail?format(p[key]||0,type):"—"}</span><strong>${format(total,type)}</strong>`;
+}
+function rnpConversionRows(c,p,t){
+  return [
+    ["Конверсия созданных сделок в продажу", format(c.deal_to_sale_rate||0,"pct"), "—", "—"],
+    ["Конверсия хвоста", "—", format(p.deal_to_sale_rate||0,"pct"), "—"],
+    ["Конверсия итого с хвостом", "—", "—", format(t.total_deal_to_sale_rate||0,"pct")]
+  ].map(([label,current,previous,total])=>`<div class="rnp-month-row rnp-conversion-row"><span>${label}</span><span>${current}</span><span>${previous}</span><strong>${total}</strong><span>—</span></div>`).join("");
+}
+function rnpMonthlyTable(cfg,g,{showPlan=true}={}){
+  const c=g?.current?.metrics||{},p=g?.previous?.metrics||{},t=g?.total?.metrics||{};
   return `<div class="rnp-month-table">
-    <div class="rnp-month-head"><span>Показатель</span><span>План</span><span>Факт</span><span>%</span></div>
-    ${cfg.metrics.map(([k,label,type])=>`<div class="rnp-month-row"><span>${esc(label)}</span>${rnpPlanCell(cfg.key,k,type,m[k]||0)}</div>`).join("")}
+    <div class="rnp-month-head"><span>Показатель</span><span>Отчётный период</span><span>Хвост</span><span>Итого</span><span>План / выполнение</span></div>
+    ${cfg.metrics.filter(([k])=>k!=="deal_to_sale_rate").map(([k,label,type])=>{
+      const plan=showPlan?getPlan("sales",k,"source_group",cfg.key):0, total=rnpCombinedMetric(k,c[k],p[k],t[k]);
+      return `<div class="rnp-month-row"><span>${esc(label)}</span>${rnpMetricFacts(k,type,c,p,t)}<span>${plan?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—"}</span></div>`;
+    }).join("")}
+    ${rnpConversionRows(c,p,t)}
   </div>`;
 }
 function rnpDailyTable(cfg,g,week,periodType="current",metrics=cfg.metrics){
@@ -816,8 +839,16 @@ function rnpDailyTable(cfg,g,week,periodType="current",metrics=cfg.metrics){
   return `<div class="scroll-x"><table class="rnp-daily-table"><thead><tr><th>Дата</th>${metrics.map(x=>`<th class="num">${esc(x[1])}</th>`).join("")}</tr></thead><tbody>${rows.join("")||`<tr><td colspan="${metrics.length+1}" class="empty-day">Нет движения</td></tr>`}</tbody></table></div>`;
 }
 function rnpWeekTable(cfg,g,periodType="current"){
-  const metrics=periodType==="previous"
-    ? [["sales","Продажи","num"],["sales_amount","Выручка","money"],["average_check","Средний чек","money"]]
+  const metrics=periodType==="total"
+    ? [
+      ...cfg.metrics.filter(([k])=>!["sales","sales_amount","average_check","deal_to_sale_rate"].includes(k)),
+      ["cohort_sales","Продажи из сделок, созданных на этой неделе","num"],
+      ["deal_to_sale_rate","Конверсия созданных сделок в продажу","pct"],
+      ["sales","Все продажи, закрытые на этой неделе","num"],
+      ["tail_sales","Из них продажи из хвоста","num"],
+      ["sales_amount","Выручка всех закрытий","money"],
+      ["average_check","Средний чек по всем закрытиям","money"]
+    ]
     : cfg.metrics;
   const weeks=g?.[periodType]?.weeks||{},ranges=rnpWeekRanges();
   return `<div class="rnp-weeks">${ranges.map(w=>{
@@ -828,7 +859,7 @@ function rnpWeekTable(cfg,g,periodType="current"){
           const fact=weeks[k]?.[w.index]||0,plan=periodType==="previous"?0:rnpWeekPlan(cfg.key,k,w.index);
           return `<div><span>${esc(label)}</span><strong>${format(fact,type)}</strong>${plan?`<small>план ${format(plan,type)}</small>`:""}</div>`;
         }).join("")}</div>
-        <p class="rnp-cohort-note">Конверсии считаются только по объектам, созданным на этой неделе; продажи из хвоста в процент не входят.</p>
+        <p class="rnp-cohort-note">«Продажи из сделок, созданных на этой неделе» — числитель конверсии. «Все продажи, закрытые на этой неделе» — поток закрытий по дате продажи и может включать сделки, созданные раньше, в том числе хвост.</p>
         ${rnpDailyTable(cfg,g,w,periodType,metrics)}
       </div>
     </details>`;
@@ -839,6 +870,15 @@ function rnpSourceList(cfg){
   return `<details class="rnp-subdetails"><summary><strong>Источники внутри блока</strong><span>${rows.length} источн. · изменить ›</span></summary>
     <div class="rnp-source-toolbar"><button type="button" class="btn soft-action" data-edit-traffic-group="${attr(cfg.key)}">Изменить источники</button></div>
     <div class="rnp-source-list">${rows.map(r=>`<details><summary><span>${esc(r.name)}</span><span>${fmt(r.current.metrics.sales)} продаж · ${money(r.current.metrics.sales_amount)} · хвост ${money(r.previous.metrics.sales_amount)}</span></summary>${sourcePeriodRows(r,"",cfg.key)}</details>`).join("")||'<div class="empty-inline">Источников нет</div>'}</div>
+  </details>`;
+}
+function rnpClientTypeList(cfg){
+  const rows=(state.sales.client_type_blocks||[]).filter(r=>r.group===cfg.key).sort((a,b)=>(b.total?.metrics?.sales_amount||0)-(a.total?.metrics?.sales_amount||0));
+  return `<details class="rnp-subdetails"><summary><strong>Типы клиентов</strong><span>${rows.length} тип. · отчётный период / хвост / итого</span></summary>
+    <div class="rnp-source-list">${rows.map(r=>{
+      const c=r.current.metrics||{},p=r.previous.metrics||{},t=r.total.metrics||{};
+      return `<details><summary><span>${esc(r.name)}</span><span>${fmt(c.sales)} + ${fmt(p.sales)} = ${fmt(t.sales)} продаж · ${money(t.sales_amount)}</span></summary>${rnpMonthlyTable(cfg,r,{showPlan:false})}</details>`;
+    }).join("")||'<div class="empty-inline">Типы клиентов не заполнены</div>'}</div>
   </details>`;
 }
 function rnpBlock(cfg){
@@ -888,6 +928,7 @@ function rnpBlock(cfg){
         <summary><strong>Недельная динамика</strong><span>план / факт · раскрывается до дней</span></summary>
         ${rnpWeekTable(cfg,g,"total")}
       </details>
+      ${rnpClientTypeList(cfg)}
       ${rnpSourceList(cfg)}
     </div>
   </details>`;
