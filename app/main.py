@@ -416,8 +416,11 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
         return {"ok": False, "status": "unavailable"}
 
 
+SNAPSHOT_SCHEMA_VERSION = "sales-tail-v2"
+
+
 def persistent_snapshot_key(month: str, period: str, custom_start: str = "", custom_end: str = ""):
-    return "|".join([month,period,custom_start or "",custom_end or ""])
+    return "|".join([SNAPSHOT_SCHEMA_VERSION,month,period,custom_start or "",custom_end or ""])
 
 
 async def warm_snapshot_from_storage(month: str, period: str, custom_start: str = "", custom_end: str = ""):

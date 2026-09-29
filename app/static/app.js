@@ -810,11 +810,17 @@ function rnpMetricFacts(key,type,c,p,t){
   const total=rnpCombinedMetric(key,c[key],p[key],t[key]);
   return `<span>${format(c[key]||0,type)}</span><span>${hasTail?format(p[key]||0,type):"—"}</span><strong>${format(total,type)}</strong>`;
 }
+function rnpTotalDealToSaleRate(c,p,t){
+  const stored=t?.total_deal_to_sale_rate;
+  if(stored!==undefined&&stored!==null&&stored!=="")return Number(stored);
+  const deals=Number(c.deals||0)+Number(p.deals||0);
+  return deals?(Number(c.sales||0)+Number(p.sales||0))/deals*100:0;
+}
 function rnpConversionRows(c,p,t){
   return [
     ["Конверсия созданных сделок в продажу", format(c.deal_to_sale_rate||0,"pct"), "—", "—"],
     ["Конверсия хвоста", "—", format(p.deal_to_sale_rate||0,"pct"), "—"],
-    ["Конверсия итого с хвостом", "—", "—", format(t.total_deal_to_sale_rate||0,"pct")]
+    ["Конверсия итого с хвостом", "—", "—", format(rnpTotalDealToSaleRate(c,p,t),"pct")]
   ].map(([label,current,previous,total])=>`<div class="rnp-month-row rnp-conversion-row"><span>${label}</span><span>${current}</span><span>${previous}</span><strong>${total}</strong><span>—</span></div>`).join("");
 }
 function rnpMonthlyTable(cfg,g,{showPlan=true}={}){
