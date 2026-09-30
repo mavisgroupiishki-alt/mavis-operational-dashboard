@@ -51,6 +51,34 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.storage.update_workspace_task(task["id"], {"status": "unknown"})
 
+    def test_workspace_task_keeps_validated_external_links(self):
+        profile = self.storage.add_task_profile("Аня")
+        task = self.storage.add_workspace_task({
+            "title": "Проверить сделку", "description": "Открыть источник",
+            "responsible_id": profile["id"], "executor_ids": [profile["id"]],
+            "status": "new", "deadline": "2026-09-30",
+            "links": [
+                {"url": "https://example.bitrix24.ru/crm/deal/details/42/", "label": ""},
+                {"url": "https://docs.google.com/spreadsheets/d/example", "label": "План"},
+                {"url": "https://example.bitrix24.ru/crm/deal/details/42/", "label": "Повтор"},
+            ],
+        })
+
+        self.assertEqual(len(task["links"]), 2)
+        self.assertEqual(self.storage.workspace_tasks()[0]["links"][1]["label"], "План")
+        updated = self.storage.update_workspace_task(task["id"], {"links": [{"url": "https://docs.google.com/document/d/example", "label": "Итог"}]})
+        self.assertEqual(updated["links"], [{"url": "https://docs.google.com/document/d/example", "label": "Итог"}])
+
+    def test_workspace_task_rejects_non_http_link(self):
+        profile = self.storage.add_task_profile("Аня")
+        with self.assertRaisesRegex(ValueError, "http"):
+            self.storage.add_workspace_task({
+                "title": "Небезопасная ссылка", "description": "Проверить",
+                "responsible_id": profile["id"], "executor_ids": [profile["id"]],
+                "status": "new", "deadline": "2026-09-30",
+                "links": [{"url": "javascript:alert(1)", "label": ""}],
+            })
+
     def test_archived_workspace_task_remains_visible_to_archive_view(self):
         profile = self.storage.add_task_profile("Аня")
         task = self.storage.add_workspace_task({

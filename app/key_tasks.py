@@ -208,6 +208,7 @@ def build_task_workspace(
             "id": str(row.get("id") or ""),
             "title": str(row.get("title") or "Без названия"),
             "description": str(row.get("description") or ""),
+            "links": list(row.get("links") or []),
             "priority": "high" if row.get("priority") == "high" else "normal",
             "status": status,
             "status_label": status_names[status],

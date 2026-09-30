@@ -57,7 +57,7 @@ class FakeStorage:
         return list(self.rows)
 
     def workspace_task(self, task_id):
-        return next((row for row in self.rows if row["id"] == task_id), None)
+        return next((dict(row) for row in self.rows if row["id"] == task_id), None)
 
     def key_task_team(self):
         return [{"id": "7", "name": "Роман"}]
@@ -146,6 +146,53 @@ class ManualKeyTaskApiTests(unittest.TestCase):
 
         self.assertEqual(created["task"]["project_id"], "")
         self.assertTrue(archived["task"]["archived_at"])
+
+    def test_api_keeps_links_and_records_link_change_in_history(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            created = asyncio.run(main.add_key_task(main.KeyTaskBody(
+                title="Итог встречи: клиент", description="Договорённость: отправить КП",
+                responsible_id="profile-7", executor_ids=["profile-7"], deadline="2026-09-30",
+                links=[{"url": "https://example.bitrix24.ru/crm/deal/details/42/", "label": "Сделка"}],
+            )))
+            asyncio.run(main.patch_key_task(created["task"]["id"], main.KeyTaskPatchBody(
+                links=[{"url": "https://docs.google.com/document/d/example", "label": "Итог"}],
+            )))
+
+        self.assertEqual(storage.rows[0]["links"][0]["label"], "Итог")
+        self.assertIn("Обновлены связанные ссылки", [event["text"] for event in storage.activity["task-1"]])
+
+    def test_task_workspace_enriches_attached_bitrix_deal_without_storing_crm_data(self):
+        class FakeBitrix:
+            portal = "https://example.bitrix24.ru"
+
+            async def deal_list(self, filters, fields):
+                self.filters = filters
+                self.fields = fields
+                return [{
+                    "ID": "42", "TITLE": "Сделка Альфа", "COMPANY_TITLE": "ООО Альфа",
+                    "OPPORTUNITY": "12500", "STAGE_ID": "C1:WON", "CONTACT_ID": "",
+                }]
+
+            async def meta(self):
+                return {"statuses": {"C1:WON": "Успешно"}}
+
+        storage = FakeStorage()
+        storage.rows.append({
+            "id": "task-1", "title": "Проверить сделку", "description": "Сверить условия",
+            "responsible_id": "profile-7", "executor_ids": ["profile-7"], "status": "new", "deadline": "2026-09-30",
+            "links": [{"url": "https://example.bitrix24.ru/crm/deal/details/42/", "label": ""}],
+        })
+        fake_client = FakeBitrix()
+        main.task_link_deal_cache.clear()
+        main.task_link_deal_cache_time.clear()
+        with patch.object(main, "storage", storage), patch.object(main, "client", fake_client):
+            response = asyncio.run(main.get_key_tasks())
+
+        preview = response["tasks"][0]["links"][0]["deal"]
+        self.assertEqual(preview, {"id": "42", "client": "ООО Альфа", "amount": 12500.0, "stage": "Успешно"})
+        self.assertEqual(fake_client.filters, {"@ID": ["42"]})
+        self.assertNotIn("deal", storage.rows[0]["links"][0])
 
     def test_stage_automation_assigns_configured_profile(self):
         storage = FakeStorage()

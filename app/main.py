@@ -4,6 +4,7 @@ import hmac
 import json
 import copy
 import math
+import re
 import secrets
 import time
 from calendar import monthrange
@@ -63,6 +64,9 @@ KEY_TASKS_PERSISTED_STALE_SECONDS = 24 * 60 * 60
 key_task_cache = {}
 key_task_cache_time = {}
 key_task_refresh_tasks = {}
+task_link_deal_cache = {}
+task_link_deal_cache_time = {}
+TASK_LINK_DEAL_REFRESH_SECONDS = 5 * 60
 key_task_users_cache = []
 key_task_users_cache_time = 0.0
 communication_gap_cache = {}
@@ -76,6 +80,95 @@ def current_month():
 
 def _key_task_cache_key(members):
     return ",".join(sorted(str(row.get("id") or "") for row in members if row.get("id")))
+
+
+def _bitrix_deal_id_from_task_link(raw_url: str) -> str:
+    """Return an ID only for a deal URL from this dashboard's Bitrix portal."""
+    try:
+        link = urlparse(str(raw_url or "").strip())
+        portal = urlparse(client.portal)
+    except (TypeError, ValueError):
+        return ""
+    if link.scheme not in {"http", "https"} or not link.hostname or link.hostname != portal.hostname:
+        return ""
+    match = re.search(r"/crm/deal/(?:details|show)/(\d+)(?:/|$)", link.path, re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _task_deal_preview(deal: dict, stage_names: dict[str, str], contact_names: dict[str, str]) -> dict:
+    raw_amount = deal.get("OPPORTUNITY") or 0
+    try:
+        amount = float(raw_amount)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if not math.isfinite(amount):
+        amount = 0.0
+    contact_id = str(deal.get("CONTACT_ID") or "")
+    client_name = str(deal.get("COMPANY_TITLE") or "").strip() or contact_names.get(contact_id, "")
+    return {
+        "id": str(deal.get("ID") or ""),
+        "client": client_name or str(deal.get("TITLE") or "Сделка Bitrix24"),
+        "amount": round(amount, 2),
+        "stage": str(stage_names.get(str(deal.get("STAGE_ID") or "")) or deal.get("STAGE_ID") or "Не указана"),
+    }
+
+
+async def enrich_task_workspace_deal_links(workspace: dict) -> dict:
+    """Attach small live CRM previews without making task loading depend on Bitrix."""
+    tasks = list(workspace.get("tasks") or [])
+    link_ids = {
+        _bitrix_deal_id_from_task_link(link.get("url"))
+        for task in tasks for link in (task.get("links") or [])
+        if isinstance(link, dict)
+    }
+    link_ids.discard("")
+    if not link_ids:
+        return workspace
+    now = time.monotonic()
+    previews = {
+        deal_id: task_link_deal_cache[deal_id]
+        for deal_id in link_ids
+        if deal_id in task_link_deal_cache
+        and now - task_link_deal_cache_time.get(deal_id, 0) < TASK_LINK_DEAL_REFRESH_SECONDS
+    }
+    missing = sorted(link_ids - previews.keys())
+    if missing:
+        try:
+            deals, meta = await asyncio.wait_for(asyncio.gather(
+                client.deal_list({"@ID": missing}, ["ID", "TITLE", "OPPORTUNITY", "STAGE_ID", "COMPANY_TITLE", "CONTACT_ID"]),
+                client.meta(),
+            ), timeout=6)
+            contact_ids = sorted({str(deal.get("CONTACT_ID") or "") for deal in deals or [] if not str(deal.get("COMPANY_TITLE") or "").strip() and deal.get("CONTACT_ID")})
+            contact_names = {}
+            if contact_ids:
+                contacts = await asyncio.wait_for(client.list_all("crm.contact.list", {
+                    "filter": {"@ID": contact_ids}, "select": ["ID", "NAME", "LAST_NAME", "SECOND_NAME"],
+                }), timeout=4)
+                contact_names = {
+                    str(contact.get("ID") or ""): " ".join(str(contact.get(field) or "").strip() for field in ("NAME", "SECOND_NAME", "LAST_NAME")).strip()
+                    for contact in contacts or []
+                }
+            stage_names = (meta or {}).get("statuses") or {}
+            for deal in deals or []:
+                deal_id = str(deal.get("ID") or "")
+                if deal_id in link_ids:
+                    preview = _task_deal_preview(deal, stage_names, contact_names)
+                    previews[deal_id] = preview
+                    task_link_deal_cache[deal_id] = preview
+                    task_link_deal_cache_time[deal_id] = now
+        except Exception:
+            # A CRM delay must not make the task workspace blank. Cached previews
+            # remain available; uncached cards continue to show their direct link.
+            pass
+    for task in tasks:
+        links = []
+        for link in task.get("links") or []:
+            if not isinstance(link, dict):
+                continue
+            deal_id = _bitrix_deal_id_from_task_link(link.get("url"))
+            links.append({**link, **({"deal": previews[deal_id]} if deal_id in previews else {})})
+        task["links"] = links
+    return workspace
 
 
 async def key_task_available_users():
@@ -1467,6 +1560,7 @@ class KeyTaskBody(BaseModel):
     watcher_ids: list[str] = []
     status: str = "new"
     description: str = ""
+    links: list[dict[str, str]] = []
     created_by_profile_id: str = ""
     recurrence: str = "none"
     backlog: bool = False
@@ -1483,6 +1577,7 @@ class KeyTaskPatchBody(BaseModel):
     watcher_ids: list[str] | None = None
     status: str | None = None
     description: str | None = None
+    links: list[dict[str, str]] | None = None
     recurrence: str | None = None
     backlog: bool | None = None
     planned_hours: float | None = None
@@ -1613,6 +1708,8 @@ def _task_change_events(before: dict, after: dict, profiles: list[dict], project
         events.append(f"Статус: {status_names.get(after.get('status'), 'В работе')}")
     if before.get("description") != after.get("description"):
         events.append("Обновлено описание")
+    if list(before.get("links") or []) != list(after.get("links") or []):
+        events.append("Обновлены связанные ссылки")
     if before.get("recurrence") != after.get("recurrence"):
         events.append(f"Повторение: {recurrence_names.get(after.get('recurrence'), 'Не повторяется')}")
     if float(before.get("planned_hours") or 0) != float(after.get("planned_hours") or 0):
@@ -1665,13 +1762,15 @@ async def delete_key_task_team_member(user_id: str, admin_key: str = ''):
 @app.get('/api/key-tasks')
 async def get_key_tasks():
     now = datetime.now(ZoneInfo(settings.timezone))
+    workspace = build_task_workspace(
+        storage.workspace_tasks(), storage.task_profiles(), storage.task_projects(),
+        storage.key_task_team(), now, settings.timezone, storage.task_statuses(),
+    )
+    await enrich_task_workspace_deal_links(workspace)
     return {
         "ok": True,
         "generated_at": now.isoformat(),
-        **build_task_workspace(
-            storage.workspace_tasks(), storage.task_profiles(), storage.task_projects(),
-            storage.key_task_team(), now, settings.timezone, storage.task_statuses(),
-        ),
+        **workspace,
         "templates": storage.task_templates(),
         "saved_views": storage.task_saved_views(),
     }

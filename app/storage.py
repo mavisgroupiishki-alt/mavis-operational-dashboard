@@ -5,7 +5,7 @@ from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -32,6 +32,45 @@ def task_hours(value: Any, label: str, strict: bool = False) -> float:
             raise ValueError(f"{label} должен быть от 0 до 1000 часов")
         return 0.0
     return round(hours, 2)
+
+
+def task_links(value: Any, strict: bool = False) -> list[dict[str, str]]:
+    """Keep dashboard task attachments safe and portable between storage backends."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("Ссылки задачи передайте списком")
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        raw_url = item if isinstance(item, str) else (item or {}).get("url", "") if isinstance(item, dict) else ""
+        raw_label = "" if isinstance(item, str) else (item or {}).get("label", "") if isinstance(item, dict) else ""
+        url = str(raw_url or "").strip()
+        label = str(raw_label or "").strip()
+        if not url:
+            if label and strict:
+                raise ValueError("Укажите адрес для подписи ссылки")
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            if strict:
+                raise ValueError("Ссылка должна начинаться с http:// или https://")
+            continue
+        if len(url) > 2000 or len(label) > 160:
+            if strict:
+                raise ValueError("Ссылка или её подпись слишком длинные")
+            continue
+        if url in seen:
+            continue
+        if len(out) >= 20:
+            if strict:
+                raise ValueError("К задаче можно прикрепить до 20 ссылок")
+            break
+        seen.add(url)
+        out.append({"url": url, "label": label})
+    return out
 
 
 class Storage:
@@ -345,6 +384,7 @@ class Storage:
                 "watcher_ids": [str(item).strip() for item in (row.get("watcher_ids") or []) if str(item).strip()] if isinstance(row.get("watcher_ids"), list) else [],
                 "status": str(row.get("status") or ""),
                 "description": str(row.get("description") or "")[:3000],
+                "links": task_links(row.get("links")),
                 "updated_at": str(row.get("updated_at") or ""),
                 "status_changed_at": str(row.get("status_changed_at") or row.get("updated_at") or row.get("created_at") or ""),
                 "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
@@ -794,6 +834,7 @@ class Storage:
         default_status = next((item["id"] for item in statuses if item["id"] not in {"backlog", "done"}), "backlog")
         values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
         values["watcher_ids"] = list(dict.fromkeys(str(value).strip() for value in values.get("watcher_ids") or [] if str(value).strip()))
+        values["links"] = task_links(values.get("links"), strict=True)
         values["status"] = "backlog" if backlog else str(values.get("status") or default_status)
         if values["status"] not in status_ids:
             raise ValueError("Неизвестный этап задачи")
@@ -815,6 +856,7 @@ class Storage:
                     "watcher_ids": list(values["watcher_ids"]),
                     "status": str(values["status"]),
                     "description": str(values.get("description") or "")[:3000],
+                    "links": list(values["links"]),
                     "created_by_profile_id": str(values.get("created_by_profile_id") or ""),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "status_changed_at": datetime.now(timezone.utc).isoformat(),
@@ -834,7 +876,7 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "watcher_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours", "archived"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "watcher_ids", "status", "description", "links", "recurrence", "backlog", "planned_hours", "actual_hours", "archived"}
         statuses = self.task_statuses()
         status_ids = {item["id"] for item in statuses}
         default_status = next((item["id"] for item in statuses if item["id"] not in {"backlog", "done"}), "backlog")
@@ -878,6 +920,8 @@ class Storage:
                     row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
                 elif key == "description":
                     row[key] = str(value or "")[:3000]
+                elif key == "links":
+                    row[key] = task_links(value, strict=True)
                 elif key == "recurrence":
                     value = str(value or "none")
                     if value not in {"none", "weekly", "monthly"}:
