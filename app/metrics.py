@@ -260,7 +260,13 @@ def norm_text(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower().replace("ё", "е"))
 
 
-def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[str, str]] = None) -> str:
+def sales_block(
+    client_type: Any,
+    source: str,
+    source_overrides: Optional[Dict[str, str]] = None,
+    *,
+    source_missing: bool = False,
+) -> str:
     """Exact RNP traffic classification.
 
     Manual source override from dashboard has the highest priority.
@@ -294,6 +300,13 @@ def sales_block(client_type: Any, source: str, source_overrides: Optional[Dict[s
             "Прочее",
         }:
             return explicit
+
+    # Renewals created automatically by a Bitrix business process do not
+    # carry a source.  They are not new incoming traffic: the contact already
+    # exists and the deal belongs to repeat sales.  Keep this after manual
+    # overrides so an explicitly classified legacy record stays editable.
+    if source_missing:
+        return "Повторные продажи по базе"
 
     ct = norm_text(client_type)
     src = norm_text(source)
@@ -879,7 +892,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
             ptype = "older"
         src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
         client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
-        block = sales_block(client_type, src, source_overrides)
+        source_missing = cid == 0 and not str(d.get("SOURCE_ID") or "").strip() and not str(d.get("SOURCE_DESCRIPTION") or "").strip()
+        block = sales_block(client_type, src, source_overrides, source_missing=source_missing)
         deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
         is_won = cid == 0 and str(d.get("STAGE_ID")) in success_stage_ids
         product_rows = []

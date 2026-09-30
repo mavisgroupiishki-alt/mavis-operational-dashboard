@@ -384,6 +384,37 @@ def clean_revenue_deal_rows(payload: dict) -> list[dict]:
     return sorted(rows, key=lambda row: (row["deal_title"], row["deal_id"]))
 
 
+def clean_revenue_payment_rows(payload: dict) -> list[dict]:
+    """Normalize dated payment-ledger rows for the net weekly breakdown."""
+    rows = []
+    for source in payload.get("paymentRevenueRows") or []:
+        if not isinstance(source, dict):
+            continue
+        deal_id = str(source.get("dealId") or "").strip()
+        payment_date = str(source.get("date") or "")[:10]
+        try:
+            datetime.strptime(payment_date, "%Y-%m-%d")
+            bank_confirmed = float(source.get("bankConfirmed") or 0)
+            manual_confirmed = float(source.get("manualConfirmed") or 0)
+            contractor_applied = float(source.get("contractorApplied") or 0)
+            clean_revenue = float(source.get("cleanRevenue") or 0)
+        except (TypeError, ValueError):
+            continue
+        values = (bank_confirmed, manual_confirmed, contractor_applied, clean_revenue)
+        if not (deal_id.isdigit() and all(math.isfinite(value) for value in values)):
+            continue
+        rows.append({
+            "deal_id": deal_id,
+            "deal_title": str(source.get("dealTitle") or f"Сделка №{deal_id}")[:500],
+            "date": payment_date,
+            "bank_confirmed": round(bank_confirmed, 2),
+            "manual_confirmed": round(manual_confirmed, 2),
+            "contractor_applied": round(contractor_applied, 2),
+            "clean_revenue": round(clean_revenue, 2),
+        })
+    return sorted(rows, key=lambda row: (row["date"], row["deal_title"], row["deal_id"]))
+
+
 async def enrich_clean_revenue_deal_rows(month: str, rows: list[dict]) -> list[dict]:
     """Attach the dashboard's exact sales-group classification to ledger rows."""
     if not rows:
@@ -409,7 +440,8 @@ async def enrich_clean_revenue_deal_rows(month: str, rows: list[dict]) -> list[d
         category_id = int(deal.get("CATEGORY_ID") or 0) if deal else None
         source = source_name(meta, deal) if deal else ""
         client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, deal.get(F_DEAL_CLIENT_TYPE)) if deal else ""
-        group = sales_block(client_type, source) if category_id == 0 else "Не распределено"
+        source_missing = not str(deal.get("SOURCE_ID") or "").strip() and not str(deal.get("SOURCE_DESCRIPTION") or "").strip()
+        group = sales_block(client_type, source, source_missing=source_missing) if category_id == 0 else "Не распределено"
         period_type = "current" if created and month_start <= created else "previous"
         enriched.append({
             **row,
@@ -418,6 +450,7 @@ async def enrich_clean_revenue_deal_rows(month: str, rows: list[dict]) -> list[d
             "manager": user_name(meta, deal.get("ASSIGNED_BY_ID")) if deal else "",
             "source": source,
             "client_type": client_type or "Не указан",
+            "url": f"{client.portal}/crm/deal/details/{row['deal_id']}/" if deal else "",
         })
     return enriched
 
@@ -442,7 +475,7 @@ async def load_clean_revenue(month: str):
         async with httpx.AsyncClient(timeout=75.0, follow_redirects=False) as session:
             response = await session.get(
                 settings.clean_revenue_url,
-                params={"date_from": date_from, "date_to": date_to},
+                params={"date_from": date_from, "date_to": date_to, "include_overdue": "0"},
                 headers={"Authorization": f"Bearer {settings.clean_revenue_token}", "Accept": "application/json"},
             )
         try:
@@ -465,6 +498,7 @@ async def load_clean_revenue(month: str):
         if not payload.get("ok") or not math.isfinite(value) or not math.isfinite(contractor_amount):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         deal_revenue_rows = await enrich_clean_revenue_deal_rows(month, clean_revenue_deal_rows(payload))
+        payment_revenue_rows = await enrich_clean_revenue_deal_rows(month, clean_revenue_payment_rows(payload))
         result = {
             "status": "online",
             "value": round(value, 2),
@@ -483,6 +517,8 @@ async def load_clean_revenue(month: str):
             # Exact schedule-ledger net revenue, connected to the deal and
             # classified by the same rules as the sales dashboard.
             "deal_revenue_rows": deal_revenue_rows,
+            "payment_revenue_available": isinstance(payload.get("paymentRevenueRows"), list),
+            "payment_revenue_rows": payment_revenue_rows,
         }
         clean_revenue_cache[month] = result
         clean_revenue_cache_time[month] = time.monotonic()

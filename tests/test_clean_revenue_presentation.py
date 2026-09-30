@@ -46,6 +46,19 @@ class CleanRevenuePresentationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["period_type"], "current")
         self.assertEqual(enriched[0]["manager"], "Ирина")
 
+    def test_payment_rows_keep_the_ledger_date_for_weekly_net_revenue(self):
+        payload = {"paymentRevenueRows": [{
+            "dealId": "44", "dealTitle": "Сделка партнёра", "date": "2026-09-11",
+            "bankConfirmed": 1200, "manualConfirmed": 0, "contractorApplied": 200,
+            "cleanRevenue": 1000,
+        }, {"dealId": "bad", "date": "2026-09-12"}]}
+
+        self.assertEqual(main.clean_revenue_payment_rows(payload), [{
+            "deal_id": "44", "deal_title": "Сделка партнёра", "date": "2026-09-11",
+            "bank_confirmed": 1200.0, "manual_confirmed": 0.0,
+            "contractor_applied": 200.0, "clean_revenue": 1000.0,
+        }])
+
     def test_operational_snapshot_derives_confirmed_incoming_from_finance_ledger(self):
         snap = {
             "sales": {

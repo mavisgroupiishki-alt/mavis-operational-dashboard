@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.metrics import aggregate_sales
+from app.metrics import aggregate_sales, sales_block
 
 
 TZ = ZoneInfo("Europe/Minsk")
@@ -44,6 +44,16 @@ def deal(identifier, created_day, *, sold=False, close_day=None, previous=False)
 
 
 class SalesWeeklyCohortTests(unittest.TestCase):
+    def test_source_less_automatic_deal_is_repeat_not_incoming(self):
+        self.assertEqual(
+            sales_block("Новый", "Прочее", source_missing=True),
+            "Повторные продажи по базе",
+        )
+        self.assertEqual(
+            sales_block("Новый", "Google реклама", source_missing=False),
+            "Входящий трафик продажи",
+        )
+
     def test_weekly_and_daily_conversion_exclude_sales_tail(self):
         records = {
             "leads": [lead("l1", 2, True), lead("l2", 2, False), lead("l3", 10, True)],

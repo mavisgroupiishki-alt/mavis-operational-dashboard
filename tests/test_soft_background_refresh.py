@@ -11,6 +11,8 @@ class SoftBackgroundRefreshTest(unittest.TestCase):
         self.assertIn("const mode={background:Boolean(options.background)};", source)
         self.assertIn("if(activeLoadMode===mode)activeLoadMode=null", source)
         self.assertIn("if(activeLoadMode?.background&&state?.ok&&softRenderCurrentView())return;", source)
+        self.assertIn('if(liveView.querySelector("details[open]"))return true;', source)
+        self.assertIn('if(silent&&document.querySelector("#sales details[open]"))return;', source)
 
 
 if __name__ == "__main__":
