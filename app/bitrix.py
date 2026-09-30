@@ -83,6 +83,17 @@ class BitrixClient:
             row for row in rows or []
             if str(row.get("GROUP_ID") or row.get("groupId") or "") == str(group_id)
         ]
+    async def acts_tasks_for_month(self, group_id, month):
+        """Load all tasks of the Acts project; month filtering is verified locally."""
+        rows = await self.list_all("tasks.task.list", {
+            "order": {"ID": "ASC"},
+            "filter": {"GROUP_ID": int(group_id), ">=CREATED_DATE": f"{month}-01"},
+            "select": ["ID", "TITLE", "GROUP_ID", "STAGE_ID", "CREATED_BY", "CREATED_DATE"],
+        }, limit=5000)
+        return [
+            row for row in rows or []
+            if str(row.get("GROUP_ID") or row.get("groupId") or group_id) == str(group_id)
+        ]
     async def tasks_for_responsible(self, user_id, limit=200):
         """Load one employee's task list. Filtering to active states happens locally.
 

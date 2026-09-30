@@ -26,6 +26,7 @@ from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
+from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
 
@@ -72,10 +73,35 @@ key_task_users_cache_time = 0.0
 communication_gap_cache = {}
 COMMUNICATION_GAP_REFRESH_SECONDS = 5 * 60
 COMMUNICATION_GAP_DAYS = 14
+acts_experts_cache = {}
+acts_experts_cache_time = {}
+ACTS_EXPERTS_REFRESH_SECONDS = 60
 
 
 def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+async def load_acts_experts(month: str, force: bool = False) -> dict:
+    """Return the live Acts project report without mixing it into KPI snapshot work."""
+    selected_month = valid_acts_month(month, current_month())
+    cached = acts_experts_cache.get(selected_month)
+    if not force and cached and time.monotonic() - acts_experts_cache_time.get(selected_month, 0) < ACTS_EXPERTS_REFRESH_SECONDS:
+        return cached
+    stages_payload, tasks, meta = await asyncio.gather(
+        client.call("task.stages.get", {"entityId": ACTS_PROJECT_ID}),
+        client.acts_tasks_for_month(ACTS_PROJECT_ID, selected_month),
+        client.meta(),
+    )
+    stages = stages_payload.get("result") or []
+    if isinstance(stages, dict):
+        stages = list(stages.values())
+    report = build_acts_experts_report(tasks, meta.get("users") or {}, stages, selected_month, client.portal)
+    report["generated_at"] = datetime.now(ZoneInfo(settings.timezone)).isoformat()
+    report["refresh_seconds"] = ACTS_EXPERTS_REFRESH_SECONDS
+    acts_experts_cache[selected_month] = report
+    acts_experts_cache_time[selected_month] = time.monotonic()
+    return report
 
 
 def _key_task_cache_key(members):
@@ -1507,6 +1533,14 @@ async def api_crm_audit():
 @app.get("/api/marketing")
 async def api_marketing(month: str = ""):
     return await load_jarvis_operations("marketing", {"month": month or current_month()})
+
+
+@app.get("/api/acts-experts")
+async def api_acts_experts(month: str = "", force: bool = False):
+    try:
+        return await load_acts_experts(month or current_month(), force=force)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "acts_experts_unavailable"}, status_code=503)
 
 
 @app.get("/api/drilldown")
