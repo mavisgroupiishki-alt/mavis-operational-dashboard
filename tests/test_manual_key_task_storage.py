@@ -51,6 +51,18 @@ class ManualKeyTaskStorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.storage.update_workspace_task(task["id"], {"status": "unknown"})
 
+    def test_archived_workspace_task_remains_visible_to_archive_view(self):
+        profile = self.storage.add_task_profile("Аня")
+        task = self.storage.add_workspace_task({
+            "title": "Сохранить в архив", "description": "Проверить отображение",
+            "responsible_id": profile["id"], "executor_ids": [profile["id"]],
+            "status": "new", "deadline": "2026-09-30",
+        })
+
+        self.storage.update_workspace_task(task["id"], {"archived": True})
+
+        self.assertTrue(self.storage.workspace_tasks()[0]["archived_at"])
+
     def test_recurring_task_creates_one_next_week_after_completion(self):
         profile = self.storage.add_task_profile("Аня")
         project = self.storage.add_task_project("Отчётность")

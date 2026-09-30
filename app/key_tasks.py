@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from .task_statuses import default_task_statuses, normalize_task_statuses
+
 
 def parse_task_date(raw: Any, tz: ZoneInfo) -> datetime | None:
     if not raw:
@@ -129,18 +131,6 @@ def build_key_tasks(
     return {"people": people, "weeks": by_week, "weekly_people": weekly_people, "no_deadline": no_deadline}
 
 
-TASK_STATUSES = (
-    ("backlog", "Бэклог"),
-    ("new", "Новая"),
-    ("planned", "Запланирована"),
-    ("in_progress", "В работе"),
-    ("waiting", "Ожидание"),
-    ("review", "На проверке"),
-    ("ready", "Готово"),
-    ("done", "Завершена"),
-)
-
-
 def build_task_workspace(
     tasks: Iterable[dict[str, Any]],
     profiles: Iterable[dict[str, Any]],
@@ -148,6 +138,7 @@ def build_task_workspace(
     legacy_members: Iterable[dict[str, Any]],
     now: datetime,
     timezone: str,
+    statuses: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a stable, dashboard-only task workspace response.
 
@@ -155,6 +146,10 @@ def build_task_workspace(
     people rather than being silently discarded when the workspace launches.
     """
     tz = ZoneInfo(timezone)
+    status_rows = normalize_task_statuses(list(statuses) if statuses is not None else default_task_statuses())
+    status_names = {row["id"]: row["name"] for row in status_rows}
+    status_config = {row["id"]: row for row in status_rows}
+    fallback_status = next((row["id"] for row in status_rows if row["id"] not in {"backlog", "done"}), "backlog")
     profile_rows = [dict(row) for row in profiles]
     people = {str(row.get("id") or ""): dict(row) for row in profile_rows}
     for row in legacy_members:
@@ -172,20 +167,30 @@ def build_task_workspace(
         executor_ids = [str(value).strip() for value in row.get("executor_ids") or [] if str(value).strip()]
         if not executor_ids and responsible_id:
             executor_ids = [responsible_id]
-        related_ids = list(dict.fromkeys([responsible_id, *executor_ids]))
+        watcher_ids = list(dict.fromkeys(str(value).strip() for value in row.get("watcher_ids") or [] if str(value).strip()))
+        related_ids = list(dict.fromkeys([responsible_id, *executor_ids, *watcher_ids]))
         for person_id in related_ids:
             if person_id and person_id not in people:
                 people[person_id] = {"id": person_id, "name": row.get("legacy_responsible_name") or "Сотрудник", "active": False, "legacy": True}
         deadline = parse_task_date(row.get("deadline"), tz)
         completed_at = parse_task_timestamp(row.get("completed_at"), tz)
-        status = str(row.get("status") or "in_progress")
+        status = str(row.get("status") or fallback_status)
         if row.get("backlog"):
             status = "backlog"
-        status = status if status in dict(TASK_STATUSES) else "in_progress"
+        status = status if status in status_names else fallback_status
         recurrence = str(row.get("recurrence") or "none")
         recurrence = recurrence if recurrence in {"none", "weekly", "monthly"} else "none"
         project_id = str(row.get("project_id") or "")
         project = projects_by_id.get(project_id)
+        status_started_at = parse_task_timestamp(row.get("status_changed_at") or row.get("updated_at") or row.get("created_at"), tz)
+        sla_days = int((status_config.get(status) or {}).get("sla_days") or 0)
+        sla_due_at = status_started_at + timedelta(days=sla_days) if sla_days and status_started_at and status not in {"backlog", "done"} else None
+        sla_state = "off"
+        if sla_due_at:
+            if now > sla_due_at:
+                sla_state = "breached"
+            elif now + timedelta(days=1) >= sla_due_at:
+                sla_state = "near"
         reminder_kind = ""
         if status not in {"backlog", "done"} and deadline:
             if deadline.date() < today:
@@ -205,15 +210,21 @@ def build_task_workspace(
             "description": str(row.get("description") or ""),
             "priority": "high" if row.get("priority") == "high" else "normal",
             "status": status,
-            "status_label": dict(TASK_STATUSES)[status],
+            "status_label": status_names[status],
             "deadline": deadline.date().isoformat() if deadline else "",
             "is_overdue": bool(deadline and deadline.date() < now.date() and status not in {"backlog", "done"}),
             "project_id": project_id,
             "project": {"id": project_id, "name": str(project.get("name") or "Без проекта"), "archived": bool(project.get("archived"))} if project else None,
             "responsible": person_payload(responsible_id) if responsible_id else None,
             "executors": [person_payload(person_id) for person_id in executor_ids],
+            "watchers": [person_payload(person_id) for person_id in watcher_ids],
             "created_at": str(row.get("created_at") or ""),
             "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+            "status_changed_at": status_started_at.isoformat() if status_started_at else "",
+            "stage_age_days": max(0, (now - status_started_at).days) if status_started_at else None,
+            "sla_days": sla_days,
+            "sla_due_at": sla_due_at.isoformat() if sla_due_at else "",
+            "sla_state": sla_state,
             "completed_at": completed_at.isoformat() if completed_at else "",
             "planned_hours": numeric_hours(row.get("planned_hours")),
             "actual_hours": numeric_hours(row.get("actual_hours")),
@@ -288,15 +299,15 @@ def build_task_workspace(
                 for project in project_summaries if sum(task["project_id"] == str(project.get("id") or "") for task in assigned)
             ],
         })
-    reminder_items = [task for task in out if not task["archived"] and task["reminder_kind"]]
-    reminder_rank = {"overdue": 0, "today": 1, "soon": 2}
-    reminder_items.sort(key=lambda task: (reminder_rank[task["reminder_kind"]], task["deadline"], task["title"].casefold()))
+    reminder_items = [task for task in out if not task["archived"] and (task["reminder_kind"] or task["sla_state"] == "breached")]
+    reminder_rank = {"overdue": 0, "today": 1, "soon": 2, "": 3}
+    reminder_items.sort(key=lambda task: (0 if task["sla_state"] == "breached" else 1, reminder_rank[task["reminder_kind"]], task["deadline"], task["title"].casefold()))
     return {
         "tasks": out,
         "profiles": profile_rows,
         "people": sorted(people.values(), key=lambda row: str(row.get("name") or "").casefold()),
         "projects": [dict(row) for row in projects],
-        "statuses": [{"id": key, "name": name} for key, name in TASK_STATUSES],
+        "statuses": status_rows,
         "project_summaries": project_summaries,
         "workload": workload,
         "week": {"start": week_start.isoformat(), "end": week_end.isoformat()},
@@ -304,6 +315,7 @@ def build_task_workspace(
             "overdue_count": sum(task["reminder_kind"] == "overdue" for task in reminder_items),
             "today_count": sum(task["reminder_kind"] == "today" for task in reminder_items),
             "soon_count": sum(task["reminder_kind"] == "soon" for task in reminder_items),
+            "sla_breached_count": sum(task["sla_state"] == "breached" for task in reminder_items),
             "items": reminder_items[:8],
         },
     }

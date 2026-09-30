@@ -19,6 +19,14 @@ class FakeStorage:
     def task_projects(self):
         return [{"id": "project-1", "name": "Запуск", "archived": False}]
 
+    def task_statuses(self):
+        return [
+            {"id": "backlog", "name": "Бэклог", "protected": True, "auto_assign_profile_id": ""},
+            {"id": "new", "name": "Новая", "protected": False, "auto_assign_profile_id": ""},
+            {"id": "review", "name": "На проверке", "protected": False, "auto_assign_profile_id": ""},
+            {"id": "done", "name": "Завершена", "protected": True, "auto_assign_profile_id": ""},
+        ]
+
     def task_templates(self):
         return list(self.templates)
 
@@ -138,6 +146,46 @@ class ManualKeyTaskApiTests(unittest.TestCase):
 
         self.assertEqual(created["task"]["project_id"], "")
         self.assertTrue(archived["task"]["archived_at"])
+
+    def test_stage_automation_assigns_configured_profile(self):
+        storage = FakeStorage()
+        storage.rows.append({
+            "id": "task-1", "title": "Проверить", "description": "Договор",
+            "responsible_id": "profile-7", "executor_ids": ["profile-7"], "status": "new",
+        })
+        storage.task_statuses = lambda: [
+            {"id": "new", "name": "Новая", "auto_assign_profile_id": ""},
+            {"id": "review", "name": "На проверке", "auto_assign_profile_id": "profile-7"},
+            {"id": "done", "name": "Завершена", "auto_assign_profile_id": ""},
+        ]
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            response = asyncio.run(main.patch_key_task("task-1", main.KeyTaskPatchBody(status="review")))
+
+        self.assertEqual(response["task"]["responsible_id"], "profile-7")
+        self.assertEqual(response["task"]["executor_ids"], ["profile-7"])
+        self.assertIn("Автодействие этапа", storage.activity["task-1"][-1]["text"])
+
+    def test_bulk_update_changes_selected_tasks_and_records_history(self):
+        storage = FakeStorage()
+        storage.rows.extend([
+            {"id": "task-1", "title": "Первый", "description": "Проверить", "responsible_id": "profile-7", "executor_ids": ["profile-7"], "status": "new", "deadline": "2026-09-30"},
+            {"id": "task-2", "title": "Второй", "description": "Проверить", "responsible_id": "profile-7", "executor_ids": ["profile-7"], "status": "new", "deadline": "2026-09-30"},
+        ])
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()) as broadcast:
+            response = asyncio.run(main.bulk_update_key_tasks(main.KeyTaskBulkBody(
+                task_ids=["task-1", "task-2"], status="review", deadline="2026-10-02",
+            )))
+
+        self.assertEqual([row["status"] for row in response["tasks"]], ["review", "review"])
+        self.assertEqual([row["deadline"] for row in response["tasks"]], ["2026-10-02", "2026-10-02"])
+        self.assertTrue(all(any(event["text"] == "Массовое изменение" for event in storage.activity[row["id"]]) for row in response["tasks"]))
+        self.assertEqual(broadcast.await_count, 1)
+
+    def test_bulk_update_rejects_completion_without_per_task_hours(self):
+        storage = FakeStorage()
+        with patch.object(main, "storage", storage), patch.object(main, "broadcast", new=AsyncMock()):
+            with self.assertRaisesRegex(Exception, "Завершайте задачи по одной"):
+                asyncio.run(main.bulk_update_key_tasks(main.KeyTaskBulkBody(task_ids=["task-1"], status="done")))
 
     def test_saved_view_is_owned_by_selected_profile(self):
         storage = FakeStorage()

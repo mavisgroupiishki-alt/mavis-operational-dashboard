@@ -1464,6 +1464,7 @@ class KeyTaskBody(BaseModel):
     priority: str = "normal"
     project_id: str = ""
     executor_ids: list[str] = []
+    watcher_ids: list[str] = []
     status: str = "new"
     description: str = ""
     created_by_profile_id: str = ""
@@ -1479,6 +1480,7 @@ class KeyTaskPatchBody(BaseModel):
     priority: str | None = None
     project_id: str | None = None
     executor_ids: list[str] | None = None
+    watcher_ids: list[str] | None = None
     status: str | None = None
     description: str | None = None
     recurrence: str | None = None
@@ -1486,6 +1488,14 @@ class KeyTaskPatchBody(BaseModel):
     planned_hours: float | None = None
     actual_hours: float | None = None
     archived: bool | None = None
+    changed_by_profile_id: str = ""
+
+class KeyTaskBulkBody(BaseModel):
+    task_ids: list[str]
+    status: str | None = None
+    deadline: str | None = None
+    responsible_id: str | None = None
+    add_executor_id: str | None = None
     changed_by_profile_id: str = ""
 
 class TaskCommentBody(BaseModel):
@@ -1505,6 +1515,17 @@ class TaskProjectBody(BaseModel):
 
 class TaskProjectPatchBody(BaseModel):
     archived: bool
+
+class TaskStatusBody(BaseModel):
+    name: str
+
+class TaskStatusPatchBody(BaseModel):
+    name: str | None = None
+    auto_assign_profile_id: str | None = None
+    sla_days: int | None = None
+
+class TaskStatusDeleteBody(BaseModel):
+    move_to_status_id: str
 
 class TaskTemplateBody(BaseModel):
     name: str
@@ -1549,13 +1570,27 @@ def _active_task_profile(profile_id: str, required: bool = True):
     return profile
 
 
-def _task_change_events(before: dict, after: dict, profiles: list[dict], projects: list[dict]):
+def _apply_task_stage_automation(before: dict, values: dict, status_by_id: dict[str, dict]):
+    """Apply a configured stage owner while retaining chosen executors."""
+    target_status = str(values.get("status") or "")
+    if not target_status or target_status == str(before.get("status") or ""):
+        return None
+    assignee_id = str((status_by_id.get(target_status) or {}).get("auto_assign_profile_id") or "")
+    if not assignee_id:
+        return None
+    assignee = _active_task_profile(assignee_id)
+    values["responsible_id"] = assignee["id"]
+    executors = values.get("executor_ids")
+    if executors is None:
+        executors = before.get("executor_ids") or []
+    values["executor_ids"] = list(dict.fromkeys([*executors, assignee["id"]]))
+    return assignee
+
+
+def _task_change_events(before: dict, after: dict, profiles: list[dict], projects: list[dict], statuses: list[dict] | None = None):
     names = {str(row.get("id") or ""): str(row.get("role") or row.get("name") or "Сотрудник") for row in profiles}
     project_names = {str(row.get("id") or ""): str(row.get("name") or "Без проекта") for row in projects}
-    status_names = {
-        "backlog": "Бэклог", "new": "Новая", "planned": "Запланирована", "in_progress": "В работе",
-        "waiting": "Ожидание", "review": "На проверке", "ready": "Готово", "done": "Завершена",
-    }
+    status_names = {str(row.get("id") or ""): str(row.get("name") or "") for row in statuses or []}
     recurrence_names = {"none": "Не повторяется", "weekly": "Каждую неделю", "monthly": "Каждый месяц"}
     events = []
     if before.get("title") != after.get("title"):
@@ -1567,6 +1602,9 @@ def _task_change_events(before: dict, after: dict, profiles: list[dict], project
     if list(before.get("executor_ids") or []) != list(after.get("executor_ids") or []):
         assignees = [names.get(str(value), "Сотрудник") for value in after.get("executor_ids") or []]
         events.append(f"Исполнители: {', '.join(assignees) or 'Не назначены'}")
+    if list(before.get("watcher_ids") or []) != list(after.get("watcher_ids") or []):
+        watchers = [names.get(str(value), "Сотрудник") for value in after.get("watcher_ids") or []]
+        events.append(f"Наблюдатели: {', '.join(watchers) or 'Не назначены'}")
     if before.get("deadline") != after.get("deadline"):
         events.append(f"Срок: {after.get('deadline') or 'без срока'}")
     if before.get("priority") != after.get("priority"):
@@ -1632,7 +1670,7 @@ async def get_key_tasks():
         "generated_at": now.isoformat(),
         **build_task_workspace(
             storage.workspace_tasks(), storage.task_profiles(), storage.task_projects(),
-            storage.key_task_team(), now, settings.timezone,
+            storage.key_task_team(), now, settings.timezone, storage.task_statuses(),
         ),
         "templates": storage.task_templates(),
         "saved_views": storage.task_saved_views(),
@@ -1643,8 +1681,11 @@ async def get_key_tasks():
 async def add_key_task(body: KeyTaskBody):
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
     active_projects = {row["id"] for row in storage.task_projects() if not row.get("archived")}
+    status_ids = {row["id"] for row in storage.task_statuses()}
     if body.project_id and body.project_id not in active_projects:
         raise HTTPException(400, 'Выберите активный проект')
+    if body.status not in status_ids:
+        raise HTTPException(400, 'Выберите существующий этап')
     if not str(body.description or '').strip():
         raise HTTPException(400, 'Добавьте описание задачи')
     is_backlog = body.backlog or body.status == "backlog"
@@ -1656,6 +1697,8 @@ async def add_key_task(body: KeyTaskBody):
         raise HTTPException(400, 'Выберите активный рабочий профиль')
     if any(value not in active_profiles for value in body.executor_ids):
         raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
+    if any(value not in active_profiles for value in body.watcher_ids):
+        raise HTTPException(400, 'У одного из наблюдателей нет активного рабочего профиля')
     author = _active_task_profile(body.created_by_profile_id, required=bool(body.created_by_profile_id))
     try:
         task = storage.add_workspace_task(body.model_dump())
@@ -1672,24 +1715,33 @@ async def patch_key_task(task_id: str, body: KeyTaskPatchBody):
     changed_by_profile_id = str(values.pop("changed_by_profile_id", "") or "")
     active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
     active_projects = {row["id"] for row in storage.task_projects() if not row.get("archived")}
+    statuses = storage.task_statuses()
+    status_by_id = {row["id"]: row for row in statuses}
     if values.get("project_id") and values["project_id"] not in active_projects:
         raise HTTPException(400, 'Выберите активный проект')
+    if values.get("status") and values["status"] not in status_by_id:
+        raise HTTPException(400, 'Выберите существующий этап')
     if values.get("responsible_id") and values["responsible_id"] not in active_profiles:
         raise HTTPException(400, 'Выберите активный рабочий профиль')
     if any(value not in active_profiles for value in values.get("executor_ids") or []):
         raise HTTPException(400, 'У одного из исполнителей нет активного рабочего профиля')
+    if any(value not in active_profiles for value in values.get("watcher_ids") or []):
+        raise HTTPException(400, 'У одного из наблюдателей нет активного рабочего профиля')
     before = storage.workspace_task(task_id)
     if not before:
         raise HTTPException(404, 'Задача не найдена')
     author = _active_task_profile(changed_by_profile_id, required=bool(changed_by_profile_id))
+    auto_assignee = _apply_task_stage_automation(before, values, status_by_id)
     try:
         task = storage.update_workspace_task(task_id, values)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not task:
         raise HTTPException(404, 'Задача не найдена')
-    for text in _task_change_events(before, task, storage.task_profiles(), storage.task_projects()):
+    for text in _task_change_events(before, task, storage.task_profiles(), storage.task_projects(), statuses):
         storage.add_task_activity(task_id, text, (author or {}).get("id", ""), (author or {}).get("name", "Команда"))
+    if auto_assignee:
+        storage.add_task_activity(task_id, f"Автодействие этапа: ответственным назначен {auto_assignee.get('role') or auto_assignee.get('name')}", (author or {}).get("id", ""), (author or {}).get("name", "Команда"), "automation")
     next_task = None
     if before.get("status") != "done" and task.get("status") == "done":
         next_task = storage.create_next_recurrence_task(task_id)
@@ -1698,6 +1750,66 @@ async def patch_key_task(task_id: str, body: KeyTaskPatchBody):
             storage.add_task_activity(next_task["id"], f"Создана повторяющаяся задача из «{task['title']}»", (author or {}).get("id", ""), (author or {}).get("name", "Команда"), "created")
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "task": task, "next_task": next_task}
+
+
+@app.post('/api/key-tasks/bulk')
+async def bulk_update_key_tasks(body: KeyTaskBulkBody):
+    task_ids = list(dict.fromkeys(str(value or "").strip() for value in body.task_ids if str(value or "").strip()))
+    if not task_ids or len(task_ids) > 100:
+        raise HTTPException(400, 'Выберите от 1 до 100 задач')
+    if body.status == 'done':
+        raise HTTPException(400, 'Завершайте задачи по одной: для каждой требуется фактическое время')
+    if not any(value is not None and value != "" for value in (body.status, body.deadline, body.responsible_id, body.add_executor_id)):
+        raise HTTPException(400, 'Выберите хотя бы одно массовое изменение')
+    active_profiles = {row["id"] for row in storage.task_profiles() if row.get("active")}
+    statuses = storage.task_statuses()
+    status_by_id = {row["id"]: row for row in statuses}
+    if body.status and body.status not in status_by_id:
+        raise HTTPException(400, 'Выберите существующий этап')
+    if body.responsible_id and body.responsible_id not in active_profiles:
+        raise HTTPException(400, 'Выберите активного ответственного')
+    if body.add_executor_id and body.add_executor_id not in active_profiles:
+        raise HTTPException(400, 'Выберите активного исполнителя')
+    if body.deadline:
+        try:
+            datetime.strptime(body.deadline, '%Y-%m-%d')
+        except ValueError as exc:
+            raise HTTPException(400, 'Срок должен быть в формате YYYY-MM-DD') from exc
+    if body.status:
+        auto_profile_id = str((status_by_id.get(body.status) or {}).get('auto_assign_profile_id') or '')
+        if auto_profile_id:
+            _active_task_profile(auto_profile_id)
+    before_rows = [storage.workspace_task(task_id) for task_id in task_ids]
+    if any(row is None for row in before_rows):
+        raise HTTPException(404, 'Одна из задач не найдена')
+    if any(row.get('archived') for row in before_rows):
+        raise HTTPException(400, 'Архивные задачи нельзя менять массово')
+    author = _active_task_profile(body.changed_by_profile_id, required=bool(body.changed_by_profile_id))
+    changed = []
+    for before in before_rows:
+        values = {}
+        if body.status:
+            values['status'] = body.status
+            values['backlog'] = body.status == 'backlog'
+        if body.deadline:
+            values['deadline'] = body.deadline
+        if body.responsible_id:
+            values['responsible_id'] = body.responsible_id
+        if body.add_executor_id:
+            values['executor_ids'] = list(dict.fromkeys([*(before.get('executor_ids') or []), body.add_executor_id]))
+        auto_assignee = _apply_task_stage_automation(before, values, status_by_id)
+        try:
+            task = storage.update_workspace_task(before['id'], values)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        for text in _task_change_events(before, task, storage.task_profiles(), storage.task_projects(), statuses):
+            storage.add_task_activity(task['id'], text, (author or {}).get('id', ''), (author or {}).get('name', 'Команда'))
+        storage.add_task_activity(task['id'], 'Массовое изменение', (author or {}).get('id', ''), (author or {}).get('name', 'Команда'), 'bulk')
+        if auto_assignee:
+            storage.add_task_activity(task['id'], f"Автодействие этапа: ответственным назначен {auto_assignee.get('role') or auto_assignee.get('name')}", (author or {}).get('id', ''), (author or {}).get('name', 'Команда'), 'automation')
+        changed.append(task)
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "tasks": changed}
 
 
 @app.get('/api/key-tasks/{task_id}/activity')
@@ -1781,6 +1893,44 @@ async def patch_task_project(project_id: str, body: TaskProjectPatchBody):
         raise HTTPException(404, 'Проект не найден')
     await broadcast({"type": "key-tasks"})
     return {"ok": True, "project": project}
+
+
+@app.post('/api/key-tasks/statuses')
+async def add_task_status(body: TaskStatusBody):
+    try:
+        status = storage.add_task_status(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "status": status}
+
+
+@app.patch('/api/key-tasks/statuses/{status_id}')
+async def patch_task_status(status_id: str, body: TaskStatusPatchBody):
+    values = body.model_dump(exclude_none=True)
+    assignee_id = values.get("auto_assign_profile_id")
+    if assignee_id:
+        _active_task_profile(assignee_id)
+    try:
+        status = storage.update_task_status(status_id, **values)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not status:
+        raise HTTPException(404, 'Этап не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True, "status": status}
+
+
+@app.delete('/api/key-tasks/statuses/{status_id}')
+async def delete_task_status(status_id: str, body: TaskStatusDeleteBody):
+    try:
+        status = storage.remove_task_status(status_id, body.move_to_status_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not status:
+        raise HTTPException(404, 'Этап не найден')
+    await broadcast({"type": "key-tasks"})
+    return {"ok": True}
 
 
 @app.get('/api/key-tasks/templates')

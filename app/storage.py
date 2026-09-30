@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import httpx
 
+from .task_statuses import default_task_statuses, normalize_task_statuses
+
 DEFAULT_MANAGERS = ["Ирина Богомольцева", "Роман Авсеенко"]
 # Актуальные исполнители, найденные в аудите воронки Производство.
 # Состав можно менять в интерфейсе без правки кода.
@@ -340,14 +342,17 @@ class Storage:
                 "created_at": str(row.get("created_at") or ""),
                 "project_id": str(row.get("project_id") or ""),
                 "executor_ids": [str(item).strip() for item in (row.get("executor_ids") or []) if str(item).strip()] if isinstance(row.get("executor_ids"), list) else [],
+                "watcher_ids": [str(item).strip() for item in (row.get("watcher_ids") or []) if str(item).strip()] if isinstance(row.get("watcher_ids"), list) else [],
                 "status": str(row.get("status") or ""),
                 "description": str(row.get("description") or "")[:3000],
                 "updated_at": str(row.get("updated_at") or ""),
+                "status_changed_at": str(row.get("status_changed_at") or row.get("updated_at") or row.get("created_at") or ""),
                 "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
                 "completed_at": str(row.get("completed_at") or ""),
                 "recurrence": str(row.get("recurrence") or "none"),
                 "recurrence_spawned_at": str(row.get("recurrence_spawned_at") or ""),
                 "backlog": bool(row.get("backlog")),
+                "archived_at": str(row.get("archived_at") or ""),
                 "planned_hours": task_hours(row.get("planned_hours"), "План"),
                 "actual_hours": task_hours(row.get("actual_hours"), "Факт"),
             })
@@ -396,7 +401,7 @@ class Storage:
             {"id": "task-profile-tanya", "name": "Таня", "active": True},
             {"id": "task-profile-sasha", "name": "Саша", "active": True},
             {"id": "task-profile-anya", "name": "Аня", "active": True},
-            {"id": "task-profile-ira", "name": "Ира", "active": True},
+            {"id": "task-profile-ira", "name": "Ира", "role": "ОП Директор", "active": True},
             {"id": "task-profile-victoria", "name": "Виктория", "active": True},
         ]
         value = self._get("task_workspace_profiles", defaults)
@@ -411,10 +416,13 @@ class Storage:
             if not profile_id or not name or profile_id in seen:
                 continue
             seen.add(profile_id)
+            role = str(row.get("role") or "").strip()[:120]
+            if profile_id == "task-profile-ira" and not role:
+                role = "ОП Директор"
             out.append({
                 "id": profile_id,
                 "name": name[:120],
-                "role": str(row.get("role") or "").strip()[:120],
+                "role": role,
                 "active": bool(row.get("active", True)),
                 "created_at": str(row.get("created_at") or ""),
                 "deleted_at": str(row.get("deleted_at") or ""),
@@ -477,6 +485,83 @@ class Storage:
         if found:
             self._set("task_workspace_profiles", profiles)
         return found
+
+    def task_statuses(self):
+        return normalize_task_statuses(self._get("task_workspace_statuses", default_task_statuses()))
+
+    def add_task_status(self, name):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("Укажите название этапа")
+        if len(name) > 120:
+            raise ValueError("Название этапа не должно быть длиннее 120 символов")
+        statuses = self.task_statuses()
+        if any(row["name"].casefold() == name.casefold() for row in statuses):
+            raise ValueError("Этап с таким названием уже есть")
+        row = {
+            "id": f"task-status-{uuid.uuid4().hex}", "name": name,
+            "kind": "workflow", "protected": False, "auto_assign_profile_id": "", "sla_days": 0,
+        }
+        statuses.insert(len(statuses) - 1, row)
+        self._set("task_workspace_statuses", statuses)
+        return row
+
+    def update_task_status(self, status_id, name=None, auto_assign_profile_id=None, sla_days=None):
+        status_id = str(status_id or "").strip()
+        statuses, found = self.task_statuses(), None
+        for row in statuses:
+            if row["id"] != status_id:
+                continue
+            if name is not None:
+                normalized_name = str(name or "").strip()
+                if not normalized_name:
+                    raise ValueError("Укажите название этапа")
+                if len(normalized_name) > 120:
+                    raise ValueError("Название этапа не должно быть длиннее 120 символов")
+                if any(item["id"] != status_id and item["name"].casefold() == normalized_name.casefold() for item in statuses):
+                    raise ValueError("Этап с таким названием уже есть")
+                row["name"] = normalized_name
+            if auto_assign_profile_id is not None:
+                row["auto_assign_profile_id"] = str(auto_assign_profile_id or "").strip()[:160]
+            if sla_days is not None:
+                try:
+                    row["sla_days"] = max(0, min(365, int(sla_days)))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("SLA должен быть целым числом дней") from exc
+            found = row
+            break
+        if found:
+            self._set("task_workspace_statuses", statuses)
+        return found
+
+    def remove_task_status(self, status_id, move_to_status_id):
+        status_id = str(status_id or "").strip()
+        move_to_status_id = str(move_to_status_id or "").strip()
+        statuses = self.task_statuses()
+        current = next((row for row in statuses if row["id"] == status_id), None)
+        target = next((row for row in statuses if row["id"] == move_to_status_id), None)
+        if not current:
+            return None
+        if current["protected"]:
+            raise ValueError("Системный этап нельзя удалить")
+        if not target or target["id"] == status_id:
+            raise ValueError("Выберите этап, куда перенести задачи")
+        tasks = self.manual_key_tasks()
+        if target["id"] == "done" and any(
+            str(task.get("status") or "") == status_id and task_hours(task.get("actual_hours"), "Факт") <= 0
+            for task in tasks
+        ):
+            raise ValueError("Нельзя перенести в завершающий этап задачи без фактически затраченных часов")
+        for task in tasks:
+            if str(task.get("status") or "") == status_id:
+                task["status"] = target["id"]
+                task["backlog"] = target["id"] == "backlog"
+                task["completed_at"] = datetime.now(timezone.utc).isoformat() if target["id"] == "done" else ""
+                task["status_changed_at"] = datetime.now(timezone.utc).isoformat()
+                task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._set("manual_key_tasks", tasks)
+        self._set("task_workspace_statuses", [row for row in statuses if row["id"] != status_id])
+        return current
 
     def task_projects(self):
         value = self._get("task_workspace_projects", [])
@@ -648,6 +733,8 @@ class Storage:
         """Return legacy manual tasks in the richer workspace shape without data loss."""
         profiles = {row["id"]: row for row in self.task_profiles()}
         legacy_names = {row["id"]: row["name"] for row in self.key_task_team()}
+        status_ids = {row["id"] for row in self.task_statuses()}
+        fallback_status = next((row["id"] for row in self.task_statuses() if row["id"] not in {"backlog", "done"}), "backlog")
         out = []
         for row in self.manual_key_tasks():
             responsible_id = str(row.get("responsible_id") or "").strip()
@@ -655,18 +742,24 @@ class Storage:
             if not isinstance(executor_ids, list):
                 executor_ids = [responsible_id] if responsible_id else []
             executor_ids = [str(value).strip() for value in executor_ids if str(value).strip()]
+            watcher_ids = row.get("watcher_ids")
+            if not isinstance(watcher_ids, list):
+                watcher_ids = []
+            watcher_ids = list(dict.fromkeys(str(value).strip() for value in watcher_ids if str(value).strip()))
             status = str(row.get("status") or "in_progress")
             if row.get("backlog"):
                 status = "backlog"
-            if status not in {"backlog", "new", "planned", "in_progress", "waiting", "review", "ready", "done"}:
-                status = "in_progress"
+            if status not in status_ids:
+                status = fallback_status
             out.append({
                 **row,
                 "project_id": str(row.get("project_id") or ""),
                 "executor_ids": list(dict.fromkeys(executor_ids)),
+                "watcher_ids": watcher_ids,
                 "status": status,
                 "description": str(row.get("description") or "")[:3000],
                 "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+                "status_changed_at": str(row.get("status_changed_at") or row.get("updated_at") or row.get("created_at") or ""),
                 "created_by_profile_id": str(row.get("created_by_profile_id") or ""),
                 "completed_at": str(row.get("completed_at") or ""),
                 "recurrence": str(row.get("recurrence") or "none"),
@@ -696,8 +789,14 @@ class Storage:
             raise ValueError("Добавьте описание задачи")
         if not backlog and not str(values.get("deadline") or "").strip():
             raise ValueError("Укажите срок или отметьте задачу как бэклог")
+        statuses = self.task_statuses()
+        status_ids = {item["id"] for item in statuses}
+        default_status = next((item["id"] for item in statuses if item["id"] not in {"backlog", "done"}), "backlog")
         values["executor_ids"] = values.get("executor_ids") or ([values.get("responsible_id")] if values.get("responsible_id") else [])
-        values["status"] = "backlog" if backlog else (values.get("status") or "new")
+        values["watcher_ids"] = list(dict.fromkeys(str(value).strip() for value in values.get("watcher_ids") or [] if str(value).strip()))
+        values["status"] = "backlog" if backlog else str(values.get("status") or default_status)
+        if values["status"] not in status_ids:
+            raise ValueError("Неизвестный этап задачи")
         values["recurrence"] = str(values.get("recurrence") or "none")
         values["backlog"] = backlog
         values["planned_hours"] = task_hours(values.get("planned_hours"), "План", strict=True)
@@ -713,10 +812,12 @@ class Storage:
                 item.update({
                     "project_id": str(values.get("project_id") or ""),
                     "executor_ids": [str(value).strip() for value in values["executor_ids"] if str(value).strip()],
+                    "watcher_ids": list(values["watcher_ids"]),
                     "status": str(values["status"]),
                     "description": str(values.get("description") or "")[:3000],
                     "created_by_profile_id": str(values.get("created_by_profile_id") or ""),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "status_changed_at": datetime.now(timezone.utc).isoformat(),
                     "completed_at": datetime.now(timezone.utc).isoformat() if values["status"] == "done" else "",
                     "planned_hours": values["planned_hours"],
                     "actual_hours": values["actual_hours"],
@@ -733,7 +834,10 @@ class Storage:
     def update_workspace_task(self, task_id, values):
         task_id = str(task_id or "").strip()
         tasks = self.manual_key_tasks()
-        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours", "archived"}
+        allowed = {"title", "responsible_id", "deadline", "priority", "project_id", "executor_ids", "watcher_ids", "status", "description", "recurrence", "backlog", "planned_hours", "actual_hours", "archived"}
+        statuses = self.task_statuses()
+        status_ids = {item["id"] for item in statuses}
+        default_status = next((item["id"] for item in statuses if item["id"] not in {"backlog", "done"}), "backlog")
         for row in tasks:
             if row["id"] != task_id:
                 continue
@@ -758,15 +862,19 @@ class Storage:
                     row[key] = "high" if str(value).lower() == "high" else "normal"
                 elif key == "status":
                     value = str(value or "")
-                    if value not in {"backlog", "new", "planned", "in_progress", "waiting", "review", "ready", "done"}:
-                        raise ValueError("Неизвестный статус задачи")
+                    if value not in status_ids:
+                        raise ValueError("Неизвестный этап задачи")
                     row[key] = value
                     row["backlog"] = value == "backlog"
+                    if value != previous_status:
+                        row["status_changed_at"] = datetime.now(timezone.utc).isoformat()
                     if value == "done" and previous_status != "done":
                         row["completed_at"] = datetime.now(timezone.utc).isoformat()
                     elif value != "done":
                         row["completed_at"] = ""
                 elif key == "executor_ids":
+                    row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
+                elif key == "watcher_ids":
                     row[key] = list(dict.fromkeys(str(item).strip() for item in (value or []) if str(item).strip()))
                 elif key == "description":
                     row[key] = str(value or "")[:3000]
@@ -779,8 +887,10 @@ class Storage:
                     row[key] = bool(value)
                     if row[key]:
                         row["status"] = "backlog"
+                        row["status_changed_at"] = datetime.now(timezone.utc).isoformat()
                     elif row.get("status") == "backlog":
-                        row["status"] = "new"
+                        row["status"] = default_status
+                        row["status_changed_at"] = datetime.now(timezone.utc).isoformat()
                 elif key == "planned_hours":
                     row[key] = task_hours(value, "План", strict=True)
                 elif key == "actual_hours":
@@ -900,6 +1010,8 @@ class Storage:
             next_deadline = deadline.replace(year=year, month=month, day=min(deadline.day, monthrange(year, month)[1]))
         now = datetime.now(timezone.utc).isoformat()
         source["recurrence_spawned_at"] = now
+        statuses = self.task_statuses()
+        default_status = next((item["id"] for item in statuses if item["id"] not in {"backlog", "done"}), "backlog")
         clone = {
             "id": uuid.uuid4().hex,
             "title": source["title"],
@@ -909,9 +1021,11 @@ class Storage:
             "created_at": now,
             "project_id": source.get("project_id") or "",
             "executor_ids": list(source.get("executor_ids") or [source["responsible_id"]]),
-            "status": "new",
+            "watcher_ids": list(source.get("watcher_ids") or []),
+            "status": "backlog" if source.get("backlog") else default_status,
             "description": source.get("description") or "",
             "updated_at": now,
+            "status_changed_at": now,
             "created_by_profile_id": source.get("created_by_profile_id") or "",
             "completed_at": "",
             "planned_hours": task_hours(source.get("planned_hours"), "План"),
