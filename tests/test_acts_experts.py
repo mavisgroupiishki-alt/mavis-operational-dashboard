@@ -17,3 +17,5 @@ def test_report_uses_current_month_task_creator_and_stage_name():
     lisa = next(expert for expert in report["experts"] if expert["name"] == "Елизавета Горбатова")
     assert (lisa["total"], lisa["scan"], lisa["archive"], lisa["no_confirmation"]) == (3, 1, 1, 1)
     assert lisa["pending"][0]["url"].endswith("/tasks/task/view/3/")
+    assert lisa["scan_tasks"][0]["title"] == "Амис-техно"
+    assert lisa["archive_tasks"][0]["title"] == "Диптера"

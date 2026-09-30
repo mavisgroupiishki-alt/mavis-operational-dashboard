@@ -45,7 +45,7 @@ def build_acts_experts_report(
         for stage in stages
     }
     people = {
-        _name_key(name): {"name": name, "total": 0, "scan": 0, "archive": 0, "pending": []}
+        _name_key(name): {"name": name, "total": 0, "scan": 0, "archive": 0, "scan_tasks": [], "archive_tasks": [], "pending": []}
         for name in EXPERTS
     }
     for task in tasks:
@@ -61,21 +61,25 @@ def build_acts_experts_report(
         stage = stage_names.get(stage_id) or ("Без стадии" if stage_id == "0" else f"Стадия {stage_id}")
         person["total"] += 1
         normalized_stage = _name_key(stage)
+        task_id = str(task.get("ID") or task.get("id") or "")
+        task_row = {
+            "id": task_id,
+            "title": title,
+            "stage": stage,
+            "created_at": created_at,
+            "url": f"{portal}/workgroups/group/{ACTS_PROJECT_ID}/tasks/task/view/{task_id}/" if task_id else "",
+        }
         if normalized_stage == "скан есть":
             person["scan"] += 1
+            person["scan_tasks"].append(task_row)
         elif normalized_stage == "архив":
             person["archive"] += 1
+            person["archive_tasks"].append(task_row)
         else:
-            task_id = str(task.get("ID") or task.get("id") or "")
-            person["pending"].append({
-                "id": task_id,
-                "title": title,
-                "stage": stage,
-                "created_at": created_at,
-                "url": f"{portal}/workgroups/group/{ACTS_PROJECT_ID}/tasks/task/view/{task_id}/" if task_id else "",
-            })
+            person["pending"].append(task_row)
     experts = []
     for row in people.values():
-        row["pending"].sort(key=lambda task: (task["created_at"], task["id"]))
+        for key in ("scan_tasks", "archive_tasks", "pending"):
+            row[key].sort(key=lambda task: (task["created_at"], task["id"]))
         experts.append({**row, "no_confirmation": len(row["pending"])})
     return {"ok": True, "month": month, "project_id": ACTS_PROJECT_ID, "experts": experts}
