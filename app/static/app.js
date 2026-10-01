@@ -115,7 +115,13 @@ function restoreDashboardChatState(){
 restoreDashboardChatState();
 
 function selectedManagers(){return state?.team?.managers||["Ирина Богомольцева","Роман Авсеенко"]}
-function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова"]}
+function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова","Иоланта Кананович"]}
+function availableTeamUsers(){
+  const detailed=state?.available_user_options||[];
+  if(detailed.length)return detailed;
+  return (state?.available_users||[]).map(name=>({name,active:true}));
+}
+function teamUserOptions(){return availableTeamUsers().map(user=>`<option value="${attr(user.name)}">${esc(user.name)}${user.active===false?" · уволен":""}</option>`).join('')}
 function managers(){const s=new Set(selectedManagers());return (state?.sales?.managers||[]).filter(x=>s.has(x.name))}
 function experts(){const s=new Set(selectedExperts());return (state?.production?.experts||[]).filter(x=>s.has(x.name))}
 function automaticNpsScores(meta){return (meta?.tasks||[]).map(x=>Number(x.score)).filter(Number.isFinite)}
@@ -1367,8 +1373,7 @@ function contextOptions(scope,type){
 }
 
 function teamSettings(){
-  const users=state.available_users||[];
-  const block=(role,title,names)=>`<div class="team-block"><div class="subhead">${esc(title)}</div><div class="team-tags">${names.map(n=>`<span class="team-tag">${esc(n)} <button data-team-remove="1" data-role="${role}" data-name="${attr(n)}">×</button></span>`).join('')}</div><div class="team-add"><select data-team-select="${role}">${users.map(u=>`<option value="${attr(u)}">${esc(u)}</option>`).join('')}</select><button class="btn ghost" data-team-add="${role}">Добавить</button></div></div>`;
+  const block=(role,title,names)=>`<div class="team-block"><div class="subhead">${esc(title)}</div><div class="team-tags">${names.map(n=>`<span class="team-tag">${esc(n)} <button data-team-remove="1" data-role="${role}" data-name="${attr(n)}">×</button></span>`).join('')}</div><div class="team-add"><select data-team-select="${role}">${teamUserOptions()}</select><button class="btn ghost" data-team-add="${role}">Добавить</button></div></div>`;
   return block('manager','Менеджеры',selectedManagers())+block('expert','Эксперты',selectedExperts())+`<div class="admin-inline"><input id="teamAdminKey" type="password" placeholder="ADMIN_KEY"></div>`;
 }
 function dormantSettings(){const all=state.dormant_config?.available_stages||[],sel=new Set(state.dormant_config?.selected_stages||[]);return `<div class="dormant-stage-list">${all.map(s=>`<label><input type="checkbox" data-dormant-stage="1" value="${attr(s)}" ${sel.has(s)?'checked':''}> ${esc(s)}</label>`).join('')}</div><div class="admin-inline"><input id="dormantAdminKey" type="password" placeholder="ADMIN_KEY"><button class="btn ghost" id="saveDormant">Сохранить критерий</button></div>`}
@@ -1810,7 +1815,7 @@ function openNpsDialog(expert=""){
   $("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();$("#npsDialog").showModal();
 }
 function openTeamDialog(role="expert"){
-  teamTargetRole=role;$("#teamRole").value=role;const users=state?.available_users||[];$("#teamUser").innerHTML=users.map(u=>`<option value="${attr(u)}">${esc(u)}</option>`).join('');$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
+  teamTargetRole=role;$("#teamRole").value=role;$("#teamUser").innerHTML=teamUserOptions();$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
 }
 function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
   fillPlanMonthOptions();

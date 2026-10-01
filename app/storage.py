@@ -14,7 +14,9 @@ from .task_statuses import default_task_statuses, normalize_task_statuses
 DEFAULT_MANAGERS = ["Ирина Богомольцева", "Роман Авсеенко"]
 # Актуальные исполнители, найденные в аудите воронки Производство.
 # Состав можно менять в интерфейсе без правки кода.
-DEFAULT_EXPERTS = ["Екатерина Николаева", "Елизавета Горбатова", "Ольга Панькова"]
+# Historical experts stay in the dashboard after dismissal so their results
+# remain visible in the months where they worked.
+DEFAULT_EXPERTS = ["Екатерина Николаева", "Елизавета Горбатова", "Ольга Панькова", "Иоланта Кананович"]
 
 
 def task_hours(value: Any, label: str, strict: bool = False) -> float:
@@ -301,9 +303,15 @@ class Storage:
         value = self._get("team", default)
         if not isinstance(value, dict):
             value = default
+        experts = list(value.get("experts") or [])
+        # Existing installations keep the team in storage, so changing the
+        # default alone would not restore a dismissed expert's historical KPIs.
+        for name in DEFAULT_EXPERTS:
+            if name not in experts:
+                experts.append(name)
         return {
             "managers": list(value.get("managers") or []),
-            "experts": list(value.get("experts") or []),
+            "experts": experts,
         }
 
     def add_team_member(self, role, name):

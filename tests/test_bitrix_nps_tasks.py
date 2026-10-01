@@ -23,6 +23,10 @@ class BitrixNpsTaskFetchTests(unittest.TestCase):
 
             self.assertEqual(meta["users"]["1"], "Активный Эксперт")
             self.assertEqual(meta["users"]["2"], "Иоланта Кананович")
+            self.assertEqual(meta["user_options"], [
+                {"id": "1", "name": "Активный Эксперт", "active": True},
+                {"id": "2", "name": "Иоланта Кананович", "active": False},
+            ])
             self.assertEqual(client.list_all.await_args_list[1].args[1]["FILTER"], {"ACTIVE": False})
 
         asyncio.run(check())

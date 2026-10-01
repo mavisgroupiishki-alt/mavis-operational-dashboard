@@ -1837,6 +1837,7 @@ async def build_snapshot(client, month_key: str, period: str, tz_name: str, cust
         "month_start":start.isoformat(),"month_end":end.isoformat(),"period_start":period_start.isoformat(),"period_end":period_end.isoformat(),"pace":month_pace(month_key,tz_name),
         "sales":sales,"production":production,"_details":details,
         "available_users": sorted(set((meta.get("users") or {}).values())),
+        "available_user_options": list(meta.get("user_options") or []),
         "available_dormant_stages": sorted(set((meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {}).values())),
         "metric_status": {
             "upsells": {"connected": False, "note":"В Bitrix не найдено отдельное надежное поле «Допродажа» — требуется mapping."},

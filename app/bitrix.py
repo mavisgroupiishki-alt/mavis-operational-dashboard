@@ -175,9 +175,15 @@ class BitrixClient:
             self.call("crm.deal.fields"),
             self.call("crm.lead.fields"))
         um={}
-        for u in list(active_users or []) + list(inactive_users or []):
-            n=" ".join(x for x in [u.get("NAME"),u.get("LAST_NAME")] if x).strip()
-            um[str(u.get("ID"))]=n or f"ID {u.get('ID')}"
+        user_options=[]
+        for active, rows in ((True, active_users or []), (False, inactive_users or [])):
+            for u in rows:
+                n=" ".join(x for x in [u.get("NAME"),u.get("LAST_NAME")] if x).strip()
+                user_id=str(u.get("ID") or "")
+                name=n or f"ID {user_id}"
+                if user_id:
+                    um[user_id]=name
+                    user_options.append({"id":user_id,"name":name,"active":active})
         sm={}; sources={}; status_by_entity={}
         for s in statuses or []:
             sid=str(s.get("STATUS_ID")); ent=str(s.get("ENTITY_ID") or "")
@@ -189,7 +195,7 @@ class BitrixClient:
         for code,m in deal_fields.items():
             if isinstance(m,dict) and m.get("items"):
                 enums[code]={str(i.get("ID")):i.get("VALUE") for i in m["items"]}
-        self._meta={"users":um,"statuses":sm,"status_by_entity":status_by_entity,"sources":sources,"enums":enums,
+        self._meta={"users":um,"user_options":sorted(user_options,key=lambda row:(not row["active"],row["name"].casefold())),"statuses":sm,"status_by_entity":status_by_entity,"sources":sources,"enums":enums,
                     "deal_fields":deal_fields,"lead_fields":lf.get("result") or {}}
         self._meta_at=time.monotonic()
         return self._meta
