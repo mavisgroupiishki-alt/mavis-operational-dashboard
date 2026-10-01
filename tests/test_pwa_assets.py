@@ -52,6 +52,12 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn("Активные зависшие — ожидаемое закрытие в месяце", experts_function.group("body"))
         self.assertNotIn("В воронке «Зависшие»", experts_function.group("body"))
 
+    def test_selected_experts_are_visible_even_without_rows_in_current_snapshot(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("function emptyExpert(name)", script)
+        self.assertIn("return selectedExperts().map(name=>byName.get(name)||emptyExpert(name));", script)
+
     def test_production_breakdowns_have_direct_plan_actions(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
 

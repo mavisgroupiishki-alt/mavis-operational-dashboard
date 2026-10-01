@@ -123,7 +123,11 @@ function availableTeamUsers(){
 }
 function teamUserOptions(){return availableTeamUsers().map(user=>`<option value="${attr(user.name)}">${esc(user.name)}${user.active===false?" · уволен":""}</option>`).join('')}
 function managers(){const s=new Set(selectedManagers());return (state?.sales?.managers||[]).filter(x=>s.has(x.name))}
-function experts(){const s=new Set(selectedExperts());return (state?.production?.experts||[]).filter(x=>s.has(x.name))}
+function emptyExpert(name){return {name,new_count:0,active_count:0,returns_count:0,closed_count:0,closed_amount:0,avg_production_days:0,within_norm_pct:0,products:[]}}
+function experts(){
+  const byName=new Map((state?.production?.experts||[]).map(expert=>[expert.name,expert]));
+  return selectedExperts().map(name=>byName.get(name)||emptyExpert(name));
+}
 function automaticNpsScores(meta){return (meta?.tasks||[]).map(x=>Number(x.score)).filter(Number.isFinite)}
 function manualNpsScores(expert){return (state?.manual_nps?.[expert]?.entries||[]).map(x=>Number(x.value)).filter(Number.isFinite)}
 function npsMeta(scores,entries=[]){return {value:scores.length?Number((scores.reduce((total,value)=>total+value,0)/scores.length).toFixed(1)):null,count:scores.length,entries}}
