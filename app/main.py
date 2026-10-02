@@ -1271,7 +1271,7 @@ def compact_snapshot_payload(snapshot):
 
     compact = {
         key: sales[key]
-        for key in ("overall", "stages", "active_deals_count", "sale_filter", "classification", "available_sources")
+        for key in ("overall", "stages", "active_deals_count", "sale_filter", "classification", "available_sources", "financial_source")
         if key in sales
     }
     managers = []

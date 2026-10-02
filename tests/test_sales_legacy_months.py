@@ -56,6 +56,23 @@ class SalesLegacyMonthsTests(unittest.TestCase):
         self.assertIn('if(usesDealAmountRevenue())return "";', source)
         self.assertIn('Сумма продаж Bitrix', source)
 
+    def test_compact_snapshot_keeps_legacy_financial_source(self):
+        snapshot = {
+            "sales": {
+                "financial_source": "deal_amount",
+                "overall": {},
+                "stages": [],
+                "active_deals_count": 0,
+                "sale_filter": {},
+                "classification": {},
+                "available_sources": [],
+            }
+        }
+
+        compact = main.compact_snapshot_payload(snapshot)
+
+        self.assertEqual(compact["sales"]["financial_source"], "deal_amount")
+
 
 if __name__ == "__main__":
     unittest.main()
