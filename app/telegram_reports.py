@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 RUSSIAN_WEEKDAYS = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
@@ -101,9 +102,17 @@ def _report_configuration(login: str, password: str, report_url: str) -> None:
         raise ReportDeliveryError("Адрес BI-отчёта должен быть HTTPS")
 
 
+def _safe_page_location(url: str) -> str:
+    """Return diagnostic page location without OAuth query parameters."""
+    parsed = urlsplit(url)
+    return f"{parsed.netloc}{parsed.path}" if parsed.netloc else "неизвестная страница"
+
+
 async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str, output_path: Path) -> Path:
     """Log in to BI Builder and capture report 80, refusing unavailable screens."""
     _report_configuration(login, password, report_url)
+    stage = "запуск браузера"
+    page_location = ""
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
         from playwright.async_api import async_playwright
@@ -119,20 +128,29 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
             )
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 1200}, device_scale_factor=1)
+                stage = "открытие страницы отчёта"
                 await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
+                page_location = _safe_page_location(page.url)
 
                 # The unauthenticated server is redirected to Bitrix24 Network OAuth.
                 if "auth2.bitrix24.by" in page.url:
+                    stage = "ожидание поля логина Bitrix24"
                     login_input = page.locator("input[type='tel'], input[name='LOGIN'], input[name='login'], input[type='text']").first
                     await login_input.wait_for(state="visible", timeout=20_000)
                     await login_input.fill(login)
+                    stage = "отправка логина Bitrix24"
                     await page.get_by_role("button").filter(has_text="Продолжить").first.click(timeout=8_000)
+                    stage = "ожидание поля пароля Bitrix24"
                     password_input = page.locator("input[type='password']").first
                     await password_input.wait_for(state="visible", timeout=20_000)
                     await password_input.fill(password)
+                    stage = "отправка пароля Bitrix24"
                     await page.get_by_role("button").filter(has_text="Войти").first.click(timeout=8_000)
+                    stage = "переход из Bitrix24 к BI-отчёту"
                     await page.wait_for_url("**/bi/dashboard/detail/80/**", timeout=45_000)
+                    page_location = _safe_page_location(page.url)
 
+                stage = "проверка доступности BI-отчёта"
                 unavailable = page.get_by_text("Отчёт недоступен", exact=True)
                 try:
                     await unavailable.wait_for(state="visible", timeout=4_000)
@@ -141,16 +159,19 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
                 else:
                     raise ReportDeliveryError("BI-конструктор вернул «Отчёт недоступен»")
 
+                stage = "отрисовка BI-отчёта"
                 await page.wait_for_timeout(3_000)
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
+                stage = "создание снимка BI-отчёта"
                 await page.screenshot(path=str(output_path), full_page=True)
             finally:
                 await browser.close()
     except ReportDeliveryError:
         raise
     except PlaywrightTimeoutError as exc:
-        raise ReportDeliveryError("BI-конструктор не загрузился за отведённое время") from exc
+        location = f" ({page_location})" if page_location else ""
+        raise ReportDeliveryError(f"BI-конструктор остановился на этапе: {stage}{location}") from exc
     except Exception as exc:
         raise ReportDeliveryError("Не удалось получить снимок BI-конструктора") from exc
     return output_path

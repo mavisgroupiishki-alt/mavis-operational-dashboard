@@ -2,7 +2,7 @@ from datetime import datetime
 import unittest
 from zoneinfo import ZoneInfo
 
-from app.telegram_reports import ReportDeliveryError, build_daily_report_texts
+from app.telegram_reports import ReportDeliveryError, _safe_page_location, build_daily_report_texts
 
 
 def snapshot(plan=None, incoming=850):
@@ -15,6 +15,12 @@ def snapshot(plan=None, incoming=850):
 
 
 class TelegramReportsTests(unittest.TestCase):
+    def test_safe_page_location_hides_oauth_query(self):
+        self.assertEqual(
+            _safe_page_location("https://auth2.bitrix24.by/oauth?state=secret&token=secret"),
+            "auth2.bitrix24.by/oauth",
+        )
+
     def test_manager_style_text_uses_current_fact_and_no_invented_plan(self):
         result = build_daily_report_texts(snapshot(), datetime(2026, 10, 2, 9, tzinfo=ZoneInfo("Europe/Minsk")))
 
