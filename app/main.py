@@ -606,7 +606,7 @@ def schedule_clean_revenue_refresh(month: str):
 
 async def load_jarvis_operations(resource: str, params: dict[str, str] | None = None):
     """Proxy a bounded read-only Jarvis payload so its token never reaches the browser."""
-    allowed = {"sales-calls", "crm-audit", "marketing"}
+    allowed = {"sales-calls", "crm-audit", "marketing", "reactivation-recommendations"}
     if resource not in allowed:
         return {"ok": False, "status": "invalid_resource"}
     if not settings.jarvis_operations_url or not settings.jarvis_operations_token:
@@ -643,6 +643,37 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
         if previous:
             return {**previous, "status": "stale"}
         return {"ok": False, "status": "unavailable"}
+
+
+async def reactivate_jarvis_deal(deal_id: str):
+    """Forward one confirmed action to Jarvis without exposing its token."""
+    if not deal_id.isdigit():
+        raise HTTPException(400, "Некорректный ID сделки")
+    if not settings.jarvis_operations_url or not settings.jarvis_operations_token:
+        raise HTTPException(503, "Интеграция Jarvis не настроена")
+    target = urlparse(settings.jarvis_operations_url)
+    if target.scheme != "https" or not target.netloc:
+        raise HTTPException(503, "Некорректная настройка Jarvis")
+    url = (
+        settings.jarvis_operations_url.rstrip("/")
+        + f"/api/integrations/operations/reactivation-recommendations/{deal_id}/reactivate"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as session:
+            response = await session.post(
+                url,
+                headers={"Authorization": f"Bearer {settings.jarvis_operations_token}", "Accept": "application/json"},
+                json={"actor": "dashboard-full-access"},
+            )
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(503, "Jarvis временно недоступен") from exc
+    if response.status_code != 200 or not isinstance(payload, dict) or not payload.get("ok"):
+        message = payload.get("error") if isinstance(payload, dict) else "Перенос не подтверждён Jarvis"
+        raise HTTPException(409, str(message or "Перенос не подтверждён Jarvis"))
+    jarvis_operations_cache.pop("reactivation-recommendations:{}", None)
+    jarvis_operations_cache_time.pop("reactivation-recommendations:{}", None)
+    return payload
 
 
 async def _recent_call_activities(owner_type_id: int, owner_ids: list[str], since: datetime):
@@ -1312,6 +1343,10 @@ async def refresh_loop():
                 await current_task
             schedule_clean_revenue_refresh(month)
             schedule_automatic_nps_refresh()
+            # Jarvis retains its own one-hour recommendation cache. Calling it
+            # from the existing dashboard heartbeat keeps the reactivation
+            # queue warm even before a manager opens the Sales section.
+            await load_jarvis_operations("reactivation-recommendations")
             if time.monotonic() - previous_month_refresh_at >= PREVIOUS_MONTH_REFRESH_SECONDS:
                 previous_task = schedule_snapshot(*previous, force=True)
                 if previous_task:
@@ -1543,6 +1578,18 @@ async def api_sales_section(
 @app.get("/api/sales-calls")
 async def api_sales_calls():
     return await load_jarvis_operations("sales-calls")
+
+
+@app.get("/api/reactivation-recommendations")
+async def api_reactivation_recommendations(request: Request):
+    require_full_access(request)
+    return await load_jarvis_operations("reactivation-recommendations")
+
+
+@app.post("/api/reactivation-recommendations/{deal_id}/reactivate")
+async def api_reactivate_recommendation(deal_id: str, request: Request):
+    require_full_access(request)
+    return await reactivate_jarvis_deal(deal_id)
 
 
 @app.get("/api/jarvis")

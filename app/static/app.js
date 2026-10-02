@@ -68,6 +68,8 @@ let planDialogPlans={};
 let planDialogRequestId=0;
 let actsExpertsData=null;
 let actsExpertsLoading=false;
+let reactivationData=null;
+let reactivationLoading=false;
 
 const SALES_LABELS={
   leads:["Лиды","num"],qualified:["Квал. лиды","num"],qualified_rate:["Лид → квал.","pct"],lead_to_deal_rate:["Квал. → сделка","pct"],
@@ -1145,6 +1147,23 @@ function rnpManagerMatrix(){
     </details>`;
   }).join("");
 }
+function reactivationDate(value){const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?date.toLocaleDateString("ru-RU",{day:"numeric",month:"short",year:"numeric"}):"нет данных"}
+function reactivationBlock(){
+  if(reactivationLoading&&!reactivationData)return `<section class="reactivation-panel"><div class="reactivation-head"><div><div class="eyebrow">JARVIS · РЕАНИМАЦИЯ</div><h3>Реанимируем реанимацию</h3></div><span class="muted">Проверяю сделки, звонки и договорённости…</span></div></section>`;
+  if(!reactivationData)return `<section class="reactivation-panel"><div class="reactivation-head"><div><div class="eyebrow">JARVIS · РЕАНИМАЦИЯ</div><h3>Реанимируем реанимацию</h3><p>Очередь временно недоступна. Это не означает, что рекомендаций нет.</p></div><button class="btn ghost" data-reload-reactivation="1">Повторить</button></div></section>`;
+  const summary=reactivationData.summary||{},thresholds=reactivationData.thresholds||{},rows=reactivationData.recommendations||[],excluded=reactivationData.excluded||[];
+  const evidence=row=>{const context=row.context||{},calls=context.calls||[],comments=context.comments||[],fields=context.fields||[];return `<details class="reactivation-evidence"><summary>${row.analysisMode==="ai"?"Основания ИИ Jarvis":"Основания Jarvis"} · ${fmt(calls.length)} звонков, ${fmt(comments.length)} комментариев, ${fmt(fields.length)} полей</summary><div class="reactivation-evidence-grid"><div><strong>Звонки</strong>${calls.length?calls.map(call=>`<p><b>${esc(reactivationDate(call.occurredAt))}</b>${call.summary?` · ${esc(call.summary)}`:""}${call.nextStep?`<br><span>Следующий шаг: ${esc(call.nextStep)}</span>`:""}</p>`).join(""):'<p>Нет доступных проанализированных звонков по сделке.</p>'}</div><div><strong>Комментарии</strong>${comments.length?comments.map(comment=>`<p>${esc(comment.text)}</p>`).join(""):'<p>Нет доступных комментариев.</p>'}</div><div><strong>Поля сделки</strong>${fields.length?fields.map(field=>`<p><span>${esc(field.label)}:</span> ${esc(field.value)}</p>`).join(""):'<p>Нет доступных полей для объяснения.</p>'}</div></div></details>`};
+  return `<details class="reactivation-panel" open><summary><div class="reactivation-head"><div><div class="eyebrow">JARVIS · РЕАНИМАЦИЯ</div><h3>Реанимируем реанимацию</h3><p>${esc(reactivationData.funnel?.name||"Реанимация")} · анализ полей сделки, комментариев, плановых дел и последних звонков.</p></div><div class="reactivation-count"><strong>${fmt(summary.recommended)}</strong><span>к связи</span></div></div></summary><div class="reactivation-rule">Не включает сделки, где контакт был меньше ${fmt(thresholds.recentContactDays||60)} дней назад, или следующая подтверждённая договорённость позже чем через ${fmt(thresholds.farFutureDays||30)} дней.</div><div class="reactivation-queue">${rows.length?rows.map(row=>`<article class="reactivation-row ${attr(row.priorityLevel||"medium")}"><div class="reactivation-row-main"><div class="reactivation-priority ${attr(row.priorityLevel||"medium")}">${esc(row.priorityLabel||"К связи")}</div><div><div class="reactivation-title">${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noopener noreferrer">${esc(row.title||`Сделка ${row.dealId}`)}</a>`:esc(row.title||`Сделка ${row.dealId}`)}</div><div class="reactivation-meta">Последний контакт: ${esc(reactivationDate(row.lastContactAt))}${row.nextContactAt?` · следующее дело: ${esc(reactivationDate(row.nextContactAt))}`:""}</div></div></div><div class="reactivation-reasons"><strong>Почему вернуть в работу</strong><ul>${(row.reasons||[]).map(reason=>`<li>${esc(reason)}</li>`).join("")}</ul><p><b>Следующий шаг:</b> ${esc(row.suggestedNextStep||"Связаться с клиентом")}</p></div>${evidence(row)}<div class="reactivation-actions"><button class="btn primary" data-reactivate-deal="${attr(row.dealId)}">Реанимировали → Новая</button></div></article>`).join(""):`<div class="empty-inline">Сейчас нет сделок, которые можно безопасно рекомендовать к реанимации. Проверено ${fmt(summary.scanned)}; исключено правилами ${fmt(summary.excluded)}.</div>`}</div><details class="reactivation-excluded"><summary>Почему пока не реанимируем · ${fmt(summary.excluded)}</summary>${excluded.length?`<div class="scroll-x"><table><thead><tr><th>Сделка</th><th>Последний контакт</th><th>Причина</th></tr></thead><tbody>${excluded.map(row=>`<tr><td>${row.url?`<a href="${attr(row.url)}" target="_blank" rel="noopener noreferrer">${esc(row.title)}</a>`:esc(row.title)}</td><td>${esc(reactivationDate(row.lastContactAt))}</td><td>${esc((row.exclusions||[]).join(" "))}</td></tr>`).join("")}</tbody></table></div>`:'<p class="muted">Нет исключённых сделок в доступном срезе.</p>'}</details></details>`;
+}
+async function loadReactivationQueue(force=false){
+  if(reactivationLoading)return;
+  reactivationLoading=true;
+  try{const response=await fetch("/api/reactivation-recommendations",{cache:"no-store"}),payload=await response.json();if(!response.ok||!payload.ok)throw new Error(payload.status||payload.detail||"unavailable");reactivationData=payload.data}catch(error){if(force||!reactivationData)reactivationData=null}finally{reactivationLoading=false;if(requestedView()==="sales"&&state?.sales?.details_loaded)renderSales()}
+}
+async function reactivateDeal(dealId){
+  if(!window.confirm("Вернуть эту сделку в основную воронку продаж на этап «Новая»? Jarvis сначала повторно проверит, что она ещё в реанимации."))return;
+  const button=document.querySelector(`[data-reactivate-deal="${CSS.escape(String(dealId))}"]`);if(button){button.disabled=true;button.textContent="Переношу…"}
+  try{const response=await fetch(`/api/reactivation-recommendations/${encodeURIComponent(dealId)}/reactivate`,{method:"POST",headers:{"Content-Type":"application/json"}}),payload=await response.json().catch(()=>({detail:"Не удалось подтвердить перенос"}));if(!response.ok||!payload.ok)throw new Error(payload.detail||payload.error||"Не удалось подтвердить перенос");alert("Сделка перенесена в «Новая» основной воронки продаж.");reactivationData=null;await loadReactivationQueue(true)}catch(error){alert(error.message||"Не удалось безопасно перенести сделку");if(button){button.disabled=false;button.textContent="Реанимировали → Новая"}}}
 function renderSales(){
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
   const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales"),averageCheckPlan=getPlan("sales","average_check");
@@ -1167,6 +1186,7 @@ function renderSales(){
 
     <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «График платежей». Нажмите на любую из трёх финансовых карточек, чтобы открыть подтверждающие строки сделок.</div>
     ${salesOverdueSchedule()}
+    ${reactivationBlock()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
     ${salesCleanRevenueReconciliation()}
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
@@ -1186,6 +1206,7 @@ function renderSales(){
     </section>
   `;
   $("#openPlanSales")?.addEventListener("click",()=>openPlanDialog("sales"));
+  if(!reactivationData&&!reactivationLoading)void loadReactivationQueue();
 }
 
 function renderExpertsDepartment(){
@@ -1329,11 +1350,11 @@ function actsExpertsMonth(){return state?.month_key||$("#month")?.value||""}
 function actsExpertsPanel(){
   const month=actsExpertsMonth();
   const report=actsExpertsData?.month===month?actsExpertsData:null;
-  if(!report)return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Задачи проекта «Акты Счета» за выбранный месяц: загружаю из Bitrix…</p></div><span class="acts-panel-control" aria-hidden="true"></span></div></summary></details>`;
+  if(!report)return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Задачи проекта «Акты Счета» за выбранный месяц: загружаю из Bitrix…</p></div><button type="button" class="acts-panel-toggle" data-acts-experts-toggle="1" aria-expanded="true">Свернуть отчёт</button></div></summary></details>`;
   const refreshed=report.generated_at?new Intl.DateTimeFormat("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date(report.generated_at)):"";
   const taskList=(rows,empty)=>rows?.length?`<ol class="acts-pending-list">${rows.map(task=>`<li><a href="${attr(task.url)}" target="_blank" rel="noopener noreferrer">${esc(task.title)}</a><span>${esc(task.stage)}</span></li>`).join("")}</ol>`:`<p class=muted>${esc(empty)}</p>`;
   const cards=(report.experts||[]).map(expert=>`<article class="acts-expert-card"><div class="acts-expert-title">${esc(expert.name)}</div><div class="acts-expert-counts"><div><span>Всего актов</span><strong>${fmt(expert.total)}</strong></div><div><span>Есть скан</span><strong>${fmt(expert.scan)}</strong></div><div><span>Есть оригинал</span><strong>${fmt(expert.archive)}</strong></div><div><span>Нет подтверждения</span><strong>${fmt(expert.no_confirmation)}</strong></div></div><details><summary>Скан есть: ${fmt(expert.scan)}</summary>${taskList(expert.scan_tasks,"Сканов в этом месяце нет.")}</details><details><summary>В архиве: ${fmt(expert.archive)}</summary>${taskList(expert.archive_tasks,"Оригиналов в архиве пока нет.")}</details><details><summary>Нет подтверждения: ${fmt(expert.no_confirmation)}</summary>${taskList(expert.pending,"Все задачи подтверждены.")}</details></article>`).join("");
-  return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Постановщик задачи · создание за ${esc(month)} · «СКАН ЕСТЬ», «Архив» и список без подтверждения.</p></div><div class="acts-head-meta"><div class="acts-live-status"><span>●</span> Bitrix online${refreshed?` · ${esc(refreshed)}`:""}</div><span class="acts-panel-control" aria-hidden="true"></span></div></div></summary><div class="acts-experts-grid">${cards}</div></details>`;
+  return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Постановщик задачи · создание за ${esc(month)} · «СКАН ЕСТЬ», «Архив» и список без подтверждения.</p></div><div class="acts-head-meta"><div class="acts-live-status"><span>●</span> Bitrix online${refreshed?` · ${esc(refreshed)}`:""}</div><button type="button" class="acts-panel-toggle" data-acts-experts-toggle="1" aria-expanded="true">Свернуть отчёт</button></div></div></summary><div class="acts-experts-grid">${cards}</div></details>`;
 }
 async function loadActsExperts(force=false){
   const month=actsExpertsMonth();
@@ -1980,6 +2001,8 @@ function init(){
     const taskViewApply=e.target.closest('[data-task-view-apply]');if(taskViewApply){const saved=taskSavedViews().find(view=>view.id===taskViewApply.dataset.taskViewApply);if(saved)applyTaskView(saved.filters||{});return}
     const taskViewDelete=e.target.closest('[data-task-view-delete]');if(taskViewDelete){const name=taskSavedViews().find(view=>view.id===taskViewDelete.dataset.taskViewDelete)?.name||'это представление';if(!window.confirm(`Удалить «${name}»?`))return;fetch(`/api/key-tasks/views/${encodeURIComponent(taskViewDelete.dataset.taskViewDelete)}?profile_id=${encodeURIComponent(activeTaskProfileId)}`,{method:'DELETE'}).then(async response=>{if(!response.ok){alert(await response.text());return}keyTasksData=null;await loadKeyTasks(true)});return}
     if(e.target.closest('[data-task-view-save]')){saveTaskView();return}
+    const reactivationReload=e.target.closest('[data-reload-reactivation]');if(reactivationReload){reactivationData=null;void loadReactivationQueue(true);return}
+    const reactivationAction=e.target.closest('[data-reactivate-deal]');if(reactivationAction){e.preventDefault();void reactivateDeal(reactivationAction.dataset.reactivateDeal);return}
     const taskView=e.target.closest('[data-task-view]');if(taskView){taskWorkspaceView=taskView.dataset.taskView;renderKeyTasks();return}
     if(e.target.closest('[data-task-filter-reset]')){taskWorkspaceFilters={project:"",executor:"",responsible:"",deadline:"",status:"",search:"",archive:"active"};renderKeyTasks();return}
     if(e.target.closest('[data-dashboard-chat-send]')){askDashboardChat();return}
@@ -1988,6 +2011,7 @@ function init(){
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert',openTeam.dataset.teamFormer==='1');return}
+    const actsToggle=e.target.closest('[data-acts-experts-toggle]');if(actsToggle){e.preventDefault();e.stopPropagation();const panel=actsToggle.closest('.acts-experts-panel');if(!panel)return;panel.open=!panel.open;actsToggle.textContent=panel.open?'Свернуть отчёт':'Развернуть отчёт';actsToggle.setAttribute('aria-expanded',String(panel.open));return}
     if(e.target.closest('[data-production-week-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","week","0");return}
     if(e.target.closest('[data-production-product-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","product");return}
     if(e.target.closest('[data-production-expert-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","expert");return}

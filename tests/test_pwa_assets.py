@@ -116,6 +116,23 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('available_user_options', script)
         self.assertIn('id="teamDialogHint"', html)
 
+    def test_acts_expert_report_has_an_explicit_collapse_button(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('data-acts-experts-toggle="1"', script)
+        self.assertIn('Свернуть отчёт', script)
+
+    def test_sales_has_explainable_reactivation_queue_and_confirmed_action(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("function reactivationBlock()", script)
+        self.assertIn("Реанимируем реанимацию", script)
+        self.assertIn("Основания ИИ Jarvis", script)
+        self.assertIn("Реанимировали → Новая", script)
+        self.assertIn("Почему пока не реанимируем", script)
+        self.assertIn("/api/reactivation-recommendations", script)
+        self.assertIn("window.confirm", script)
+
     def test_sales_average_check_has_a_plan_in_the_summary(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
 

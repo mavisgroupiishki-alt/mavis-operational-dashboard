@@ -74,6 +74,29 @@ class MarketerAccessTests(unittest.TestCase):
                 self.assertEqual(payload["sales"]["overall"]["total"]["metrics"]["sales"], 49)
                 self.assertEqual(payload["production"]["kpi"]["closed_amount"], 22450)
 
+    def test_reactivation_queue_and_action_are_full_access_only(self):
+        with (
+            patch.object(main, "settings", self.access_settings),
+            patch.object(
+                main,
+                "load_jarvis_operations",
+                new=AsyncMock(return_value={"ok": True, "status": "online", "data": {"summary": {"recommended": 1}}}),
+            ),
+            patch.object(main, "reactivate_jarvis_deal", new=AsyncMock(return_value={"ok": True, "dealId": "42"})) as move,
+        ):
+            with TestClient(fixed_main.app, base_url="https://testserver") as client:
+                marketer = client.post("/login", data={"password": "marketer-password"}, follow_redirects=False)
+                self.assertEqual(marketer.status_code, 303)
+                self.assertEqual(client.get("/api/reactivation-recommendations").status_code, 403)
+                self.assertEqual(client.post("/api/reactivation-recommendations/42/reactivate").status_code, 403)
+
+                client.post("/logout", follow_redirects=False)
+                owner = client.post("/login", data={"password": "owner-password"}, follow_redirects=False)
+                self.assertEqual(owner.status_code, 303)
+                self.assertEqual(client.get("/api/reactivation-recommendations").json()["data"]["summary"]["recommended"], 1)
+                self.assertEqual(client.post("/api/reactivation-recommendations/42/reactivate").json()["dealId"], "42")
+                move.assert_awaited_once_with("42")
+
     def test_forged_role_cookie_does_not_grant_access(self):
         with patch.object(main, "settings", self.access_settings):
             with TestClient(fixed_main.app, base_url="https://testserver") as client:
