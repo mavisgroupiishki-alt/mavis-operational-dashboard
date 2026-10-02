@@ -189,6 +189,17 @@ async def capture_bitrix_bi_reports(
                 stage = "создание снимка «Лиды/Сделки»"
                 await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
 
+                # BI Builder keeps the full first report in a large SPA tree.
+                # Release it before loading the calls tab so two full-page
+                # captures fit within the Render service memory limit.
+                stage = "освобождение первой вкладки BI-отчёта"
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=15_000)
+                stage = "повторное открытие BI-отчёта"
+                await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
+                if "auth2.bitrix24.by" in page.url:
+                    raise ReportDeliveryError("Сессия Bitrix24 завершилась перед снимком «Звонки»")
+                stage = "отрисовка вкладки «Звонки»"
+                await page.wait_for_timeout(3_000)
                 stage = "открытие вкладки «Звонки»"
                 await page.get_by_text("Отчет по звонкам", exact=True).click(timeout=15_000)
                 stage = "отрисовка вкладки «Звонки»"
