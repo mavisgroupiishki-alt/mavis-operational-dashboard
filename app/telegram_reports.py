@@ -184,7 +184,7 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
                 stage = "создание снимка BI-отчёта"
-                await page.screenshot(path=str(output_path), full_page=True)
+                await page.screenshot(path=str(output_path), full_page=True, timeout=45_000)
             finally:
                 await browser.close()
     except ReportDeliveryError:
