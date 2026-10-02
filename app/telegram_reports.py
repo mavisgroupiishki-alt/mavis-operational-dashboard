@@ -108,6 +108,19 @@ def _safe_page_location(url: str) -> str:
     return f"{parsed.netloc}{parsed.path}" if parsed.netloc else "неизвестная страница"
 
 
+async def _bitrix_auth_blocker(page: object) -> str:
+    """Describe a post-submit Bitrix auth screen without reading user data."""
+    one_time_code = page.locator(
+        "input[autocomplete='one-time-code'], input[name*='code' i], input[id*='code' i]"
+    )
+    if await one_time_code.count():
+        return "Bitrix24 требует одноразовый код подтверждения"
+    password_input = page.locator("input[type='password']:visible")
+    if await password_input.count():
+        return "Bitrix24 не принял пароль: проверьте BITRIX_BI_PASSWORD"
+    return "Bitrix24 не завершил авторизацию"
+
+
 async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str, output_path: Path) -> Path:
     """Log in to BI Builder and capture report 80, refusing unavailable screens."""
     _report_configuration(login, password, report_url)
@@ -149,7 +162,12 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
                     # flow.  Submitting the password field works for both.
                     await password_input.press("Enter")
                     stage = "переход из Bitrix24 к BI-отчёту"
-                    await page.wait_for_url("**/bi/dashboard/detail/80/**", timeout=45_000)
+                    try:
+                        await page.wait_for_url("**/bi/dashboard/detail/80/**", timeout=45_000)
+                    except PlaywrightTimeoutError as exc:
+                        if "auth2.bitrix24.by" in page.url:
+                            raise ReportDeliveryError(await _bitrix_auth_blocker(page)) from exc
+                        raise
                     page_location = _safe_page_location(page.url)
 
                 stage = "проверка доступности BI-отчёта"
