@@ -29,7 +29,7 @@ from .key_tasks import build_key_tasks, build_task_workspace
 from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
-from .telegram_reports import ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
+from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
