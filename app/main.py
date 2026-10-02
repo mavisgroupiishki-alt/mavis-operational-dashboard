@@ -2401,11 +2401,19 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
     month = current_month()
     try:
         key = (month, "month", "", "")
-        # A dashboard refresh may already hold this lock.  Reporting must use
-        # the last live snapshot rather than wait indefinitely behind it.
+        # Render starts an asynchronous CRM refresh after each deploy.  A
+        # report must never wait behind that potentially slow request: warm
+        # the last persisted dashboard snapshot and refresh CRM in background.
         source_snapshot = cache.get(key)
         if source_snapshot is None:
-            source_snapshot = await ensure_snapshot(month, "month", force=True)
+            await warm_snapshot_from_storage(month, "month")
+            source_snapshot = cache.get(key)
+        if source_snapshot is None:
+            schedule_snapshot(month, "month", force=False)
+            raise ReportDeliveryError(
+                "Данные дашборда ещё загружаются из Bitrix24; повторите отправку через минуту"
+            )
+        schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         now = datetime.now(ZoneInfo(settings.timezone))
         texts = build_daily_report_texts(snapshot, now)
