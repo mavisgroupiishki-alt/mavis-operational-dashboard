@@ -195,8 +195,12 @@ function signalCard(kind,title,value,type,scope,metric,note="",extra={}){return 
 function panel(title,body,note="",action=""){return `<div class="panel"><div class="panel-head"><div class="panel-title">${esc(title)}</div>${action||`<div class="muted">${esc(note)}</div>`}</div>${body}</div>`}
 function tdLink(value,scope,metric,type,extra={}){return `<span class="cell-link" ${drillAttrs(scope,metric,extra)}>${format(value,type)}</span>`}
 
+function usesDealAmountRevenue(){return state?.sales?.financial_source==="deal_amount"}
+function salesRevenueLabel(){return usesDealAmountRevenue()?"Сумма продаж":"Чистая выручка"}
+function financeIsAvailable(finance=state?.clean_revenue||{}){return ["online","stale","deal_amount"].includes(finance.status)}
 function cleanRevenueCaption(){
   const finance=state?.clean_revenue||{};
+  if(finance.status==="deal_amount")return "Сумма успешных сделок Bitrix (OPPORTUNITY)";
   if(finance.status==="online")return "Чистая выручка из «Графика платежей»";
   if(finance.status==="stale")return "Последняя подтверждённая чистая выручка; источник обновляется";
   if(finance.status==="not_configured")return "Источник чистой выручки ещё не подключён";
@@ -204,15 +208,15 @@ function cleanRevenueCaption(){
 }
 function financeAmount(key){
   const finance=state?.clean_revenue||{},value=Number(finance[key]);
-  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?money(value):"—";
+  return financeIsAvailable(finance)&&Number.isFinite(value)?money(value):"—";
 }
 function financeValue(key){
   const finance=state?.clean_revenue||{},value=Number(finance[key]);
-  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?value:null;
+  return financeIsAvailable(finance)&&Number.isFinite(value)?value:null;
 }
 function financialIncomingValue(){
   const finance=state?.clean_revenue||{},value=Number(finance.incoming_amount);
-  return ["online","stale"].includes(finance.status)&&Number.isFinite(value)?value:null;
+  return financeIsAvailable(finance)&&Number.isFinite(value)?value:null;
 }
 function financialIncomingAmount(fallback=0){
   const value=financialIncomingValue();
@@ -225,12 +229,14 @@ function financialSalesMetrics(s){
 }
 function incomingRevenueCaption(){
   const finance=state?.clean_revenue||{};
+  if(finance.status==="deal_amount")return "Сумма успешных сделок Bitrix (OPPORTUNITY)";
   if(finance.status==="online")return "Чистая выручка + подрядчики из «Графика платежей»";
   if(finance.status==="stale")return "Последняя подтверждённая сумма: чистая выручка + подрядчики";
   return "Сумма CRM до восстановления финансового источника";
 }
 function contractorCaption(){
   const finance=state?.clean_revenue||{};
+  if(finance.status==="deal_amount")return "В историческом периоде подрядчики не выделялись";
   if(finance.status==="online")return "Учтено в чистой выручке";
   if(finance.status==="stale")return "Последнее подтверждённое значение";
   return cleanRevenueCaption();
@@ -244,14 +250,14 @@ function salesSummaryMetric(title,value,type,plan,note="",showPlan=true,financeD
 }
 function salesRevenueHero(s){
   const plan=getPlan("sales","sales_amount"),financial=financialSalesMetrics(s),percent=plan?financial.incoming/plan*100:0;
-  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">ОБЩАЯ СУММА ПОСТУПЛЕНИЙ</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(financial.incoming)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div></div></div>`;
+  return `<div class="department-hero sales"><div class="dept-hero-top"><div><h2>Продажи</h2><div class="dept-kicker">${usesDealAmountRevenue()?"СУММА ПРОДАЖ BITRIX":"ОБЩАЯ СУММА ПОСТУПЛЕНИЙ"}</div></div><div class="dept-ring" style="--ring:${Math.max(0,Math.min(100,percent))*3.6}deg"><span>${plan?Math.round(percent)+"%":"—"}</span></div></div><div class="dept-value">${money(financial.incoming)}</div><div class="dept-plan"><span>План ${plan?money(plan):"—"}</span><span>${plan?`Выполнение ${pct(percent)}`:"Заполни план"}</span></div><div class="dept-substats"><div><span>Продажи</span><strong>${fmt(s.sales)}</strong></div><div><span>Сделки</span><strong>${fmt(s.deals)}</strong></div><div><span>Средний чек</span><strong>${money(financial.averageCheck)}</strong></div></div></div>`;
 }
 function renderHub(){
   const s=state.sales.overall.total.metrics,p=state.production.kpi,financial=financialSalesMetrics(s);
   $("#hub").innerHTML=`<section class="department-directory" aria-label="Разделы операционного дашборда">
     <header class="operations-hero">
       <div class="operations-hero-copy"><div class="eyebrow">MAVIS GROUP · ОПЕРАЦИОННЫЙ ЦЕНТР</div><h2>Пульс бизнеса</h2><p>Главные результаты месяца и быстрый вход в рабочие контуры команды.</p></div>
-      <div class="operations-hero-stats"><div><span>Поступления</span><strong>${money(financial.incoming)}</strong><small>${esc(incomingRevenueCaption())}</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>Чистая выручка</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
+      <div class="operations-hero-stats"><div><span>${usesDealAmountRevenue()?"Сумма продаж":"Поступления"}</span><strong>${money(financial.incoming)}</strong><small>${esc(incomingRevenueCaption())}</small></div><div><span>Производство</span><strong>${money(p.closed_amount)}</strong><small>${fmt(p.closed_count)} закрыто</small></div><div><span>${salesRevenueLabel()}</span><strong>${financeAmount("value")}</strong><small>${esc(cleanRevenueCaption())}</small></div></div>
     </header>
     <div class="directory-heading"><div><div class="eyebrow">КОНТУРЫ УПРАВЛЕНИЯ</div><h3>Работа отделов</h3></div><p>Открывайте раздел — показатели, первичные данные и расшифровки остаются внутри одного контура.</p></div>
     <div class="department-directory-grid">
@@ -575,6 +581,7 @@ function salesActiveDealsCard(){
 }
 
 function salesOverdueSchedule(){
+  if(usesDealAmountRevenue())return "";
   const finance=state?.clean_revenue||{};
   const available=finance.overdue_schedule_available===true;
   const rows=Array.isArray(finance.overdue_schedule_rows)?finance.overdue_schedule_rows:[];
@@ -598,6 +605,10 @@ function unclassifiedCleanRevenueRows(){
 }
 
 function salesOperationalManagerTable(){
+  if(usesDealAmountRevenue()){
+    const rows=managers().map(manager=>{const metrics=manager.total.metrics;return `<tr><td>${esc(manager.name)}</td><td class="num">${tdLink(metrics.deals,"sales","deals","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales,"sales","sales","num",{period_type:"total",manager:manager.name})}</td><td class="num">${tdLink(metrics.sales_amount,"sales","sales_amount","money",{period_type:"total",manager:manager.name})}</td></tr>`}).join("");
+    return `<div class="scroll-x"><table><thead><tr><th>Менеджер</th><th class="num">Сделки</th><th class="num">Продажи</th><th class="num">Сумма продаж Bitrix</th></tr></thead><tbody>${rows||"<tr><td colspan='4'>Нет выбранных менеджеров</td></tr>"}</tbody></table></div>`;
+  }
   const team=managers();
   const rows=team.map(manager=>{
     const metrics=manager.total.metrics;
@@ -894,6 +905,19 @@ function rnpCombinedMetric(key,current,previous,total){
   return Number(total||0);
 }
 function rnpCleanRevenue(filter={}){
+  if(usesDealAmountRevenue()){
+    let rows=[];
+    if(filter.manager)rows=(state.sales.managers||[]).filter(row=>row.name===filter.manager);
+    else if(filter.client_type)rows=(state.sales.client_type_blocks||[]).filter(row=>row.group===filter.group&&row.name===filter.client_type);
+    else if(filter.source)rows=(state.sales.source_blocks||[]).filter(row=>row.group===filter.group&&row.name===filter.source);
+    else if(filter.group)rows=(state.sales.groups||[]).filter(row=>row.name===filter.group);
+    else rows=[state.sales.overall||{}];
+    const metrics=rows.reduce((out,row)=>{
+      for(const period of ["current","previous","total"])out[period]+=Number(row?.[period]?.metrics?.sales_amount||0);
+      return out;
+    },{current:0,previous:0,total:0});
+    return metrics;
+  }
   const finance=state?.clean_revenue||{};
   if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return {current:null,previous:null,total:null};
   const rows=finance.deal_revenue_rows.filter(row=>Object.entries(filter).every(([key,value])=>row?.[key]===value));
@@ -916,6 +940,10 @@ function rnpCleanRevenueWeeks(group){
   });
 }
 function rnpCleanRevenueWeekTable(cfg){
+  if(usesDealAmountRevenue()){
+    const weeks=rnpGroup(cfg.key)?.total?.weeks||{};
+    return `<div class="sales-semantics-note"><strong>Недельная сумма продаж:</strong> суммы успешных сделок Bitrix по дате закрытия; график платежей для этого месяца ещё не вёлся.</div><div class="scroll-x"><table class="rnp-clean-week-table"><thead><tr><th>Неделя</th><th class="num">Сумма продаж</th><th class="num">Продаж</th><th class="num">Средний чек</th></tr></thead><tbody>${rnpWeekRanges().map(week=>{const sales=Number(weeks.sales?.[week.index]||0),amount=Number(weeks.sales_amount?.[week.index]||0);return `<tr><td>${esc(week.label)}</td><td class="num">${money(amount)}</td><td class="num">${fmt(sales)}</td><td class="num">${money(sales?amount/sales:0)}</td></tr>`}).join("")}</tbody></table></div>`;
+  }
   const weeks=rnpCleanRevenueWeeks(cfg.key);
   if(!weeks)return `<div class="empty-inline">Недельная чистая выручка готовится из «Графика платежей».</div>`;
   const body=weeks.map(({week,rows,clean,incoming,contractor})=>`<tr>
@@ -992,12 +1020,12 @@ function rnpMonthlyTable(cfg,g,{showPlan=true,financeFilter={group:cfg.key}}={})
       const current=isRevenue?cleanRevenue.current:c[k],previous=isRevenue?cleanRevenue.previous:p[k],total=isRevenue?cleanRevenue.total:rnpCombinedMetric(k,c[k],p[k],t[k]);
       const hasTail=["deals","lost_deals","deal_amount","sales","sales_amount","average_check"].includes(k);
       return rnpMetricDetailRow({
-        label:isRevenue?"Чистая выручка":label,
+        label:isRevenue?salesRevenueLabel():label,
         current:isRevenue?optionalMoney(current):format(current||0,type),
         previous:hasTail?(isRevenue?optionalMoney(previous):format(previous||0,type)):"—",
         total:isRevenue?optionalMoney(total):format(total,type),
         plan:plan&&total!==null?`${format(plan,type)} · ${pct(Number(total||0)/plan*100)}`:"—",
-        logic:isRevenue?"Сумма строк «Графика платежей», у которых указанная сделка относится к этому блоку. Вычтенный подрядчик остаётся у этой же сделки. Отчётный период и хвост определяются датой создания сделки; пропорционального распределения нет.":(RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24."),
+        logic:isRevenue?(usesDealAmountRevenue()?"Сумма успешных сделок Bitrix по полю OPPORTUNITY. Отчётный период и хвост определяются датой создания сделки; график платежей для этого месяца ещё не использовался.":"Сумма строк «Графика платежей», у которых указанная сделка относится к этому блоку. Вычтенный подрядчик остаётся у той же сделки. Отчётный период и хвост определяются датой создания сделки; пропорционального распределения нет."):(RNP_METRIC_LOGIC[k]||"Показатель считается по данным выбранного периода из Bitrix24."),
         showPlan,
       });
     }).join("")}
@@ -1079,22 +1107,22 @@ function rnpBlock(cfg){
 
       <div class="rnp-result-strip rnp-summary-strip">
         <div>
-          <span>Чистая выручка периода</span>
+          <span>${usesDealAmountRevenue()?"Сумма продаж периода":"Чистая выручка периода"}</span>
           <strong>${optionalMoney(revenue.current)}</strong>
           <small>${fmt(c.sales||0)} продаж</small>
         </div>
         <div>
-          <span>Чистая выручка / хвост</span>
+          <span>${usesDealAmountRevenue()?"Сумма продаж / хвост":"Чистая выручка / хвост"}</span>
           <strong>${optionalMoney(revenue.previous)}</strong>
           <small>${fmt(p.sales||0)} продаж</small>
         </div>
         <div class="rnp-total">
-          <span>Итого чистая выручка</span>
+          <span>${usesDealAmountRevenue()?"Итого сумма продаж":"Итого чистая выручка"}</span>
           <strong>${optionalMoney(revenue.total)}</strong>
           <small>${fmt(t.sales||0)} продаж</small>
         </div>
         <div>
-          <span>План чистой выручки</span>
+          <span>${usesDealAmountRevenue()?"План суммы продаж":"План чистой выручки"}</span>
           <strong>${plan?money(plan):"—"}</strong>
           <small>${plan&&revenue.total!==null?pct(revenue.total/plan*100):"не заполнен"}</small>
         </div>
@@ -1108,7 +1136,7 @@ function rnpBlock(cfg){
         ${rnpWeekTable(cfg,g,"total")}
       </details>
       <details class="rnp-subdetails">
-        <summary><strong>Чистая выручка по неделям</strong><span>по графику платежей</span></summary>
+        <summary><strong>${usesDealAmountRevenue()?"Сумма продаж по неделям":"Чистая выручка по неделям"}</strong><span>${usesDealAmountRevenue()?"по сумме сделок Bitrix":"по графику платежей"}</span></summary>
         ${rnpCleanRevenueWeekTable(cfg)}
       </details>
       ${rnpClientTypeList(cfg)}
@@ -1118,6 +1146,7 @@ function rnpBlock(cfg){
 }
 
 function salesCleanRevenueReconciliation(){
+  if(usesDealAmountRevenue())return "";
   const finance=state?.clean_revenue||{};
   if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return "";
   const linked=finance.deal_revenue_rows.reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
@@ -1168,6 +1197,7 @@ function renderSales(){
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
   const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales"),averageCheckPlan=getPlan("sales","average_check");
   const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_amount");
+  const legacy=usesDealAmountRevenue();
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
   $("#sales").innerHTML=`
@@ -1177,14 +1207,12 @@ function renderSales(){
     </div>
 
     <div class="rnp-overall-strip">
-      ${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")}
-      ${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")}
-      ${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")}
+      ${legacy?salesSummaryMetric("Сумма продаж",financial.incoming,"money",cleanRevenuePlan,incomingRevenueCaption(),true):`${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")}${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")}${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")}`}
       ${salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)}
       ${salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)}
     </div>
 
-    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> общая сумма поступлений = чистая выручка + подрядчики из приложения «График платежей». Нажмите на любую из трёх финансовых карточек, чтобы открыть подтверждающие строки сделок.</div>
+    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> ${legacy?"июль и август 2026 считаются по сумме успешных сделок Bitrix (OPPORTUNITY): контура «Чистой выручки» тогда ещё не было.":"общая сумма поступлений = чистая выручка + подрядчики из приложения «График платежей». Нажмите на любую из трёх финансовых карточек, чтобы открыть подтверждающие строки сделок."}</div>
     ${salesOverdueSchedule()}
     ${reactivationBlock()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
@@ -1195,7 +1223,7 @@ function renderSales(){
       ${salesActiveDealsCard()}
       ${panel("Стадии продаж",`<div class="scroll-x">${salesStages()}</div>`,"актуально на момент обновления")}
     </section>
-    ${panel("Менеджеры продаж",`${salesOperationalManagerTable()}<p class="sales-manager-note">* Чистая выручка — сумма строк «Графика платежей», связанных со сделками менеджера; подрядчик вычитается из той же сделки. В строке «Не распределено» остаются только нераспознанные строки графика, а не сделки сотрудников вне выбранной команды.</p>`,"продажи и чистая выручка по графику платежей")}
+    ${panel("Менеджеры продаж",`${salesOperationalManagerTable()}<p class="sales-manager-note">${legacy?"* Сумма продаж — OPPORTUNITY успешно закрытых сделок Bitrix.":"* Чистая выручка — сумма строк «Графика платежей», связанных со сделками менеджера; подрядчик вычитается из той же сделки. В строке «Не распределено» остаются только нераспознанные строки графика, а не сделки сотрудников вне выбранной команды."}</p>`,legacy?"продажи по сумме сделок Bitrix":"продажи и чистая выручка по графику платежей")}
 
     <section class="rnp-secondary">
       <details class="rnp-main-details" open><summary><div><strong>Разбивка по менеджерам</strong><span>Роман / Ирина → холодные / входящие / повторные → источник → период → даты</span></div></summary>${rnpManagerMatrix()}</details>

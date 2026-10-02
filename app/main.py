@@ -51,6 +51,10 @@ clean_revenue_tasks = {}
 clean_revenue_failures = {}
 CLEAN_REVENUE_REFRESH_SECONDS = 60
 CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
+# The payment-schedule ledger was introduced after these completed months.
+# Keep their sales view faithful to the only available historic source:
+# successful Bitrix deals and their OPPORTUNITY amount.
+LEGACY_DEAL_AMOUNT_MONTHS = frozenset({"2026-07", "2026-08"})
 previous_month_refresh_at = 0.0
 PREVIOUS_MONTH_REFRESH_SECONDS = 60 * 60
 DERIVED_RANGE_CACHE_LIMIT = 8
@@ -1221,6 +1225,21 @@ def _apply_runtime(snap, details, month, compact=False):
 
 async def operational_snapshot(snap, details, month, compact=False):
     x = _apply_runtime(snap, details, month, compact=compact)
+    sales_metrics = ((x.get("sales") or {}).get("overall") or {}).get("total", {}).get("metrics", {})
+    if month in LEGACY_DEAL_AMOUNT_MONTHS:
+        sales_amount = round(float(sales_metrics.get("sales_amount") or 0), 2)
+        x.setdefault("sales", {})["financial_source"] = "deal_amount"
+        x["clean_revenue"] = {
+            "status": "deal_amount",
+            "source": "OPPORTUNITY",
+            "value": sales_amount,
+            "incoming_amount": sales_amount,
+            "contractor_amount": 0.0,
+            "note": "Для июля и августа 2026 финансовые показатели считаются из суммы успешных сделок Bitrix (OPPORTUNITY).",
+        }
+        x["automatic_nps"] = cached_automatic_nps()
+        schedule_automatic_nps_refresh()
+        return x
     # Finance reconciliation may take much longer than the CRM snapshot.
     # Always render with the last valid result and update that card in the
     # background instead of delaying the whole dashboard.
