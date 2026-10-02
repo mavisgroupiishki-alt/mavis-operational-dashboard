@@ -29,6 +29,7 @@ from .key_tasks import build_key_tasks, build_task_workspace
 from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
+from .telegram_reports import ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_report, send_telegram_reports
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
@@ -2343,6 +2344,11 @@ class PlanBody(BaseModel):
     admin_key: str = ""
 
 
+class TelegramReportTestBody(BaseModel):
+    chat_id: str
+    admin_key: str = ""
+
+
 @app.get("/api/plans")
 async def plans(month: str = ""):
     month=month or current_month()
@@ -2366,6 +2372,36 @@ async def manual_refresh(admin_key: str = ""):
         raise HTTPException(403,"Неверный ADMIN_KEY")
     refresh_trigger.set()
     return {"ok":True}
+
+
+@app.post("/api/reports/test-send")
+async def send_test_telegram_reports(body: TelegramReportTestBody):
+    """Send current reports only when all source data and the real BI image exist."""
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    month = current_month()
+    try:
+        await ensure_snapshot(month, "month", force=True)
+        key = (month, "month", "", "")
+        snapshot = await operational_snapshot(cache[key], detail_cache.get(key, {}), month)
+        now = datetime.now(ZoneInfo(settings.timezone))
+        texts = build_daily_report_texts(snapshot, now)
+        image_path = settings.data_dir / f"bitrix-daily-report-{now.date().isoformat()}.png"
+        await capture_bitrix_bi_report(
+            login=settings.bitrix_bi_login,
+            password=settings.bitrix_bi_password,
+            report_url=settings.bitrix_bi_report_url,
+            output_path=image_path,
+        )
+        await send_telegram_reports(
+            token=settings.telegram_bot_token,
+            chat_id=body.chat_id,
+            texts=texts,
+            image_path=image_path,
+        )
+    except ReportDeliveryError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"ok": True, "month": month, "report": "bitrix-bi"}
 
 
 @app.post("/api/bitrix/event")

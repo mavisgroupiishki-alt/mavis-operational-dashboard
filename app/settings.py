@@ -25,6 +25,13 @@ class Settings:
     jarvis_operations_token: str = os.getenv("JARVIS_OPERATIONS_TOKEN", "").strip()
     assistant_chat_url: str = os.getenv("ASSISTANT_CHAT_URL", "https://mavis-bitrix-expert-assistant.onrender.com").strip()
     dashboard_chat_token: str = os.getenv("DASHBOARD_CHAT_TOKEN", "").strip()
+    bitrix_bi_login: str = os.getenv("BITRIX_BI_LOGIN", "").strip()
+    bitrix_bi_password: str = os.getenv("BITRIX_BI_PASSWORD", "").strip()
+    bitrix_bi_report_url: str = os.getenv(
+        "BITRIX_BI_REPORT_URL",
+        "https://mavisgroup.bitrix24.by/bi/dashboard/detail/80/",
+    ).strip()
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 settings=Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
