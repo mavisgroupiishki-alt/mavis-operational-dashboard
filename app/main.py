@@ -2400,9 +2400,13 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         raise HTTPException(403, "Неверный ADMIN_KEY")
     month = current_month()
     try:
-        await ensure_snapshot(month, "month", force=True)
         key = (month, "month", "", "")
-        snapshot = await operational_snapshot(cache[key], detail_cache.get(key, {}), month)
+        # A dashboard refresh may already hold this lock.  Reporting must use
+        # the last live snapshot rather than wait indefinitely behind it.
+        source_snapshot = cache.get(key)
+        if source_snapshot is None:
+            source_snapshot = await ensure_snapshot(month, "month", force=True)
+        snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         now = datetime.now(ZoneInfo(settings.timezone))
         texts = build_daily_report_texts(snapshot, now)
         image_path = settings.data_dir / f"bitrix-daily-report-{now.date().isoformat()}.png"
