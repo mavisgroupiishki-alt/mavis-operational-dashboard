@@ -121,8 +121,10 @@ async def _bitrix_auth_blocker(page: object) -> str:
     return "Bitrix24 не завершил авторизацию"
 
 
-async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str, output_path: Path) -> Path:
-    """Log in to BI Builder and capture report 80, refusing unavailable screens."""
+async def capture_bitrix_bi_reports(
+    *, login: str, password: str, report_url: str, leads_output_path: Path, calls_output_path: Path
+) -> tuple[Path, Path]:
+    """Log in once and capture both tabs of BI Builder report 80."""
     _report_configuration(login, password, report_url)
     stage = "запуск браузера"
     page_location = ""
@@ -132,7 +134,8 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
     except ImportError as exc:  # local unit tests do not require Chromium
         raise ReportDeliveryError("В образе Render не установлен Playwright") from exc
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    leads_output_path.parent.mkdir(parents=True, exist_ok=True)
+    calls_output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
@@ -183,8 +186,18 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
                 await page.wait_for_timeout(3_000)
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
-                stage = "создание снимка BI-отчёта"
-                await page.screenshot(path=str(output_path), full_page=True, timeout=45_000)
+                stage = "создание снимка «Лиды/Сделки»"
+                await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
+
+                stage = "открытие вкладки «Звонки»"
+                await page.get_by_text("Отчет по звонкам", exact=True).click(timeout=15_000)
+                stage = "отрисовка вкладки «Звонки»"
+                await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
+                    state="visible", timeout=30_000
+                )
+                await page.wait_for_timeout(2_000)
+                stage = "создание снимка «Звонки»"
+                await page.screenshot(path=str(calls_output_path), full_page=True, timeout=45_000)
             finally:
                 await browser.close()
     except ReportDeliveryError:
@@ -194,10 +207,10 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
         raise ReportDeliveryError(f"BI-конструктор остановился на этапе: {stage}{location}") from exc
     except Exception as exc:
         raise ReportDeliveryError("Не удалось получить снимок BI-конструктора") from exc
-    return output_path
+    return leads_output_path, calls_output_path
 
 
-async def send_telegram_reports(*, token: str, chat_id: str, texts: DailyReportTexts, image_path: Path) -> None:
+async def send_telegram_reports(*, token: str, chat_id: str, texts: DailyReportTexts, image_paths: tuple[Path, Path]) -> None:
     if not token:
         raise ReportDeliveryError("Не задан TELEGRAM_BOT_TOKEN")
     if not chat_id.strip():
@@ -217,13 +230,18 @@ async def send_telegram_reports(*, token: str, chat_id: str, texts: DailyReportT
                 response = await client.post(f"{base_url}/sendMessage", data={"chat_id": chat_id, "text": text})
                 if not accepted(response):
                     raise ReportDeliveryError("Telegram не принял текст отчёта")
-            with image_path.open("rb") as image:
-                response = await client.post(
-                    f"{base_url}/sendPhoto",
-                    data={"chat_id": chat_id, "caption": "Ежедневный отчёт Bitrix24"},
-                    files={"photo": ("bitrix-daily-report.png", image, "image/png")},
-                )
-            if not accepted(response):
-                raise ReportDeliveryError("Telegram не принял снимок BI-конструктора")
+            for image_path, caption in zip(
+                image_paths,
+                ("Ежедневный отчёт Bitrix24 — Лиды и сделки", "Ежедневный отчёт Bitrix24 — Звонки"),
+                strict=True,
+            ):
+                with image_path.open("rb") as image:
+                    response = await client.post(
+                        f"{base_url}/sendPhoto",
+                        data={"chat_id": chat_id, "caption": caption},
+                        files={"photo": (image_path.name, image, "image/png")},
+                    )
+                if not accepted(response):
+                    raise ReportDeliveryError("Telegram не принял снимок BI-конструктора")
     except httpx.HTTPError as exc:
         raise ReportDeliveryError("Не удалось связаться с Telegram") from exc

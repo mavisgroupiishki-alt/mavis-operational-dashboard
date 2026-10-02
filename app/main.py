@@ -29,7 +29,7 @@ from .key_tasks import build_key_tasks, build_task_workspace
 from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
-from .telegram_reports import ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_report, send_telegram_reports
+from .telegram_reports import ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
@@ -2417,18 +2417,18 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         now = datetime.now(ZoneInfo(settings.timezone))
         texts = build_daily_report_texts(snapshot, now)
-        image_path = settings.data_dir / f"bitrix-daily-report-{now.date().isoformat()}.png"
-        await capture_bitrix_bi_report(
+        image_paths = await capture_bitrix_bi_reports(
             login=settings.bitrix_bi_login,
             password=settings.bitrix_bi_password,
             report_url=settings.bitrix_bi_report_url,
-            output_path=image_path,
+            leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
+            calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
         )
         await send_telegram_reports(
             token=settings.telegram_bot_token,
             chat_id=body.chat_id,
             texts=texts,
-            image_path=image_path,
+            image_paths=image_paths,
         )
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc
