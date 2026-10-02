@@ -2450,6 +2450,11 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         )
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:
+        # This protected test endpoint otherwise turns an actionable failure
+        # into a bare 500 response.  Do not expose credentials, URLs or raw
+        # exception text; the exception class is enough to diagnose it.
+        raise HTTPException(500, f"Внутренняя ошибка отправки: {type(exc).__name__}") from exc
     return {"ok": True, "month": month, "report": "bitrix-bi"}
 
 
