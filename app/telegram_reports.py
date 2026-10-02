@@ -124,8 +124,34 @@ async def _bitrix_auth_blocker(page: object) -> str:
 async def capture_bitrix_bi_reports(
     *, login: str, password: str, report_url: str, leads_output_path: Path, calls_output_path: Path
 ) -> tuple[Path, Path]:
-    """Log in once and capture both tabs of BI Builder report 80."""
+    """Capture both BI Builder tabs without retaining two report trees in RAM."""
     _report_configuration(login, password, report_url)
+
+    # A full BI report is a sizeable single-page application.  Render runs the
+    # dashboard and Chromium in the same container, so closing Chromium after
+    # each tab is more reliable than retaining the first report while loading
+    # the second one.  The Bitrix login is repeated deliberately.
+    await _capture_bitrix_bi_tab(
+        login=login,
+        password=password,
+        report_url=report_url,
+        output_path=leads_output_path,
+        tab="leads",
+    )
+    await _capture_bitrix_bi_tab(
+        login=login,
+        password=password,
+        report_url=report_url,
+        output_path=calls_output_path,
+        tab="calls",
+    )
+    return leads_output_path, calls_output_path
+
+
+async def _capture_bitrix_bi_tab(
+    *, login: str, password: str, report_url: str, output_path: Path, tab: str
+) -> None:
+    """Open one BI tab in an isolated browser process and save a screenshot."""
     stage = "запуск браузера"
     page_location = ""
     try:
@@ -134,16 +160,15 @@ async def capture_bitrix_bi_reports(
     except ImportError as exc:  # local unit tests do not require Chromium
         raise ReportDeliveryError("В образе Render не установлен Playwright") from exc
 
-    leads_output_path.parent.mkdir(parents=True, exist_ok=True)
-    calls_output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
                 headless=True,
-                args=["--disable-dev-shm-usage", "--no-sandbox"],
+                args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu", "--disable-extensions"],
             )
             try:
-                page = await browser.new_page(viewport={"width": 1600, "height": 1200}, device_scale_factor=1)
+                page = await browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
                 stage = "открытие страницы отчёта"
                 await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
                 page_location = _safe_page_location(page.url)
@@ -186,29 +211,18 @@ async def capture_bitrix_bi_reports(
                 await page.wait_for_timeout(3_000)
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
-                stage = "создание снимка «Лиды/Сделки»"
-                await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
-
-                # BI Builder keeps the full first report in a large SPA tree.
-                # Release it before loading the calls tab so two full-page
-                # captures fit within the Render service memory limit.
-                stage = "освобождение первой вкладки BI-отчёта"
-                await page.goto("about:blank", wait_until="domcontentloaded", timeout=15_000)
-                stage = "повторное открытие BI-отчёта"
-                await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
-                if "auth2.bitrix24.by" in page.url:
-                    raise ReportDeliveryError("Сессия Bitrix24 завершилась перед снимком «Звонки»")
-                stage = "отрисовка вкладки «Звонки»"
-                await page.wait_for_timeout(3_000)
-                stage = "открытие вкладки «Звонки»"
-                await page.get_by_text("Отчет по звонкам", exact=True).click(timeout=15_000)
-                stage = "отрисовка вкладки «Звонки»"
-                await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
-                    state="visible", timeout=30_000
-                )
-                await page.wait_for_timeout(2_000)
-                stage = "создание снимка «Звонки»"
-                await page.screenshot(path=str(calls_output_path), full_page=True, timeout=45_000)
+                if tab == "calls":
+                    stage = "открытие вкладки «Звонки»"
+                    await page.get_by_text("Отчет по звонкам", exact=True).click(timeout=15_000)
+                    stage = "отрисовка вкладки «Звонки»"
+                    await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
+                        state="visible", timeout=30_000
+                    )
+                    await page.wait_for_timeout(2_000)
+                    stage = "создание снимка «Звонки»"
+                else:
+                    stage = "создание снимка «Лиды/Сделки»"
+                await page.screenshot(path=str(output_path), full_page=True, timeout=45_000)
             finally:
                 await browser.close()
     except ReportDeliveryError:

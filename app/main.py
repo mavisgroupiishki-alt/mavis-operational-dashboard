@@ -49,6 +49,7 @@ clean_revenue_cache = {}
 clean_revenue_cache_time = {}
 clean_revenue_tasks = {}
 clean_revenue_failures = {}
+telegram_bi_capture_lock = asyncio.Lock()
 CLEAN_REVENUE_REFRESH_SECONDS = 60
 CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
 # The payment-schedule ledger was introduced after these completed months.
@@ -2432,13 +2433,14 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         else:
             texts = DailyReportTexts(sales="", experts="")
         now = datetime.now(ZoneInfo(settings.timezone))
-        image_paths = await capture_bitrix_bi_reports(
-            login=settings.bitrix_bi_login,
-            password=settings.bitrix_bi_password,
-            report_url=settings.bitrix_bi_report_url,
-            leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
-            calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
-        )
+        async with telegram_bi_capture_lock:
+            image_paths = await capture_bitrix_bi_reports(
+                login=settings.bitrix_bi_login,
+                password=settings.bitrix_bi_password,
+                report_url=settings.bitrix_bi_report_url,
+                leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
+                calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
+            )
         await send_telegram_reports(
             token=settings.telegram_bot_token,
             chat_id=body.chat_id,
