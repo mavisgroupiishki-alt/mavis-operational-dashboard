@@ -2366,6 +2366,7 @@ class PlanBody(BaseModel):
 class TelegramReportTestBody(BaseModel):
     chat_id: str
     admin_key: str = ""
+    photos_only: bool = False
 
 
 @app.get("/api/plans")
@@ -2415,19 +2416,22 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             )
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
-        # The UI may display a stale dashboard while the payment ledger is
-        # warming up.  A Telegram report cannot use an empty revenue value,
-        # so wait once for the authoritative ledger rather than sending 0.
-        if (snapshot.get("clean_revenue") or {}).get("status") not in {"online", "stale"}:
-            refresh_task = schedule_clean_revenue_refresh(month)
-            if refresh_task:
-                try:
-                    await asyncio.wait_for(asyncio.shield(refresh_task), timeout=90)
-                except asyncio.TimeoutError as exc:
-                    raise ReportDeliveryError("Не дождались поступлений из «Графика платежей»") from exc
-            snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
+        if not body.photos_only:
+            # The UI may display a stale dashboard while the payment ledger is
+            # warming up.  A Telegram report cannot use an empty revenue value,
+            # so wait once for the authoritative ledger rather than sending 0.
+            if (snapshot.get("clean_revenue") or {}).get("status") not in {"online", "stale"}:
+                refresh_task = schedule_clean_revenue_refresh(month)
+                if refresh_task:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(refresh_task), timeout=90)
+                    except asyncio.TimeoutError as exc:
+                        raise ReportDeliveryError("Не дождались поступлений из «Графика платежей»") from exc
+                snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
+            texts = build_daily_report_texts(snapshot, datetime.now(ZoneInfo(settings.timezone)))
+        else:
+            texts = DailyReportTexts(sales="", experts="")
         now = datetime.now(ZoneInfo(settings.timezone))
-        texts = build_daily_report_texts(snapshot, now)
         image_paths = await capture_bitrix_bi_reports(
             login=settings.bitrix_bi_login,
             password=settings.bitrix_bi_password,
@@ -2440,6 +2444,7 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             chat_id=body.chat_id,
             texts=texts,
             image_paths=image_paths,
+            include_texts=not body.photos_only,
         )
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc

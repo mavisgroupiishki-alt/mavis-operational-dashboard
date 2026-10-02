@@ -221,7 +221,9 @@ async def capture_bitrix_bi_reports(
     return leads_output_path, calls_output_path
 
 
-async def send_telegram_reports(*, token: str, chat_id: str, texts: DailyReportTexts, image_paths: tuple[Path, Path]) -> None:
+async def send_telegram_reports(
+    *, token: str, chat_id: str, texts: DailyReportTexts, image_paths: tuple[Path, Path], include_texts: bool = True
+) -> None:
     if not token:
         raise ReportDeliveryError("Не задан TELEGRAM_BOT_TOKEN")
     if not chat_id.strip():
@@ -237,7 +239,7 @@ async def send_telegram_reports(*, token: str, chat_id: str, texts: DailyReportT
     base_url = f"https://api.telegram.org/bot{token}"
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            for text in (texts.sales, texts.experts):
+            for text in (texts.sales, texts.experts) if include_texts else ():
                 response = await client.post(f"{base_url}/sendMessage", data={"chat_id": chat_id, "text": text})
                 if not accepted(response):
                     raise ReportDeliveryError("Telegram не принял текст отчёта")
