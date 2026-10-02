@@ -48,7 +48,7 @@ F_LEAD_CLIENT_TYPE = "UF_CRM_1756973545759"
 
 DEAL_SELECT = [
     "ID", "TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
-    "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
+    "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
     F_SERVICE, F_EXPECTED_CLOSE, F_PROD_START, F_RETURN_REASON, F_STUCK_REASON_OLD, F_STUCK_REASON_NEW,
     F_SALES_MANAGER, F_SALES_LINK, F_PAID_OLD, F_PAID, F_NET_REVENUE, F_OUR_AMOUNT,
     F_CONTRACTOR_COST, F_PAYMENTS_TOTAL, F_PAYMENT_REMAINDER, F_NEXT_PAYMENT, F_NPS, F_ACT, F_DEAL_CLIENT_TYPE,
@@ -1086,7 +1086,21 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
     }
 
 
-def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
+def production_expert_id(deal: Dict[str, Any], closed_success: bool = False) -> Any:
+    """Attribute a completed product to the person who moved it to success.
+
+    Closed production cards are often reassigned when an employee leaves.  The
+    current ``ASSIGNED_BY_ID`` then describes the archive owner, not the expert
+    who completed the work.  Bitrix keeps the latter in ``MOVED_BY_ID`` for the
+    final stage transition.  Non-final rows deliberately stay assigned to the
+    current responsible person.
+    """
+    if closed_success and deal.get("MOVED_BY_ID"):
+        return deal.get("MOVED_BY_ID")
+    return deal.get("ASSIGNED_BY_ID")
+
+
+def prod_item(client, meta, d, tz, month_start, next_start, role="production", closed_success=False):
     created = parse_dt(d.get("DATE_CREATE"), tz)
     modified = parse_dt(d.get("DATE_MODIFY"), tz)
     close = parse_dt(d.get("CLOSEDATE"), tz)
@@ -1117,7 +1131,7 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production"):
         "funnel_id": str(d.get("CATEGORY_ID") or ""),
         "service": str(service), "norm_name": norm_name, "complexity": (norm_spec or {}).get("complexity"),
         "base_bonus": num((norm_spec or {}).get("base_bonus")), "norm_days": norm_days,
-        "category": product_category(str(service)), "expert": user_name(meta, d.get("ASSIGNED_BY_ID")),
+        "category": product_category(str(service)), "expert": user_name(meta, production_expert_id(d, closed_success)),
         "stage": stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE_28" if role == "production" else "DEAL_STAGE_30"), "stage_id": d.get("STAGE_ID"), "amount": round(money(d), 2),
         "created": created.isoformat() if created else None, "modified": modified.isoformat() if modified else None,
         "close": close.isoformat() if close else None, "close_week": week_of_month(close, month_start), "prod_start": prod_start.isoformat() if prod_start else None,
@@ -1345,11 +1359,11 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         dormant_to_production_in_period_ids,
     )
 
-    def convert(rows, role="production"):
-        return [prod_item(client, meta, d, tz, month_start, next_start, role=role) for d in rows]
+    def convert(rows, role="production", closed_success=False):
+        return [prod_item(client, meta, d, tz, month_start, next_start, role=role, closed_success=closed_success) for d in rows]
 
     new = convert(new_raw)
-    closed = convert(closed_raw)
+    closed = convert(closed_raw, closed_success=True)
     returns = convert(returns_raw)
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")

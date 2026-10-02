@@ -1292,7 +1292,7 @@ function productionSalesIncomingCard(){
 function renderProduction(){
   const npsMeta=overallManualNpsMeta();
   const p={...state.production.kpi,nps_avg:npsMeta.value};
-  $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
+  $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
   <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,npsMeta.count)}</div>
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
@@ -1321,7 +1321,7 @@ function renderExperts(){
   const cards=experts().map(e=>{const nm=expertNpsMeta(e),nv=nm.value;return `<div class="expert-card"><div class="expert-card-top"><div><div class="expert-name">${esc(e.name)}</div><div class="expert-result">${money(e.closed_amount)}</div></div><span class="btn nps-button">${nv===null?'NPS —':`NPS ${fmt(nv)} · ${fmt(nm.count)} оц.`}</span></div><div class="expert-stats"><div><span>Закрыто</span><strong>${tdLink(e.closed_count,"production","closed_count","num",{expert:e.name})}</strong></div><div><span>В работе</span><strong>${tdLink(e.active_count,"production","active","num",{expert:e.name})}</strong></div><div><span>В норме</span><strong>${pct(e.within_norm_pct)}</strong></div><div><span>Возвраты</span><strong>${tdLink(e.returns_count,"production","returns_count","num",{expert:e.name})}</strong></div></div><details class="nested"><summary>По продуктам (${e.products.length})</summary><div class="nested-body"><table><thead><tr><th>Продукт</th><th class="num">Закрыто</th><th class="num">План, шт</th><th class="num">% плана</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th><th></th></tr></thead><tbody>${e.products.map(p=>{const plan=expertProductPlan(e.name,p.name);return `<tr><td>${esc(p.name)}</td><td class="num">${tdLink(p.closed_count,"production","closed_count","num",{expert:e.name,product:p.name})}</td><td class="num">${plan?fmt(plan):"—"}</td><td class="num">${plan?pct(p.closed_count/plan*100):"—"}</td><td class="num">${tdLink(p.closed_amount,"production","closed_amount","money",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.avg_days,"production","avg_production_days","days",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.within_norm_pct,"production","within_norm_pct","pct",{expert:e.name,product:p.name})}</td><td class="num"><button class="mini-edit" data-edit-expert-product-plan="1" data-expert="${attr(e.name)}" data-product="${attr(p.name)}">План</button></td></tr>`}).join("")}</tbody></table></div></details></div>`}).join("");
   const activeStuck=state.production.active_stuck||{},reasonCards=`<div class="kpi-grid compact-cards reason-coverage-cards">${card("Активные зависшие — все",p.active_stuck_with_reason_count||0,"production","active_stuck_with_reason_count","num",{},`${money(p.active_stuck_with_reason_amount||0)} · ${pct(p.active_stuck_with_reason_pct||0)} из ${fmt(activeStuck.all_count||0)}`)}${card("Активные зависшие — ожидаемое закрытие в месяце",p.active_stuck_with_reason_expected_month_count||0,"production","active_stuck_with_reason_expected_month_count","num",{},`${money(p.active_stuck_with_reason_expected_month_amount||0)} · ${pct(p.active_stuck_with_reason_expected_month_pct||0)} из ${fmt(activeStuck.expected_month_count||0)}`)}</div>`;
   const reasonsBlock=`<section class="expert-stuck-reasons"><div class="section-title">Активные зависшие в производстве</div>${reasonCards}${panel("Разбивка по причинам",activeReasonTable(activeStuck.all_reasons||[],activeStuck.expected_month_reasons||[]),activeStuck.expected_month_rule||"Вторая группа: предполагаемая дата закрытия попадает в выбранный месяц.")}</section>`;
-  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и NPS за прошлую неделю по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button type="button" class="btn ghost" data-open-nps="">+ Добавить NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${actsExpertsPanel()}${flowBlock}${reasonsBlock}`;
+  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и NPS за прошлую неделю по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button type="button" class="btn ghost" data-open-nps="">+ Добавить NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${actsExpertsPanel()}${flowBlock}${reasonsBlock}`;
   void loadActsExperts();
 }
 
@@ -1329,11 +1329,11 @@ function actsExpertsMonth(){return state?.month_key||$("#month")?.value||""}
 function actsExpertsPanel(){
   const month=actsExpertsMonth();
   const report=actsExpertsData?.month===month?actsExpertsData:null;
-  if(!report)return `<section class="acts-experts-panel"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Задачи проекта «Акты Счета» за выбранный месяц: загружаю из Bitrix…</p></div></div></section>`;
+  if(!report)return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Задачи проекта «Акты Счета» за выбранный месяц: загружаю из Bitrix…</p></div><span class="acts-panel-control" aria-hidden="true"></span></div></summary></details>`;
   const refreshed=report.generated_at?new Intl.DateTimeFormat("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date(report.generated_at)):"";
   const taskList=(rows,empty)=>rows?.length?`<ol class="acts-pending-list">${rows.map(task=>`<li><a href="${attr(task.url)}" target="_blank" rel="noopener noreferrer">${esc(task.title)}</a><span>${esc(task.stage)}</span></li>`).join("")}</ol>`:`<p class=muted>${esc(empty)}</p>`;
-  const cards=(report.experts||[]).map(expert=>`<article class="acts-expert-card"><div class="acts-expert-title">${esc(expert.name)}</div><div class="acts-expert-counts"><div><span>Всего актов</span><strong>${fmt(expert.total)}</strong></div><div><span>Есть скан</span><strong>${fmt(expert.scan)}</strong></div><div><span>Есть оригинал</span><strong>${fmt(expert.archive)}</strong></div><div><span>Нет подтверждения</span><strong>${fmt(expert.no_confirmation)}</strong></div></div><details ${expert.scan?"":"class=empty"}><summary>Скан есть: ${fmt(expert.scan)}</summary>${taskList(expert.scan_tasks,"Сканов в этом месяце нет.")}</details><details ${expert.archive?"":"class=empty"}><summary>В архиве: ${fmt(expert.archive)}</summary>${taskList(expert.archive_tasks,"Оригиналов в архиве пока нет.")}</details><details ${expert.no_confirmation?"":"class=empty"}><summary>Нет подтверждения: ${fmt(expert.no_confirmation)}</summary>${taskList(expert.pending,"Все задачи подтверждены.")}</details></article>`).join("");
-  return `<section class="acts-experts-panel"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Постановщик задачи · создание за ${esc(month)} · «СКАН ЕСТЬ», «Архив» и список без подтверждения.</p></div><div class="acts-live-status"><span>●</span> Bitrix online${refreshed?` · ${esc(refreshed)}`:""}</div></div><div class="acts-experts-grid">${cards}</div></section>`;
+  const cards=(report.experts||[]).map(expert=>`<article class="acts-expert-card"><div class="acts-expert-title">${esc(expert.name)}</div><div class="acts-expert-counts"><div><span>Всего актов</span><strong>${fmt(expert.total)}</strong></div><div><span>Есть скан</span><strong>${fmt(expert.scan)}</strong></div><div><span>Есть оригинал</span><strong>${fmt(expert.archive)}</strong></div><div><span>Нет подтверждения</span><strong>${fmt(expert.no_confirmation)}</strong></div></div><details><summary>Скан есть: ${fmt(expert.scan)}</summary>${taskList(expert.scan_tasks,"Сканов в этом месяце нет.")}</details><details><summary>В архиве: ${fmt(expert.archive)}</summary>${taskList(expert.archive_tasks,"Оригиналов в архиве пока нет.")}</details><details><summary>Нет подтверждения: ${fmt(expert.no_confirmation)}</summary>${taskList(expert.pending,"Все задачи подтверждены.")}</details></article>`).join("");
+  return `<details class="acts-experts-panel" open><summary class="acts-experts-summary"><div class="panel-head"><div><div class="eyebrow">АКТЫ СЧЕТА</div><h3>Отчёт по экспертам</h3><p class="muted">Постановщик задачи · создание за ${esc(month)} · «СКАН ЕСТЬ», «Архив» и список без подтверждения.</p></div><div class="acts-head-meta"><div class="acts-live-status"><span>●</span> Bitrix online${refreshed?` · ${esc(refreshed)}`:""}</div><span class="acts-panel-control" aria-hidden="true"></span></div></div></summary><div class="acts-experts-grid">${cards}</div></details>`;
 }
 async function loadActsExperts(force=false){
   const month=actsExpertsMonth();
@@ -1537,7 +1537,7 @@ function monthKey(offset=0){
 }
 function periodDisplayLabel(){
   const active=$("[data-period-preset].active");
-  return active?.textContent?.trim()||"";
+  return active?.textContent?.trim()||$("#monthPicker")?.selectedOptions?.[0]?.textContent?.trim()||"Выбранный месяц";
 }
 function updatePeriodPresets(active){
   $$('[data-period-preset]').forEach(button=>{
@@ -1550,6 +1550,7 @@ function selectPeriodPreset(preset){
   const isCustom=preset==='custom';
   if(preset==='current')$("#month").value=monthKey();
   if(preset==='previous')$("#month").value=monthKey(-1);
+  if(preset!=='custom'&&$("#monthPicker"))$("#monthPicker").value=$("#month").value;
   $("#period").value=isCustom?'custom':'month';
   $("#customPeriod").classList.toggle("hidden",!isCustom);
   if(isCustom){
@@ -1818,8 +1819,14 @@ function openNpsDialog(expert=""){
   npsTarget=$("#npsExpert").value||expert||list[0]||"";
   $("#npsValue").value='';$("#npsNote").value='';renderNpsHistory();$("#npsDialog").showModal();
 }
-function openTeamDialog(role="expert"){
-  teamTargetRole=role;$("#teamRole").value=role;$("#teamUser").innerHTML=teamUserOptions();$("#teamDialogTitle").textContent=role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';$("#teamDialog").showModal();
+function openTeamDialog(role="expert", formerOnly=false){
+  teamTargetRole=role;$("#teamRole").value=role;
+  const users=availableTeamUsers().filter(user=>!formerOnly||!user.active);
+  const active=users.filter(user=>user.active),former=users.filter(user=>!user.active);
+  $("#teamUser").innerHTML=`${active.length?`<optgroup label="Работают сейчас">${active.map(user=>`<option value="${attr(user.name)}">${esc(user.name)}</option>`).join('')}</optgroup>`:''}${former.length?`<optgroup label="Уволенные сотрудники">${former.map(user=>`<option value="${attr(user.name)}">${esc(user.name)} · уволен(а)</option>`).join('')}</optgroup>`:''}`;
+  $("#teamDialogTitle").textContent=formerOnly?'Добавить уволенного сотрудника из Bitrix':role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';
+  $("#teamDialogHint").textContent=formerOnly?'Выберите уволенного сотрудника: его исторические показатели останутся в отчётах.':'В списке есть работающие и уволенные сотрудники Bitrix. После добавления показатели сотрудника начнут считаться в дашборде.';
+  $("#teamDialog").showModal();
 }
 function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
   fillPlanMonthOptions();
@@ -1888,6 +1895,12 @@ function fillMonths(){
   sel.innerHTML=opts.reverse().join('');
   const cur=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   sel.value=cur;
+  const monthPicker=$("#monthPicker");
+  if(monthPicker){
+    const year=now.getFullYear();
+    monthPicker.innerHTML=monthNames.map((name,index)=>{const value=`${year}-${String(index+1).padStart(2,'0')}`;return `<option value="${value}">${name} ${year}</option>`}).join('');
+    monthPicker.value=cur;
+  }
 }
 
 function isIos(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
@@ -1927,6 +1940,7 @@ function init(){
   initializeInstallExperience();
   registerServiceWorker();
   $$('[data-period-preset]').forEach(button=>button.addEventListener('click',()=>selectPeriodPreset(button.dataset.periodPreset)));
+  $("#monthPicker")?.addEventListener('change',()=>{const selected=$("#monthPicker").value;if(!selected)return;$("#month").value=selected;$("#period").value='month';$("#customPeriod").classList.add('hidden');updatePeriodPresets('selected');state=null;load()});
   $("#customStart").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#customEnd").addEventListener('change',()=>{if($("#period").value==="custom"){state=null;load()}});$("#refreshBtn").addEventListener('click',load);$("#tvBtn").addEventListener('click',()=>document.body.classList.toggle('tv-mode'));
   window.addEventListener("hashchange",()=>openView(requestedView(),false));
   document.body.addEventListener('click',e=>{
@@ -1973,7 +1987,7 @@ function init(){
     const cb=e.target.closest('[data-comment-scope]');if(cb){e.stopPropagation();commentTarget={scope:cb.dataset.commentScope,metric:cb.dataset.commentMetric,title:cb.dataset.commentTitle};$('#commentTitle').textContent=commentTarget.title;$('#commentText').value=getComment(commentTarget.scope,commentTarget.metric);$('#commentDialog').showModal();return}
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
-    const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert');return}
+    const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert',openTeam.dataset.teamFormer==='1');return}
     if(e.target.closest('[data-production-week-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","week","0");return}
     if(e.target.closest('[data-production-product-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","product");return}
     if(e.target.closest('[data-production-expert-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","expert");return}

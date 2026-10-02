@@ -19,7 +19,8 @@ class PwaAssetTests(unittest.TestCase):
         self.assertEqual(home.status_code, 200)
         self.assertIn('data-period-preset="current"', home.text)
         self.assertIn('data-period-preset="previous"', home.text)
-        self.assertIn('data-period-preset="custom"', home.text)
+        self.assertIn('id="monthPicker"', home.text)
+        self.assertNotIn('data-period-preset="custom"', home.text)
         self.assertNotIn('value="this_week"', home.text)
         self.assertNotIn('value="last_week"', home.text)
         self.assertIn('id="installIosSteps"', home.text)
@@ -105,6 +106,15 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('data-open-nps=""', script)
         self.assertIn('+ Добавить NPS вручную', script)
         self.assertIn('function manualNpsScores', script)
+
+    def test_former_experts_can_be_added_from_bitrix(self):
+        html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('data-team-former="1"', script)
+        self.assertIn('Уволенные сотрудники', script)
+        self.assertIn('available_user_options', script)
+        self.assertIn('id="teamDialogHint"', html)
 
     def test_sales_average_check_has_a_plan_in_the_summary(self):
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
