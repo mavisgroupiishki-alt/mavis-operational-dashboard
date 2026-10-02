@@ -2415,6 +2415,17 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             )
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
+        # The UI may display a stale dashboard while the payment ledger is
+        # warming up.  A Telegram report cannot use an empty revenue value,
+        # so wait once for the authoritative ledger rather than sending 0.
+        if (snapshot.get("clean_revenue") or {}).get("status") not in {"online", "stale"}:
+            refresh_task = schedule_clean_revenue_refresh(month)
+            if refresh_task:
+                try:
+                    await asyncio.wait_for(asyncio.shield(refresh_task), timeout=90)
+                except asyncio.TimeoutError as exc:
+                    raise ReportDeliveryError("Не дождались поступлений из «Графика платежей»") from exc
+            snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         now = datetime.now(ZoneInfo(settings.timezone))
         texts = build_daily_report_texts(snapshot, now)
         image_paths = await capture_bitrix_bi_reports(
