@@ -145,7 +145,9 @@ async def capture_bitrix_bi_report(*, login: str, password: str, report_url: str
                     await password_input.wait_for(state="visible", timeout=20_000)
                     await password_input.fill(password)
                     stage = "отправка пароля Bitrix24"
-                    await page.get_by_role("button").filter(has_text="Войти").first.click(timeout=8_000)
+                    # Bitrix24 varies the visible submit label by its login
+                    # flow.  Submitting the password field works for both.
+                    await password_input.press("Enter")
                     stage = "переход из Bitrix24 к BI-отчёту"
                     await page.wait_for_url("**/bi/dashboard/detail/80/**", timeout=45_000)
                     page_location = _safe_page_location(page.url)
