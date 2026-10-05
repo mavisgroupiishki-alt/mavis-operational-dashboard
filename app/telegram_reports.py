@@ -8,6 +8,7 @@ separate, traceable sources.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -192,11 +193,23 @@ async def capture_bitrix_bi_reports(
                 # This is the neighboring tab in the same BI report, exactly
                 # as it appears next to «Отчет по Лидам/Сделкам» in Bitrix24.
                 stage = "открытие вкладки «Звонки»"
-                calls_tab = page.get_by_text("Отчет по звонкам", exact=True)
-                await calls_tab.wait_for(state="visible", timeout=45_000)
+                calls_tab = None
+                calls_frame = None
+                for _ in range(90):
+                    for frame in page.frames:
+                        candidate = frame.get_by_text(re.compile(r"Отч[её]т по звонкам", re.IGNORECASE))
+                        if await candidate.count():
+                            calls_tab = candidate.first
+                            calls_frame = frame
+                            break
+                    if calls_tab:
+                        break
+                    await page.wait_for_timeout(500)
+                if calls_tab is None or calls_frame is None:
+                    raise ReportDeliveryError("Вкладка «Звонки» не появилась в текущем BI-отчёте")
                 await calls_tab.click(timeout=15_000)
                 stage = "отрисовка вкладки «Звонки»"
-                await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
+                await calls_frame.get_by_text(re.compile(r"Ежедневный отч[её]т по звонкам", re.IGNORECASE)).wait_for(
                     state="visible", timeout=30_000
                 )
                 await page.wait_for_timeout(2_000)
