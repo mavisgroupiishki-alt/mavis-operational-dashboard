@@ -126,30 +126,45 @@ async def capture_bitrix_bi_reports(
 ) -> tuple[Path, Path]:
     """Capture both BI Builder tabs without retaining two report trees in RAM."""
     _report_configuration(login, password, report_url)
+    session_path = leads_output_path.parent / ".bitrix-bi-report-session.json"
 
     # A full BI report is a sizeable single-page application.  Render runs the
     # dashboard and Chromium in the same container, so closing Chromium after
     # each tab is more reliable than retaining the first report while loading
-    # the second one.  The Bitrix login is repeated deliberately.
-    await _capture_bitrix_bi_tab(
-        login=login,
-        password=password,
-        report_url=report_url,
-        output_path=leads_output_path,
-        tab="leads",
-    )
-    await _capture_bitrix_bi_tab(
-        login=login,
-        password=password,
-        report_url=report_url,
-        output_path=calls_output_path,
-        tab="calls",
-    )
+    # the second one.  Its short-lived Bitrix session is passed to the second
+    # clean browser process and removed immediately afterwards.
+    try:
+        await _capture_bitrix_bi_tab(
+            login=login,
+            password=password,
+            report_url=report_url,
+            output_path=leads_output_path,
+            tab="leads",
+            session_path=session_path,
+            save_session=True,
+        )
+        await _capture_bitrix_bi_tab(
+            login=login,
+            password=password,
+            report_url=report_url,
+            output_path=calls_output_path,
+            tab="calls",
+            session_path=session_path,
+        )
+    finally:
+        session_path.unlink(missing_ok=True)
     return leads_output_path, calls_output_path
 
 
 async def _capture_bitrix_bi_tab(
-    *, login: str, password: str, report_url: str, output_path: Path, tab: str
+    *,
+    login: str,
+    password: str,
+    report_url: str,
+    output_path: Path,
+    tab: str,
+    session_path: Path | None = None,
+    save_session: bool = False,
 ) -> None:
     """Open one BI tab in an isolated browser process and save a screenshot."""
     stage = "запуск браузера"
@@ -168,7 +183,11 @@ async def _capture_bitrix_bi_tab(
                 args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu", "--disable-extensions"],
             )
             try:
-                page = await browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+                context_options = {"viewport": {"width": 1440, "height": 1000}, "device_scale_factor": 1}
+                if session_path and session_path.is_file():
+                    context_options["storage_state"] = str(session_path)
+                context = await browser.new_context(**context_options)
+                page = await context.new_page()
                 stage = "открытие страницы отчёта"
                 await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
                 page_location = _safe_page_location(page.url)
@@ -197,6 +216,9 @@ async def _capture_bitrix_bi_tab(
                             raise ReportDeliveryError(await _bitrix_auth_blocker(page)) from exc
                         raise
                     page_location = _safe_page_location(page.url)
+
+                if save_session and session_path:
+                    await context.storage_state(path=str(session_path))
 
                 stage = "проверка доступности BI-отчёта"
                 unavailable = page.get_by_text("Отчёт недоступен", exact=True)
