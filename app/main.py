@@ -1383,10 +1383,9 @@ def _scheduled_report_due(now: datetime) -> bool:
     """Return whether the local business-time report window is open."""
     if now.weekday() >= 5:
         return False
-    hour = 18 if now.weekday() == 4 else 19
     # A short window allows a restart at the scheduled minute without
     # producing a late report hours afterwards.
-    return now.hour == hour and now.minute < 15
+    return now.hour == 18 and now.minute < 15
 
 
 async def scheduled_telegram_reports_loop():
@@ -2521,7 +2520,7 @@ async def telegram_report_schedule():
         "last_sent_date": config.get("last_sent_date", ""),
         "last_error": config.get("last_error", ""),
         "timezone": settings.timezone,
-        "schedule": "Пн–Чт 19:00; Пт 18:00; Сб–Вс без отправки",
+        "schedule": "Пн–Пт 18:00; Сб–Вс без отправки",
     }
 
 
