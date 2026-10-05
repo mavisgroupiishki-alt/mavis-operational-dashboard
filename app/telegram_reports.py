@@ -232,7 +232,6 @@ async def _capture_bitrix_bi_tab(
         raise ReportDeliveryError(f"BI-конструктор остановился на этапе: {stage}{location}") from exc
     except Exception as exc:
         raise ReportDeliveryError("Не удалось получить снимок BI-конструктора") from exc
-    return leads_output_path, calls_output_path
 
 
 async def send_telegram_reports(
