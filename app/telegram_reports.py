@@ -8,7 +8,6 @@ separate, traceable sources.
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -125,49 +124,8 @@ async def _bitrix_auth_blocker(page: object) -> str:
 async def capture_bitrix_bi_reports(
     *, login: str, password: str, report_url: str, leads_output_path: Path, calls_output_path: Path
 ) -> tuple[Path, Path]:
-    """Capture both BI Builder tabs without retaining two report trees in RAM."""
+    """Capture the two adjacent tabs of the same BI Builder page."""
     _report_configuration(login, password, report_url)
-    session_path = leads_output_path.parent / ".bitrix-bi-report-session.json"
-
-    # A full BI report is a sizeable single-page application.  Render runs the
-    # dashboard and Chromium in the same container, so closing Chromium after
-    # each tab is more reliable than retaining the first report while loading
-    # the second one.  Its short-lived Bitrix session is passed to the second
-    # clean browser process and removed immediately afterwards.
-    try:
-        await _capture_bitrix_bi_tab(
-            login=login,
-            password=password,
-            report_url=report_url,
-            output_path=leads_output_path,
-            tab="leads",
-            session_path=session_path,
-            save_session=True,
-        )
-        await _capture_bitrix_bi_tab(
-            login=login,
-            password=password,
-            report_url=report_url,
-            output_path=calls_output_path,
-            tab="calls",
-            session_path=session_path,
-        )
-    finally:
-        session_path.unlink(missing_ok=True)
-    return leads_output_path, calls_output_path
-
-
-async def _capture_bitrix_bi_tab(
-    *,
-    login: str,
-    password: str,
-    report_url: str,
-    output_path: Path,
-    tab: str,
-    session_path: Path | None = None,
-    save_session: bool = False,
-) -> None:
-    """Open one BI tab in an isolated browser process and save a screenshot."""
     stage = "запуск браузера"
     page_location = ""
     try:
@@ -176,7 +134,8 @@ async def _capture_bitrix_bi_tab(
     except ImportError as exc:  # local unit tests do not require Chromium
         raise ReportDeliveryError("В образе Render не установлен Playwright") from exc
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    leads_output_path.parent.mkdir(parents=True, exist_ok=True)
+    calls_output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
@@ -184,11 +143,7 @@ async def _capture_bitrix_bi_tab(
                 args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu", "--disable-extensions"],
             )
             try:
-                context_options = {"viewport": {"width": 1440, "height": 1000}, "device_scale_factor": 1}
-                if session_path and session_path.is_file():
-                    context_options["storage_state"] = str(session_path)
-                context = await browser.new_context(**context_options)
-                page = await context.new_page()
+                page = await browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
                 stage = "открытие страницы отчёта"
                 await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
                 page_location = _safe_page_location(page.url)
@@ -218,9 +173,6 @@ async def _capture_bitrix_bi_tab(
                         raise
                     page_location = _safe_page_location(page.url)
 
-                if save_session and session_path:
-                    await context.storage_state(path=str(session_path))
-
                 stage = "проверка доступности BI-отчёта"
                 unavailable = page.get_by_text("Отчёт недоступен", exact=True)
                 try:
@@ -234,35 +186,22 @@ async def _capture_bitrix_bi_tab(
                 await page.wait_for_timeout(3_000)
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
-                if tab == "calls":
-                    stage = "открытие вкладки «Звонки»"
-                    # BI Builder renders the shell before the report tabs are
-                    # interactive.  The report itself is embedded in an
-                    # iframe, whereas the outer page only says "Об отчёте".
-                    calls_tab = None
-                    calls_frame = None
-                    for _ in range(90):
-                        for frame in page.frames:
-                            candidate = frame.get_by_text(re.compile(r"Отч[её]т по звонкам", re.IGNORECASE))
-                            if await candidate.count():
-                                calls_tab = candidate.first
-                                calls_frame = frame
-                                break
-                        if calls_tab:
-                            break
-                        await page.wait_for_timeout(500)
-                    if calls_tab is None or calls_frame is None:
-                        raise ReportDeliveryError("Вкладка «Звонки» не появилась во фрейме BI-конструктора")
-                    await calls_tab.click(timeout=15_000)
-                    stage = "отрисовка вкладки «Звонки»"
-                    await calls_frame.get_by_text(re.compile(r"Ежедневный отч[её]т по звонкам", re.IGNORECASE)).wait_for(
-                        state="visible", timeout=30_000
-                    )
-                    await page.wait_for_timeout(2_000)
-                    stage = "создание снимка «Звонки»"
-                else:
-                    stage = "создание снимка «Лиды/Сделки»"
-                await page.screenshot(path=str(output_path), full_page=True, timeout=45_000)
+                stage = "создание снимка «Лиды/Сделки»"
+                await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
+
+                # This is the neighboring tab in the same BI report, exactly
+                # as it appears next to «Отчет по Лидам/Сделкам» in Bitrix24.
+                stage = "открытие вкладки «Звонки»"
+                calls_tab = page.get_by_text("Отчет по звонкам", exact=True)
+                await calls_tab.wait_for(state="visible", timeout=45_000)
+                await calls_tab.click(timeout=15_000)
+                stage = "отрисовка вкладки «Звонки»"
+                await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
+                    state="visible", timeout=30_000
+                )
+                await page.wait_for_timeout(2_000)
+                stage = "создание снимка «Звонки»"
+                await page.screenshot(path=str(calls_output_path), full_page=True, timeout=45_000)
             finally:
                 await browser.close()
     except ReportDeliveryError:
@@ -272,6 +211,7 @@ async def _capture_bitrix_bi_tab(
         raise ReportDeliveryError(f"BI-конструктор остановился на этапе: {stage}{location}") from exc
     except Exception as exc:
         raise ReportDeliveryError("Не удалось получить снимок BI-конструктора") from exc
+    return leads_output_path, calls_output_path
 
 
 async def send_telegram_reports(
