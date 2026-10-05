@@ -241,7 +241,16 @@ async def _capture_bitrix_bi_tab(
                     # interactive.  Render has no user's VPN cache, so wait
                     # for the real tab rather than treating a slow render as
                     # a missing report.
-                    await calls_tab.wait_for(state="visible", timeout=45_000)
+                    try:
+                        await calls_tab.wait_for(state="visible", timeout=45_000)
+                    except PlaywrightTimeoutError as exc:
+                        body_text = await page.locator("body").inner_text(timeout=5_000)
+                        clues = [
+                            line.strip() for line in body_text.splitlines()
+                            if "отч" in line.lower() or "звон" in line.lower() or "ошиб" in line.lower()
+                        ]
+                        summary = " / ".join(clues)[:300] or "названия вкладок не найдены"
+                        raise ReportDeliveryError(f"Вкладка «Звонки» не появилась: {summary}") from exc
                     await calls_tab.click(timeout=15_000)
                     stage = "отрисовка вкладки «Звонки»"
                     await page.get_by_text(re.compile(r"Ежедневный отч[её]т по звонкам", re.IGNORECASE)).wait_for(
