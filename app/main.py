@@ -2434,13 +2434,19 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             texts = DailyReportTexts(sales="", experts="")
         now = datetime.now(ZoneInfo(settings.timezone))
         async with telegram_bi_capture_lock:
-            image_paths = await capture_bitrix_bi_reports(
-                login=settings.bitrix_bi_login,
-                password=settings.bitrix_bi_password,
-                report_url=settings.bitrix_bi_report_url,
-                leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
-                calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
-            )
+            try:
+                image_paths = await asyncio.wait_for(
+                    capture_bitrix_bi_reports(
+                        login=settings.bitrix_bi_login,
+                        password=settings.bitrix_bi_password,
+                        report_url=settings.bitrix_bi_report_url,
+                        leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
+                        calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
+                    ),
+                    timeout=180,
+                )
+            except asyncio.TimeoutError as exc:
+                raise ReportDeliveryError("BI-конструктор не отдал два снимка за 3 минуты") from exc
         await send_telegram_reports(
             token=settings.telegram_bot_token,
             chat_id=body.chat_id,
