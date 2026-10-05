@@ -50,6 +50,7 @@ clean_revenue_cache_time = {}
 clean_revenue_tasks = {}
 clean_revenue_failures = {}
 telegram_bi_capture_lock = asyncio.Lock()
+telegram_report_scheduler_task = None
 CLEAN_REVENUE_REFRESH_SECONDS = 60
 CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
 # The payment-schedule ledger was introduced after these completed months.
@@ -1378,6 +1379,44 @@ async def refresh_loop():
             pass
 
 
+def _scheduled_report_due(now: datetime) -> bool:
+    """Return whether the local business-time report window is open."""
+    if now.weekday() >= 5:
+        return False
+    hour = 18 if now.weekday() == 4 else 19
+    # A short window allows a restart at the scheduled minute without
+    # producing a late report hours afterwards.
+    return now.hour == hour and now.minute < 15
+
+
+async def scheduled_telegram_reports_loop():
+    """Deliver the configured weekday report once per local calendar day."""
+    while True:
+        try:
+            config = storage.get_setting("telegram_report_schedule", {})
+            now = datetime.now(ZoneInfo(settings.timezone))
+            day = now.date().isoformat()
+            if (
+                isinstance(config, dict)
+                and config.get("enabled")
+                and config.get("chat_id")
+                and config.get("last_sent_date") != day
+                and _scheduled_report_due(now)
+            ):
+                try:
+                    await deliver_telegram_reports(str(config["chat_id"]))
+                except ReportDeliveryError as exc:
+                    config["last_error"] = str(exc)
+                    storage.set_setting("telegram_report_schedule", config)
+                else:
+                    config["last_sent_date"] = day
+                    config["last_error"] = ""
+                    storage.set_setting("telegram_report_schedule", config)
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+
 def schedule_snapshot(month: str, period: str, force: bool=False, custom_start: str = "", custom_end: str = ""):
     key=(month,period,custom_start or "",custom_end or "")
     t=sync_tasks.get(key)
@@ -1405,11 +1444,20 @@ async def lifespan(app: FastAPI):
     restore_confirmed_september_dormant_baseline(storage)
     # Не блокируем запуск сервера тяжелой первой синхронизацией.
     task = asyncio.create_task(refresh_loop())
+    global telegram_report_scheduler_task
+    telegram_report_scheduler_task = asyncio.create_task(scheduled_telegram_reports_loop())
     refresh_trigger.set()
     yield
     task.cancel()
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    telegram_report_scheduler_task.cancel()
+    try:
+        await telegram_report_scheduler_task
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -2370,6 +2418,12 @@ class TelegramReportTestBody(BaseModel):
     photos_only: bool = False
 
 
+class TelegramReportScheduleBody(BaseModel):
+    chat_id: str
+    admin_key: str = ""
+    enabled: bool = True
+
+
 @app.get("/api/plans")
 async def plans(month: str = ""):
     month=month or current_month()
@@ -2395,11 +2449,8 @@ async def manual_refresh(admin_key: str = ""):
     return {"ok":True}
 
 
-@app.post("/api/reports/test-send")
-async def send_test_telegram_reports(body: TelegramReportTestBody):
-    """Send current reports only when all source data and the real BI image exist."""
-    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
-        raise HTTPException(403, "Неверный ADMIN_KEY")
+async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -> dict:
+    """Send source-backed texts and both adjacent BI report tabs to one chat."""
     month = current_month()
     try:
         key = (month, "month", "", "")
@@ -2417,7 +2468,7 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             )
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
-        if not body.photos_only:
+        if not photos_only:
             # The UI may display a stale dashboard while the payment ledger is
             # warming up.  A Telegram report cannot use an empty revenue value,
             # so wait once for the authoritative ledger rather than sending 0.
@@ -2449,11 +2500,54 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
                 raise ReportDeliveryError("BI-конструктор не отдал два снимка за 3 минуты") from exc
         await send_telegram_reports(
             token=settings.telegram_bot_token,
-            chat_id=body.chat_id,
+            chat_id=chat_id,
             texts=texts,
             image_paths=image_paths,
-            include_texts=not body.photos_only,
+            include_texts=not photos_only,
         )
+    except ReportDeliveryError as exc:
+        raise
+    return {"ok": True, "month": month, "report": "bitrix-bi"}
+
+
+@app.get("/api/reports/schedule")
+async def telegram_report_schedule():
+    config = storage.get_setting("telegram_report_schedule", {})
+    if not isinstance(config, dict):
+        config = {}
+    return {
+        "enabled": bool(config.get("enabled")),
+        "configured": bool(config.get("chat_id")),
+        "last_sent_date": config.get("last_sent_date", ""),
+        "last_error": config.get("last_error", ""),
+        "timezone": settings.timezone,
+        "schedule": "Пн–Чт 19:00; Пт 18:00; Сб–Вс без отправки",
+    }
+
+
+@app.put("/api/reports/schedule")
+async def save_telegram_report_schedule(body: TelegramReportScheduleBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    chat_id = body.chat_id.strip()
+    if not re.fullmatch(r"-?\d{4,20}", chat_id):
+        raise HTTPException(400, "Некорректный Telegram chat_id")
+    storage.set_setting("telegram_report_schedule", {
+        "chat_id": chat_id,
+        "enabled": body.enabled,
+        "last_sent_date": "",
+        "last_error": "",
+    })
+    return await telegram_report_schedule()
+
+
+@app.post("/api/reports/test-send")
+async def send_test_telegram_reports(body: TelegramReportTestBody):
+    """Send current reports only when all source data and the real BI image exist."""
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    try:
+        return await deliver_telegram_reports(body.chat_id, photos_only=body.photos_only)
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
@@ -2461,7 +2555,6 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         # into a bare 500 response.  Do not expose credentials, URLs or raw
         # exception text; the exception class is enough to diagnose it.
         raise HTTPException(500, f"Внутренняя ошибка отправки: {type(exc).__name__}") from exc
-    return {"ok": True, "month": month, "report": "bitrix-bi"}
 
 
 @app.post("/api/bitrix/event")
