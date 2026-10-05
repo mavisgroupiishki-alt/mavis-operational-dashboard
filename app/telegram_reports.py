@@ -8,6 +8,7 @@ separate, traceable sources.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -235,7 +236,7 @@ async def _capture_bitrix_bi_tab(
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
                 if tab == "calls":
                     stage = "открытие вкладки «Звонки»"
-                    calls_tab = page.get_by_text("Отчет по звонкам", exact=True)
+                    calls_tab = page.get_by_text(re.compile(r"Отч[её]т по звонкам", re.IGNORECASE))
                     # BI Builder renders the shell before the report tabs are
                     # interactive.  Render has no user's VPN cache, so wait
                     # for the real tab rather than treating a slow render as
@@ -243,7 +244,7 @@ async def _capture_bitrix_bi_tab(
                     await calls_tab.wait_for(state="visible", timeout=45_000)
                     await calls_tab.click(timeout=15_000)
                     stage = "отрисовка вкладки «Звонки»"
-                    await page.get_by_text("Ежедневный отчет по Звонкам", exact=True).wait_for(
+                    await page.get_by_text(re.compile(r"Ежедневный отч[её]т по звонкам", re.IGNORECASE)).wait_for(
                         state="visible", timeout=30_000
                     )
                     await page.wait_for_timeout(2_000)
