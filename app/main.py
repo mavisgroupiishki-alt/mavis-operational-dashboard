@@ -1013,7 +1013,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event", "/api/reports/test-send"} or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/schedule"} or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
