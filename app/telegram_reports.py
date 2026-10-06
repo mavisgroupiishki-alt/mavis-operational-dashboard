@@ -122,6 +122,35 @@ async def _bitrix_auth_blocker(page: object) -> str:
     return "Bitrix24 не завершил авторизацию"
 
 
+async def _wait_for_bi_report_ready(
+    frame: object, *, timeout_ms: int = 60_000, poll_ms: int = 500, stable_ms: int = 1_000
+) -> None:
+    """Wait until BI Builder has finished preparing the visible report data."""
+    loading = frame.get_by_text("Готовим данные отчёта", exact=True)
+
+    async def loading_is_visible() -> bool:
+        for index in range(await loading.count()):
+            if await loading.nth(index).is_visible():
+                return True
+        return False
+
+    loading_seen = False
+    attempts = max(1, timeout_ms // poll_ms)
+    for attempt in range(attempts):
+        visible = await loading_is_visible()
+        loading_seen = loading_seen or visible
+        if not visible and (loading_seen or attempt >= 10):
+            # BI Builder replaces several widgets independently.  Require one
+            # additional quiet moment so a late widget cannot produce a blank
+            # screenshot after the first loader has disappeared.
+            await frame.wait_for_timeout(stable_ms)
+            stable = not await loading_is_visible()
+            if stable:
+                return
+        await frame.wait_for_timeout(poll_ms)
+    raise ReportDeliveryError("BI-конструктор не завершил подготовку данных отчёта")
+
+
 async def capture_bitrix_bi_reports(
     *, login: str, password: str, report_url: str, leads_output_path: Path, calls_output_path: Path
 ) -> tuple[Path, Path]:
@@ -183,13 +212,6 @@ async def capture_bitrix_bi_reports(
                 else:
                     raise ReportDeliveryError("BI-конструктор вернул «Отчёт недоступен»")
 
-                stage = "отрисовка BI-отчёта"
-                await page.wait_for_timeout(3_000)
-                if "auth2.bitrix24.by" in page.url:
-                    raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
-                stage = "создание снимка «Лиды/Сделки»"
-                await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
-
                 # This is the neighboring tab in the same BI report, exactly
                 # as it appears next to «Отчет по Лидам/Сделкам» in Bitrix24.
                 stage = "открытие вкладки «Звонки»"
@@ -207,12 +229,19 @@ async def capture_bitrix_bi_reports(
                     await page.wait_for_timeout(500)
                 if calls_tab is None or calls_frame is None:
                     raise ReportDeliveryError("Вкладка «Звонки» не появилась в текущем BI-отчёте")
+                if "auth2.bitrix24.by" in page.url:
+                    raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
+                stage = "ожидание данных «Лиды/Сделки»"
+                await _wait_for_bi_report_ready(calls_frame)
+                stage = "создание снимка «Лиды/Сделки»"
+                await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
                 await calls_tab.click(timeout=15_000)
-                stage = "отрисовка вкладки «Звонки»"
+                stage = "ожидание заголовка вкладки «Звонки»"
                 await calls_frame.get_by_text(re.compile(r"Ежедневный отч[её]т по звонкам", re.IGNORECASE)).wait_for(
                     state="visible", timeout=30_000
                 )
-                await page.wait_for_timeout(2_000)
+                stage = "ожидание данных вкладки «Звонки»"
+                await _wait_for_bi_report_ready(calls_frame)
                 stage = "создание снимка «Звонки»"
                 await page.screenshot(path=str(calls_output_path), full_page=True, timeout=45_000)
             finally:

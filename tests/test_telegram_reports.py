@@ -1,8 +1,14 @@
+import asyncio
 from datetime import datetime
 import unittest
 from zoneinfo import ZoneInfo
 
-from app.telegram_reports import ReportDeliveryError, _safe_page_location, build_daily_report_texts
+from app.telegram_reports import (
+    ReportDeliveryError,
+    _safe_page_location,
+    _wait_for_bi_report_ready,
+    build_daily_report_texts,
+)
 
 
 def snapshot(plan=None, incoming=850):
@@ -15,6 +21,19 @@ def snapshot(plan=None, incoming=850):
 
 
 class TelegramReportsTests(unittest.TestCase):
+    def test_bi_capture_waits_until_loading_indicators_disappear(self):
+        frame = _FakeBiFrame([True, False, False])
+
+        asyncio.run(_wait_for_bi_report_ready(frame, timeout_ms=10, poll_ms=1, stable_ms=1))
+
+        self.assertGreaterEqual(frame.wait_count, 2)
+
+    def test_bi_capture_refuses_a_report_that_keeps_loading(self):
+        frame = _FakeBiFrame([True])
+
+        with self.assertRaisesRegex(ReportDeliveryError, "не завершил подготовку"):
+            asyncio.run(_wait_for_bi_report_ready(frame, timeout_ms=3, poll_ms=1, stable_ms=1))
+
     def test_safe_page_location_hides_oauth_query(self):
         self.assertEqual(
             _safe_page_location("https://auth2.bitrix24.by/oauth?state=secret&token=secret"),
@@ -43,3 +62,33 @@ class TelegramReportsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ReportDeliveryError, "Поступления продаж"):
             build_daily_report_texts(data, datetime(2026, 10, 2, tzinfo=ZoneInfo("Europe/Minsk")))
+
+
+class _FakeBiFrame:
+    def __init__(self, loading_states):
+        self.loading_states = loading_states
+        self.index = 0
+        self.wait_count = 0
+
+    def get_by_text(self, text, exact=False):
+        if text != "Готовим данные отчёта" or not exact:
+            raise AssertionError("Expected an exact BI loading indicator query")
+        return _FakeLoadingIndicator(self)
+
+    async def wait_for_timeout(self, _milliseconds):
+        self.wait_count += 1
+        self.index += 1
+
+
+class _FakeLoadingIndicator:
+    def __init__(self, frame):
+        self.frame = frame
+
+    async def count(self):
+        return 1
+
+    def nth(self, _index):
+        return self
+
+    async def is_visible(self):
+        return self.frame.loading_states[min(self.frame.index, len(self.frame.loading_states) - 1)]
