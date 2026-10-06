@@ -184,7 +184,11 @@ function manualNpsCard(value,count=0){
   const shown=value===null||value===undefined?'—':fmt(value),n=state?.automatic_nps||{};
   const period=n.week_start&&n.week_end?`${new Date(n.week_start+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}–${new Date(n.week_end+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}`:'прошлая неделя';
   const note=n.status==='unavailable'?'Источник временно недоступен':n.status==='updating'?'Загружаем задачи из Bitrix':count?`Среднее по ${fmt(count)} оценкам · ${period}`:'Оценок пока нет';
-  return `<div class="card nps-manual-card"><div class="kpi-label">NPS за прошлую неделю</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${note}</span></div><div class="kpi-note">По дате создания завершённых задач</div></div>`;
+  const month=state?.automatic_nps_month||{},monthValue=month?.overall?.value,monthCount=Number(month?.overall?.count||0);
+  const monthStart=month.month_start||month.period_start,monthEnd=month.month_end||month.period_end;
+  const monthLabel=monthStart&&monthEnd?`${new Date(monthStart+'T00:00:00').toLocaleDateString('ru-RU',{month:'long'})} ${new Date(monthStart+'T00:00:00').getFullYear()}`:'предыдущий месяц';
+  const monthNote=month.status==='unavailable'?'Источник временно недоступен':month.status==='updating'?'Загружаем задачи из Bitrix':monthCount?`${fmt(monthCount)} оценок · ${new Date(monthStart+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}–${new Date(monthEnd+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}`:'Оценок пока нет';
+  return `<div class="card nps-manual-card"><div class="nps-period-values"><section><div class="kpi-label">NPS за прошлую неделю</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${note}</span></div></section><section class="nps-month-total"><div class="kpi-label">Общий NPS за ${esc(monthLabel)}</div><div class="kpi-value">${npsText(monthValue)}</div><div class="kpi-meta"><span>${monthNote}</span></div></section></div><div class="kpi-note">По дате создания завершённых задач</div></div>`;
 }
 function progressPct(scope,metric,fact,ct="overall",ck=""){const p=getPlan(scope,metric,ct,ck);return p?Math.max(0,Math.min(100,Number(fact||0)/p*100)):0}
 function deptHero({kind,title,eyebrow,value,valueType='money',scope,metric,extra={},planMetric=metric,substats=[]}){
@@ -1339,10 +1343,10 @@ function productionSalesIncomingCard(){
   return `<div class="card production-sales-incoming"><div class="kpi-label">Поступления отдела продаж</div><div class="kpi-value">${shown}</div><div class="kpi-meta plan-line"><span>План: ${plan?money(plan):"—"}</span><span>${plan?`Выполнение: ${completion}`:"Выполнение: —"}</span></div><div class="kpi-note">${esc(note)}</div>${plan&&value!==null?`<div class="progress"><span class="${bar>=100?"good":bar<60?"bad":""}" style="width:${bar}%"></span></div>`:""}</div>`;
 }
 function renderProduction(){
-  const npsMeta=overallManualNpsMeta();
-  const p={...state.production.kpi,nps_avg:npsMeta.value};
+  const weeklyNps=state?.automatic_nps?.overall||{value:null,count:0};
+  const p={...state.production.kpi,nps_avg:weeklyNps.value};
   $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
-  <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,npsMeta.count)}</div>
+  <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,weeklyNps.count)}</div>
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
   ${productionWeeklyDynamics()}

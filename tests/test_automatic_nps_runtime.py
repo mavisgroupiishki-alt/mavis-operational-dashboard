@@ -20,7 +20,7 @@ def _task():
     }
 
 
-def test_refresh_requests_tasks_by_created_date_for_previous_week():
+def test_refresh_calculates_week_and_previous_month_from_one_task_load():
     main.automatic_nps_cache.clear()
     main.automatic_nps_cache_time.clear()
     main.automatic_nps_tasks.clear()
@@ -31,7 +31,7 @@ def test_refresh_requests_tasks_by_created_date_for_previous_week():
             await refresh
             args = fetch.await_args.args
             assert args[0] == 114
-            assert args[1].date().isoformat() == "2026-09-14"
+            assert args[1].date().isoformat() == "2026-08-01"
             assert args[2].date().isoformat() == "2026-09-21"
 
     asyncio.run(run())
@@ -39,3 +39,7 @@ def test_refresh_requests_tasks_by_created_date_for_previous_week():
     assert cached["date_basis"] == "created_date"
     assert cached["overall"] == {"value": 9.0, "count": 1}
     assert cached["experts"]["Ирина Богомольцева"]["tasks"][0]["task_url"].endswith("/42/")
+    month = main.cached_automatic_nps(AS_OF, period="month")
+    assert month["month_start"] == "2026-08-01"
+    assert month["month_end"] == "2026-08-31"
+    assert month["overall"] == {"value": None, "count": 0}

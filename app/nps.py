@@ -43,6 +43,28 @@ def previous_calendar_week(as_of=None, timezone_name="Europe/Minsk"):
     return current_monday - timedelta(days=7), current_monday
 
 
+def previous_calendar_month(as_of=None, timezone_name="Europe/Minsk"):
+    """Return the complete previous calendar month in the dashboard timezone."""
+    zone = ZoneInfo(timezone_name)
+    now = _as_local(as_of, timezone_name) if as_of else datetime.now(zone)
+    current_month_start = datetime.combine(now.date().replace(day=1), time.min, tzinfo=zone)
+    previous_month_end = current_month_start
+    previous_month_start = datetime.combine(
+        (current_month_start - timedelta(days=1)).date().replace(day=1),
+        time.min,
+        tzinfo=zone,
+    )
+    return previous_month_start, previous_month_end
+
+
+def automatic_nps_period(as_of=None, timezone_name="Europe/Minsk", period="week"):
+    if period == "week":
+        return previous_calendar_week(as_of, timezone_name)
+    if period == "month":
+        return previous_calendar_month(as_of, timezone_name)
+    raise ValueError(f"Unsupported automatic NPS period: {period}")
+
+
 def _score(value):
     if isinstance(value, list):
         value = value[0] if value else None
@@ -71,23 +93,23 @@ def _deal_id(task):
     return None
 
 
-def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
-    week_start, week_end = previous_calendar_week(as_of, timezone_name)
+def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk", period="week"):
+    period_start, period_end = automatic_nps_period(as_of, timezone_name, period)
     grouped = {}
     excluded_without_score = 0
     unmatched_expert_count = 0
     fetched_task_count = len(tasks)
     completed_task_count = 0
-    created_in_week_count = 0
+    created_in_period_count = 0
 
     for task in tasks:
         if str(_task_field(task, "STATUS")) != NPS_COMPLETED_STATUS:
             continue
         completed_task_count += 1
         created_at = _as_local(_task_field(task, "CREATED_DATE"), timezone_name)
-        if not created_at or not week_start <= created_at < week_end:
+        if not created_at or not period_start <= created_at < period_end:
             continue
-        created_in_week_count += 1
+        created_in_period_count += 1
 
         score = _score(_task_field(task, NPS_SCORE_FIELD))
         if score is None:
@@ -118,11 +140,12 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
             "tasks": rows,
         }
 
-    return {
+    result = {
         "status": "online",
         "date_basis": "created_date",
-        "week_start": week_start.date().isoformat(),
-        "week_end": (week_end - timedelta(days=1)).date().isoformat(),
+        "period": period,
+        "period_start": period_start.date().isoformat(),
+        "period_end": (period_end - timedelta(days=1)).date().isoformat(),
         "overall": {
             "value": round(sum(all_scores) / len(all_scores), 1) if all_scores else None,
             "count": len(all_scores),
@@ -130,7 +153,16 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk"):
         "experts": experts,
         "fetched_task_count": fetched_task_count,
         "completed_task_count": completed_task_count,
-        "created_in_week_count": created_in_week_count,
+        "created_in_period_count": created_in_period_count,
         "excluded_without_score": excluded_without_score,
         "unmatched_expert_count": unmatched_expert_count,
     }
+    if period == "week":
+        result["week_start"] = result["period_start"]
+        result["week_end"] = result["period_end"]
+        result["created_in_week_count"] = created_in_period_count
+    else:
+        result["month_start"] = result["period_start"]
+        result["month_end"] = result["period_end"]
+        result["created_in_month_count"] = created_in_period_count
+    return result

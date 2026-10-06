@@ -166,7 +166,11 @@ tr:hover td{background:#f5f9fc}
 .toolbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .department-page-head{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(250px,.5fr);gap:14px;margin-bottom:16px}
 .nps-manual-card{display:flex;flex-direction:column;justify-content:center;background:linear-gradient(145deg,#f5f2ff,#ebe7fb);border-color:#ddd4fa}
+.nps-period-values{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.nps-month-total{padding-left:20px;border-left:1px solid #d8d0f4}
+.nps-period-values .kpi-meta{min-height:34px}
 .nps-manual-card .soft-action{margin-top:14px;align-self:flex-start}
+@media(max-width:620px){.nps-period-values{grid-template-columns:1fr;gap:14px}.nps-month-total{padding:14px 0 0;border-top:1px solid #d8d0f4;border-left:0}.nps-period-values .kpi-meta{min-height:0}}
 .soft-action,.primary-light{background:#f0f6fa;color:#24506d;border:1px solid #cbdce8;font-weight:600}
 .soft-action:hover,.primary-light:hover{background:#e6f1f8;border-color:#abc8da}
 .primary-light{background:#e8f4fb;color:#156a9c;border-color:#b9d8ea}

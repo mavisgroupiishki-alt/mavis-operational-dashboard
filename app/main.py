@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
-from .nps import NPS_GROUP_ID, aggregate_automatic_nps, previous_calendar_week
+from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
@@ -249,65 +249,77 @@ def schedule_key_tasks_refresh(members, cache_key):
     return task
 
 
-def _automatic_nps_key(as_of=None):
+def _automatic_nps_key(as_of=None, period="week"):
     as_of = as_of or datetime.now(ZoneInfo(settings.timezone))
-    return previous_calendar_week(as_of, settings.timezone)[0].date().isoformat()
+    return f"{period}:{automatic_nps_period(as_of, settings.timezone, period)[0].date().isoformat()}"
 
 
-def _automatic_nps_empty(as_of=None, status="updating"):
-    week_start, week_end = previous_calendar_week(as_of, settings.timezone)
-    return {
+def _automatic_nps_empty(as_of=None, status="updating", period="week"):
+    period_start, period_end = automatic_nps_period(as_of, settings.timezone, period)
+    result = {
         "status": status,
         "date_basis": "created_date",
-        "week_start": week_start.date().isoformat(),
-        "week_end": (week_end - timedelta(days=1)).date().isoformat(),
+        "period": period,
+        "period_start": period_start.date().isoformat(),
+        "period_end": (period_end - timedelta(days=1)).date().isoformat(),
         "overall": {"value": None, "count": 0},
         "experts": {},
         "fetched_task_count": 0,
         "completed_task_count": 0,
-        "created_in_week_count": 0,
+        "created_in_period_count": 0,
         "excluded_without_score": 0,
         "unmatched_expert_count": 0,
     }
+    if period == "week":
+        result.update(week_start=result["period_start"], week_end=result["period_end"], created_in_week_count=0)
+    else:
+        result.update(month_start=result["period_start"], month_end=result["period_end"], created_in_month_count=0)
+    return result
 
 
-def cached_automatic_nps(as_of=None):
-    cached = automatic_nps_cache.get(_automatic_nps_key(as_of))
-    return dict(cached) if isinstance(cached, dict) else _automatic_nps_empty(as_of)
+def cached_automatic_nps(as_of=None, period="week"):
+    cached = automatic_nps_cache.get(_automatic_nps_key(as_of, period))
+    return dict(cached) if isinstance(cached, dict) else _automatic_nps_empty(as_of, period=period)
 
 
 def schedule_automatic_nps_refresh(as_of=None):
     as_of = as_of or datetime.now(ZoneInfo(settings.timezone))
-    key = _automatic_nps_key(as_of)
-    task = automatic_nps_tasks.get(key)
+    periods = ("week", "month")
+    keys = {period: _automatic_nps_key(as_of, period) for period in periods}
+    task_key = "|".join(keys.values())
+    task = automatic_nps_tasks.get(task_key)
     if task and not task.done():
         return task
-    if key in automatic_nps_cache and time.monotonic() - automatic_nps_cache_time.get(key, 0) < AUTOMATIC_NPS_REFRESH_SECONDS:
+    if all(
+        key in automatic_nps_cache
+        and time.monotonic() - automatic_nps_cache_time.get(key, 0) < AUTOMATIC_NPS_REFRESH_SECONDS
+        for key in keys.values()
+    ):
         return None
 
     async def runner():
         try:
-            week_start, week_end = previous_calendar_week(as_of, settings.timezone)
-            tasks = await client.tasks_for_group(NPS_GROUP_ID, week_start, week_end)
-            result = aggregate_automatic_nps(tasks or [], as_of, settings.timezone)
-            for expert in result["experts"].values():
-                for task_row in expert["tasks"]:
-                    task_row["task_url"] = f"{client.portal}/workgroups/group/{NPS_GROUP_ID}/tasks/task/view/{task_row['id']}/"
-            automatic_nps_cache[key] = result
-            automatic_nps_cache_time[key] = time.monotonic()
-            await broadcast({"type": "refresh", "automatic_nps": key})
+            bounds = [automatic_nps_period(as_of, settings.timezone, period) for period in periods]
+            tasks = await client.tasks_for_group(NPS_GROUP_ID, min(start for start, _ in bounds), max(end for _, end in bounds))
+            for period in periods:
+                result = aggregate_automatic_nps(tasks or [], as_of, settings.timezone, period=period)
+                for expert in result["experts"].values():
+                    for task_row in expert["tasks"]:
+                        task_row["task_url"] = f"{client.portal}/workgroups/group/{NPS_GROUP_ID}/tasks/task/view/{task_row['id']}/"
+                automatic_nps_cache[keys[period]] = result
+                automatic_nps_cache_time[keys[period]] = time.monotonic()
+            await broadcast({"type": "refresh", "automatic_nps": list(keys.values())})
         except Exception:
-            previous = automatic_nps_cache.get(key)
-            if isinstance(previous, dict):
-                automatic_nps_cache[key] = {**previous, "status": "stale"}
-            else:
-                automatic_nps_cache[key] = _automatic_nps_empty(as_of, status="unavailable")
-            automatic_nps_cache_time[key] = time.monotonic()
+            for period in periods:
+                key = keys[period]
+                previous = automatic_nps_cache.get(key)
+                automatic_nps_cache[key] = {**previous, "status": "stale"} if isinstance(previous, dict) else _automatic_nps_empty(as_of, status="unavailable", period=period)
+                automatic_nps_cache_time[key] = time.monotonic()
         finally:
-            automatic_nps_tasks.pop(key, None)
+            automatic_nps_tasks.pop(task_key, None)
 
     task = asyncio.create_task(runner())
-    automatic_nps_tasks[key] = task
+    automatic_nps_tasks[task_key] = task
     return task
 
 
@@ -1240,6 +1252,7 @@ async def operational_snapshot(snap, details, month, compact=False):
             "note": "Для июля и августа 2026 финансовые показатели считаются из суммы успешных сделок Bitrix (OPPORTUNITY).",
         }
         x["automatic_nps"] = cached_automatic_nps()
+        x["automatic_nps_month"] = cached_automatic_nps(period="month")
         schedule_automatic_nps_refresh()
         return x
     # Finance reconciliation may take much longer than the CRM snapshot.
@@ -1260,6 +1273,7 @@ async def operational_snapshot(snap, details, month, compact=False):
             pass
     x["clean_revenue"] = finance
     x["automatic_nps"] = cached_automatic_nps()
+    x["automatic_nps_month"] = cached_automatic_nps(period="month")
     schedule_automatic_nps_refresh()
     return x
 
