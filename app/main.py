@@ -204,6 +204,72 @@ async def enrich_task_workspace_deal_links(workspace: dict) -> dict:
     return workspace
 
 
+async def enrich_automatic_nps_task_links(results: list[dict]) -> list[dict]:
+    """Attach cached CRM context to NPS entries without delaying the dashboard."""
+    rows = [
+        row
+        for result in results for expert in (result.get("experts") or {}).values()
+        for row in (expert.get("tasks") or [])
+    ]
+    for row in rows:
+        row["task_url"] = f"{client.portal}/workgroups/group/{NPS_GROUP_ID}/tasks/task/view/{row['id']}/"
+    deal_ids = {str(row.get("deal_id") or "") for row in rows}
+    deal_ids.discard("")
+    if not deal_ids:
+        return results
+
+    now = time.monotonic()
+    previews = {
+        deal_id: task_link_deal_cache[deal_id]
+        for deal_id in deal_ids
+        if deal_id in task_link_deal_cache
+        and now - task_link_deal_cache_time.get(deal_id, 0) < TASK_LINK_DEAL_REFRESH_SECONDS
+    }
+    missing = sorted(deal_ids - previews.keys())
+    if missing:
+        try:
+            deals, meta = await asyncio.wait_for(asyncio.gather(
+                client.deal_list({"@ID": missing}, ["ID", "TITLE", "OPPORTUNITY", "STAGE_ID", "COMPANY_TITLE", "CONTACT_ID"]),
+                client.meta(),
+            ), timeout=6)
+            contact_ids = sorted({
+                str(deal.get("CONTACT_ID") or "")
+                for deal in deals or []
+                if not str(deal.get("COMPANY_TITLE") or "").strip() and deal.get("CONTACT_ID")
+            })
+            contact_names = {}
+            if contact_ids:
+                contacts = await asyncio.wait_for(client.list_all("crm.contact.list", {
+                    "filter": {"@ID": contact_ids}, "select": ["ID", "NAME", "LAST_NAME", "SECOND_NAME"],
+                }), timeout=4)
+                contact_names = {
+                    str(contact.get("ID") or ""): " ".join(
+                        str(contact.get(field) or "").strip()
+                        for field in ("NAME", "SECOND_NAME", "LAST_NAME")
+                    ).strip()
+                    for contact in contacts or []
+                }
+            stage_names = (meta or {}).get("statuses") or {}
+            for deal in deals or []:
+                deal_id = str(deal.get("ID") or "")
+                if deal_id in deal_ids:
+                    preview = _task_deal_preview(deal, stage_names, contact_names)
+                    previews[deal_id] = preview
+                    task_link_deal_cache[deal_id] = preview
+                    task_link_deal_cache_time[deal_id] = now
+        except Exception:
+            # NPS remains available even when live CRM context is temporarily slow.
+            pass
+
+    for row in rows:
+        deal_id = str(row.get("deal_id") or "")
+        if deal_id:
+            row["deal_url"] = f"{client.portal}/crm/deal/details/{deal_id}/"
+            if deal_id in previews:
+                row["deal"] = previews[deal_id]
+    return results
+
+
 async def key_task_available_users():
     """Small, cached user list for the manual task-owner picker."""
     global key_task_users_cache, key_task_users_cache_time
@@ -301,11 +367,12 @@ def schedule_automatic_nps_refresh(as_of=None):
         try:
             bounds = [automatic_nps_period(as_of, settings.timezone, period) for period in periods]
             tasks = await client.tasks_for_group(NPS_GROUP_ID, min(start for start, _ in bounds), max(end for _, end in bounds))
+            results = []
             for period in periods:
                 result = aggregate_automatic_nps(tasks or [], as_of, settings.timezone, period=period)
-                for expert in result["experts"].values():
-                    for task_row in expert["tasks"]:
-                        task_row["task_url"] = f"{client.portal}/workgroups/group/{NPS_GROUP_ID}/tasks/task/view/{task_row['id']}/"
+                results.append(result)
+            await enrich_automatic_nps_task_links(results)
+            for period, result in zip(periods, results):
                 automatic_nps_cache[keys[period]] = result
                 automatic_nps_cache_time[keys[period]] = time.monotonic()
             await broadcast({"type": "refresh", "automatic_nps": list(keys.values())})

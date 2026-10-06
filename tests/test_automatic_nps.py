@@ -6,10 +6,11 @@ from app.nps import aggregate_automatic_nps, previous_calendar_month, previous_c
 AS_OF = datetime.fromisoformat("2026-09-21T09:00:00+03:00")
 
 
-def task(identifier, created, closed, score, expert="Ирина Богомольцева", status="5"):
+def task(identifier, created, closed, score, expert="Ирина Богомольцева", status="5", comment=""):
     return {
         "ID": str(identifier),
         "TITLE": f"NPS {identifier}",
+        "DESCRIPTION": comment,
         "STATUS": status,
         "CREATED_DATE": created,
         "CLOSED_DATE": closed,
@@ -71,6 +72,14 @@ def test_automatic_nps_accepts_camel_case_fields_from_tasks_api():
 
     assert result["overall"] == {"value": 9.0, "count": 1}
     assert result["experts"]["Ирина Богомольцева"]["tasks"][0]["id"] == "42"
+
+
+def test_automatic_nps_keeps_the_task_comment_for_the_expert_drilldown():
+    result = aggregate_automatic_nps([
+        task(1, "2026-09-15T10:00:00+03:00", "2026-09-16T10:00:00+03:00", 8, comment="Нужно уточнить ценность услуги"),
+    ], AS_OF)
+
+    assert result["experts"]["Ирина Богомольцева"]["tasks"][0]["comment"] == "Нужно уточнить ценность услуги"
 
 
 def test_automatic_nps_for_previous_month_uses_full_calendar_month_by_created_date():

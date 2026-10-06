@@ -182,7 +182,7 @@ tr:hover td{background:#f5f9fc}
 .expert-card-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
 .expert-name{font-size:12px;font-weight:700;letter-spacing:.06em;color:#6b7d8d;text-transform:uppercase}
 .expert-result{font-size:31px;font-weight:650;letter-spacing:-.04em;margin-top:7px}
-.nps-button{background:#f1edff;border:1px solid #ddd4fb;color:#634fc2;font-size:11px;white-space:nowrap}
+.nps-button{background:#f1edff;border:1px solid #ddd4fb;color:#634fc2;font-size:11px;white-space:nowrap}.nps-details-trigger{display:inline-flex;align-items:center;gap:7px;text-align:left}.nps-details-trigger:not(:disabled):hover{border-color:#a798e9;background:#e9e3ff}.nps-details-trigger:disabled{cursor:default;opacity:.72}.nps-details-trigger span{font-size:17px;line-height:.7}
 .expert-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:16px 0}
 .expert-stats>div{padding:9px 8px;background:#f5f8fb;border:1px solid #e3eaf0;border-radius:10px;text-align:center}
 .expert-stats span{display:block;color:#7b8a98;font-size:9px;margin-bottom:3px}
@@ -244,6 +244,7 @@ tr:hover td{background:#f5f9fc}
 .nps-summary strong{font-size:15px}.nps-summary span{color:#718394;font-size:12px}
 .nps-history-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#fff;border:1px solid var(--line);border-radius:11px}
 .nps-history-row>div{display:flex;gap:10px;align-items:center}.nps-history-row span{color:#718394;font-size:12px}
+.nps-details-modal{width:min(760px,95vw)}.nps-task-list{display:grid;gap:10px;margin-top:18px}.nps-task-detail{border:1px solid var(--line);border-radius:13px;background:#fff;padding:14px}.nps-task-detail header{display:flex;justify-content:space-between;gap:12px;align-items:center}.nps-task-detail header strong{font-size:17px;color:#5e4cc2}.nps-task-detail time,.nps-task-company{color:#718394;font-size:12px}.nps-task-company{margin-top:9px}.nps-task-title{margin-top:6px;font-weight:700}.nps-task-comment{margin-top:10px;font-size:13px;line-height:1.5;color:#3e5668}.nps-task-links{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}.nps-task-links a{color:#167aa5;font-size:12px;font-weight:700;text-underline-offset:3px}
 .mini-edit.danger{color:#a84f58}
 .sales-filter-note{margin-bottom:14px;background:linear-gradient(90deg,#eef7fd,#f7fbfe);border-left:4px solid #2499d4}
 

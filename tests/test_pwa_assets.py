@@ -107,6 +107,15 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('+ Добавить NPS вручную', script)
         self.assertIn('function manualNpsScores', script)
 
+    def test_expert_monthly_nps_badge_opens_task_level_details(self):
+        html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn('automatic_nps_month?.experts?.[e.name]', script)
+        self.assertIn('data-open-nps-details', script)
+        self.assertIn('function openNpsDetails', script)
+        self.assertIn('id="npsDetailsDialog"', html)
+
     def test_former_experts_can_be_added_from_bitrix(self):
         html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()

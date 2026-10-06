@@ -123,6 +123,7 @@ def aggregate_automatic_nps(tasks, as_of=None, timezone_name="Europe/Minsk", per
         grouped.setdefault(expert, []).append({
             "id": str(_task_field(task, "ID")),
             "title": _task_field(task, "TITLE") or "Задача NPS",
+            "comment": _task_field(task, "DESCRIPTION") or "",
             "score": score,
             "created_date": created_at.date().isoformat(),
             "closed_date": (_as_local(_task_field(task, "CLOSED_DATE"), timezone_name) or created_at).date().isoformat(),

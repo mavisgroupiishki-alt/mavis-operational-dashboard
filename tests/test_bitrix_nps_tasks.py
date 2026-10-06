@@ -51,6 +51,7 @@ class BitrixNpsTaskFetchTests(unittest.TestCase):
             self.assertEqual(client.list_all.await_count, 2)
             self.assertEqual(params["filter"], {})
             self.assertIn("GROUP_ID", params["select"])
+            self.assertIn("DESCRIPTION", params["select"])
             self.assertEqual(rows, [{"ID": "1", "GROUP_ID": "114"}])
 
         asyncio.run(check())

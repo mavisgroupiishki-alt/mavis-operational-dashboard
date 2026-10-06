@@ -70,7 +70,7 @@ class BitrixClient:
         params={
             "order":{"CREATED_DATE":"DESC","ID":"DESC"},
             "filter":{"GROUP_ID":int(group_id)},
-            "select":["ID","TITLE","STATUS","GROUP_ID","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
+            "select":["ID","TITLE","DESCRIPTION","STATUS","GROUP_ID","CREATED_DATE","CLOSED_DATE","UF_CRM_TASK_DEAL","UF_CRM_TASK","UF_AUTO_213716165780","UF_AUTO_394851584352"],
         }
         rows=await self.list_all("tasks.task.list",params,limit=1000)
         if rows:
