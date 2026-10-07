@@ -96,6 +96,9 @@ ACTS_EXPERTS_REFRESH_SECONDS = 60
 DAILY_SALES_REFRESH_SECONDS = 120
 daily_sales_cache = {}
 daily_sales_cache_time = {}
+DAILY_SALES_FINANCE_REFRESH_SECONDS = 60
+daily_sales_finance_cache = {}
+daily_sales_finance_cache_time = {}
 daily_sales_archive_locks = {}
 DAILY_SALES_ARCHIVE_CHECK_SECONDS = 60
 
@@ -164,18 +167,6 @@ async def _load_daily_sales_live(selected_date: str, force: bool = False) -> dic
     if not force and cached and time.monotonic() - daily_sales_cache_time.get(cache_key, 0) < DAILY_SALES_REFRESH_SECONDS:
         return copy.deepcopy(cached)
     report = await build_daily_sales_report(client, cache_key, settings.timezone)
-    # Keep the three finance numbers distinct.  The ledger gives us the
-    # selected day's incoming amount and clean revenue, while the month-to-date
-    # request is used only for the plan/fact line.  A finance outage must not
-    # hide an otherwise valid CRM report.
-    month = start.strftime("%Y-%m")
-    daily_revenue, month_revenue = await asyncio.gather(
-        load_clean_revenue_day(cache_key),
-        load_clean_revenue_through(month, start),
-    )
-    report["clean_revenue"] = daily_revenue
-    report["month_clean_revenue"] = month_revenue
-    report["sales_plan_amount"] = _sales_plan_amount(month)
     daily_sales_cache[cache_key] = report
     daily_sales_cache_time[cache_key] = time.monotonic()
     return copy.deepcopy(report)
@@ -209,6 +200,30 @@ async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
             return copy.deepcopy(archive["report"])
         return historical_live_snapshot(await _load_daily_sales_live(day, force=force))
     return live_snapshot(await _load_daily_sales_live(day, force=force))
+
+
+async def load_daily_sales_finance(selected_date: str, force: bool = False) -> dict:
+    """Load slow payment-ledger values separately from the CRM daily report."""
+    start, _ = daily_bounds(selected_date, settings.timezone)
+    day = start.date().isoformat()
+    cached = daily_sales_finance_cache.get(day)
+    if not force and cached and time.monotonic() - daily_sales_finance_cache_time.get(day, 0) < DAILY_SALES_FINANCE_REFRESH_SECONDS:
+        return copy.deepcopy(cached)
+    month = start.strftime("%Y-%m")
+    daily_revenue, month_revenue = await asyncio.gather(
+        load_clean_revenue_day(day),
+        load_clean_revenue_through(month, start),
+    )
+    result = {
+        "ok": True,
+        "date": day,
+        "clean_revenue": daily_revenue,
+        "month_clean_revenue": month_revenue,
+        "sales_plan_amount": _sales_plan_amount(month),
+    }
+    daily_sales_finance_cache[day] = result
+    daily_sales_finance_cache_time[day] = time.monotonic()
+    return copy.deepcopy(result)
 
 
 def _key_task_cache_key(members):
@@ -1946,6 +1961,19 @@ async def api_sales_daily(request: Request, date: str = Query(default="")):
         raise HTTPException(503, "Ежедневный отчёт Bitrix временно недоступен") from exc
 
 
+@app.get("/api/sales-daily-finance")
+async def api_sales_daily_finance(request: Request, date: str = Query(default="")):
+    require_full_access(request)
+    selected_date = date or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
+    try:
+        return await load_daily_sales_finance(selected_date)
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
+    except Exception as exc:
+        logger.exception("Daily sales finance unavailable")
+        raise HTTPException(503, "Финансовые данные за день временно недоступны") from exc
+
+
 @app.get("/api/sales-calls")
 async def api_sales_calls():
     return await load_jarvis_operations("sales-calls")
@@ -2890,7 +2918,7 @@ async def save_telegram_report_schedule(body: TelegramReportScheduleBody):
 
 @app.post("/api/reports/test-send")
 async def send_test_telegram_reports(body: TelegramReportTestBody):
-    """Send verified current or explicitly dated reports with real BI images."""
+    """Send verified current or explicitly dated reports with dashboard images."""
     if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
         raise HTTPException(403, "Неверный ADMIN_KEY")
     try:
@@ -2927,23 +2955,21 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
 
 @app.post("/api/reports/capture-preview")
 async def capture_telegram_report_preview(body: TelegramReportTestBody):
-    """Create BI images for in-chat review without sending anything to Telegram."""
+    """Create dashboard images for review without sending anything to Telegram."""
     if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
         raise HTTPException(403, "Неверный ADMIN_KEY")
     try:
         report_date = datetime.now(ZoneInfo(settings.timezone)).date()
         if body.report_date:
             report_date = datetime.strptime(body.report_date, "%Y-%m-%d").date()
-        now = datetime.now(ZoneInfo(settings.timezone))
         async with telegram_bi_capture_lock:
             await asyncio.wait_for(
-                capture_bitrix_bi_reports(
-                    login=settings.bitrix_bi_login,
-                    password=settings.bitrix_bi_password,
-                    report_url=settings.bitrix_bi_report_url,
-                    leads_output_path=settings.data_dir / f"bitrix-daily-leads-{report_date.isoformat()}.png",
-                    calls_output_path=settings.data_dir / f"bitrix-daily-calls-{report_date.isoformat()}.png",
-                    relative_date_label="Вчера" if report_date == now.date() - timedelta(days=1) else None,
+                capture_dashboard_daily_reports(
+                    dashboard_url=settings.dashboard_public_url,
+                    access_cookie=session_token(FULL_ACCESS),
+                    report_date=report_date.isoformat(),
+                    leads_output_path=settings.data_dir / f"daily-leads-{report_date.isoformat()}.png",
+                    calls_output_path=settings.data_dir / f"daily-calls-{report_date.isoformat()}.png",
                 ),
                 timeout=180,
             )
@@ -2951,7 +2977,7 @@ async def capture_telegram_report_preview(body: TelegramReportTestBody):
     except ValueError as exc:
         raise HTTPException(400, "Дата отчёта должна быть в формате ГГГГ-ММ-ДД") from exc
     except asyncio.TimeoutError as exc:
-        raise HTTPException(503, "BI-конструктор не отдал два снимка за 3 минуты") from exc
+        raise HTTPException(503, "Дашборд не отдал два снимка за 3 минуты") from exc
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -2963,7 +2989,7 @@ async def get_telegram_report_preview(report_date: str, tab: str, admin_key: str
         raise HTTPException(403, "Неверный ADMIN_KEY")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date) or tab not in {"leads", "calls"}:
         raise HTTPException(400, "Некорректный запрос снимка")
-    image_path = settings.data_dir / f"bitrix-daily-{tab}-{report_date}.png"
+    image_path = settings.data_dir / f"daily-{tab}-{report_date}.png"
     if not image_path.is_file():
         raise HTTPException(404, "Снимок ещё не сформирован")
     return FileResponse(image_path, media_type="image/png", filename=image_path.name)

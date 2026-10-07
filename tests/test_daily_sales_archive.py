@@ -52,36 +52,47 @@ def test_past_day_without_archive_is_marked_as_current_bitrix_data(monkeypatch):
         assert result["snapshot"]["mode"] == "historical_live"
 
 
-def test_daily_sales_report_includes_same_day_clean_revenue(monkeypatch):
+def test_daily_sales_report_does_not_wait_for_finance(monkeypatch):
     main.daily_sales_cache.clear()
     main.daily_sales_cache_time.clear()
 
     async def bitrix_report(*args, **kwargs):
         return {"ok": True, "date": "2026-10-07", "leads": {"total": 7}}
 
+    async def finance_call(*args, **kwargs):
+        raise AssertionError("daily CRM report must not wait for finance")
+
+    monkeypatch.setattr(main, "build_daily_sales_report", bitrix_report)
+    monkeypatch.setattr(main, "load_clean_revenue_day", finance_call)
+    monkeypatch.setattr(main, "load_clean_revenue_through", finance_call)
+
+    result = asyncio.run(main._load_daily_sales_live("2026-10-07", force=True))
+
+    assert result == {"ok": True, "date": "2026-10-07", "leads": {"total": 7}}
+
+
+def test_daily_sales_finance_loads_after_the_crm_report(monkeypatch):
+    main.daily_sales_finance_cache.clear()
+    main.daily_sales_finance_cache_time.clear()
+
     async def clean_revenue(day):
         assert day == "2026-10-07"
-        return {
-            "status": "online", "value": 1250.50, "contractor_amount": 200.0,
-            "incoming_amount": 1450.50, "date_from": day, "date_to": day,
-        }
+        return {"status": "online", "value": 1250.50, "incoming_amount": 1450.50}
 
     async def month_revenue(month, report_at):
         assert month == "2026-10"
         assert report_at.date().isoformat() == "2026-10-07"
         return {"status": "online", "value": 5200.0}
 
-    monkeypatch.setattr(main, "build_daily_sales_report", bitrix_report)
     monkeypatch.setattr(main, "load_clean_revenue_day", clean_revenue)
     monkeypatch.setattr(main, "load_clean_revenue_through", month_revenue)
     monkeypatch.setattr(main, "_sales_plan_amount", lambda month: 135000.0)
 
-    result = asyncio.run(main._load_daily_sales_live("2026-10-07", force=True))
+    result = asyncio.run(main.load_daily_sales_finance("2026-10-07"))
 
-    assert result["clean_revenue"] == {
-        "status": "online", "value": 1250.50, "contractor_amount": 200.0,
-        "incoming_amount": 1450.50,
-        "date_from": "2026-10-07", "date_to": "2026-10-07",
+    assert result == {
+        "ok": True, "date": "2026-10-07",
+        "clean_revenue": {"status": "online", "value": 1250.50, "incoming_amount": 1450.50},
+        "month_clean_revenue": {"status": "online", "value": 5200.0},
+        "sales_plan_amount": 135000.0,
     }
-    assert result["month_clean_revenue"] == {"status": "online", "value": 5200.0}
-    assert result["sales_plan_amount"] == 135000.0
