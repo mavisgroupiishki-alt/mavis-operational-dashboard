@@ -155,6 +155,7 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn("Чистая выручка за день", script)
         self.assertIn("month_clean_revenue", script)
         self.assertIn("sales_plan_amount", script)
+        self.assertIn("daily-sales-capture", script)
 
 
 if __name__ == "__main__":

@@ -496,6 +496,7 @@ async def capture_dashboard_daily_reports(
                 await page.locator("[data-daily-sales-refresh]").click(timeout=15_000)
 
                 report = page.locator(".daily-sales-report")
+                capture = page.locator(".daily-sales-capture")
                 stage = "ожидание дневных поступлений"
                 await report.get_by_text("Поступления за день", exact=True).wait_for(state="visible", timeout=90_000)
                 financial_values = report.locator(".daily-sales-finance strong")
@@ -509,7 +510,7 @@ async def capture_dashboard_daily_reports(
                     raise ReportDeliveryError("Дашборд не получил дневные поступления или факт плана")
 
                 stage = "создание снимка лидов и сделок"
-                await report.screenshot(path=str(leads_output_path), timeout=45_000)
+                await capture.screenshot(path=str(leads_output_path), timeout=45_000)
 
                 stage = "открытие вкладки звонков"
                 await page.get_by_role("tab", name="Звонки", exact=True).click(timeout=15_000)
@@ -517,7 +518,7 @@ async def capture_dashboard_daily_reports(
                     state="visible", timeout=45_000
                 )
                 stage = "создание снимка звонков"
-                await report.screenshot(path=str(calls_output_path), timeout=45_000)
+                await capture.screenshot(path=str(calls_output_path), timeout=45_000)
             finally:
                 await browser.close()
     except ReportDeliveryError:
