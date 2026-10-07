@@ -1515,6 +1515,7 @@ async def scheduled_telegram_reports_loop():
             if (
                 isinstance(config, dict)
                 and config.get("enabled")
+                and not settings.telegram_reports_paused
                 and config.get("chat_id")
                 and config.get("last_sent_date") != day
                 and _scheduled_report_due(now)
@@ -2652,6 +2653,7 @@ async def telegram_report_schedule():
         "configured": bool(config.get("chat_id")),
         "last_sent_date": config.get("last_sent_date", ""),
         "last_error": config.get("last_error", ""),
+        "paused": settings.telegram_reports_paused,
         "timezone": settings.timezone,
         "schedule": "Пн–Пт 18:00; Сб–Вс без отправки",
     }

@@ -32,6 +32,7 @@ class Settings:
         "https://mavisgroup.bitrix24.by/bi/dashboard/detail/80/",
     ).strip()
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_reports_paused: bool = os.getenv("TELEGRAM_REPORTS_PAUSED", "false").lower() in {"1", "true", "yes", "y"}
 
 settings=Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
