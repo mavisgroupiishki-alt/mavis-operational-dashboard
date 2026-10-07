@@ -1,6 +1,19 @@
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from app.daily_sales import build_daily_sales_report, call_direction, duration_seconds, sales_team_rows, statistic_direction, summarize_daily_sales
+from app.daily_sales import (
+    archive_snapshot,
+    build_daily_sales_report,
+    call_direction,
+    daily_archive_due_date,
+    duration_seconds,
+    historical_live_snapshot,
+    live_snapshot,
+    sales_team_rows,
+    statistic_direction,
+    summarize_daily_sales,
+)
 
 
 def test_call_direction_and_duration_do_not_guess_unknown_values():
@@ -26,6 +39,29 @@ def test_sales_team_scope_excludes_other_portal_users():
         "ASSIGNED_BY_ID",
     )
     assert rows == [{"ASSIGNED_BY_ID": "1"}]
+
+
+def test_daily_snapshot_modes_are_explicit_and_archive_is_immutable_payload():
+    source = {"ok": True, "date": "2026-10-06", "leads": {"total": 7}}
+
+    online = live_snapshot(source)
+    fallback = historical_live_snapshot(source)
+    archived = archive_snapshot(source, "2026-10-07T00:10:00+03:00")
+
+    assert online["snapshot"]["mode"] == "live"
+    assert fallback["snapshot"]["mode"] == "historical_live"
+    assert archived["snapshot"] == {
+        "mode": "archive", "captured_at": "2026-10-07T00:10:00+03:00",
+        "message": "Архивный снимок после закрытия дня.",
+    }
+    assert "snapshot" not in source
+
+
+def test_daily_archive_runs_only_in_the_closing_window():
+    tz = ZoneInfo("Europe/Minsk")
+    assert daily_archive_due_date(datetime(2026, 10, 7, 0, 9, tzinfo=tz), "Europe/Minsk") is None
+    assert daily_archive_due_date(datetime(2026, 10, 7, 0, 10, tzinfo=tz), "Europe/Minsk") == "2026-10-06"
+    assert daily_archive_due_date(datetime(2026, 10, 7, 1, 0, tzinfo=tz), "Europe/Minsk") is None
 
 
 def test_summary_keeps_unclassified_calls_out_of_directional_metrics():

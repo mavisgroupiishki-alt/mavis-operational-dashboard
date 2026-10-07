@@ -28,7 +28,14 @@ from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_septemb
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
 from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_deal_id, valid_month as valid_acts_month
-from .daily_sales import build_daily_sales_report, daily_bounds
+from .daily_sales import (
+    archive_snapshot,
+    build_daily_sales_report,
+    daily_archive_due_date,
+    daily_bounds,
+    historical_live_snapshot,
+    live_snapshot,
+)
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
@@ -89,6 +96,8 @@ ACTS_EXPERTS_REFRESH_SECONDS = 60
 DAILY_SALES_REFRESH_SECONDS = 120
 daily_sales_cache = {}
 daily_sales_cache_time = {}
+daily_sales_archive_locks = {}
+DAILY_SALES_ARCHIVE_CHECK_SECONDS = 60
 
 
 def current_month():
@@ -147,8 +156,8 @@ async def load_acts_experts(month: str, force: bool = False) -> dict:
     return report
 
 
-async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
-    """Load a bounded report directly from Bitrix, independently from BI."""
+async def _load_daily_sales_live(selected_date: str, force: bool = False) -> dict:
+    """Load a bounded live report directly from Bitrix, independently from BI."""
     start, _ = daily_bounds(selected_date, settings.timezone)
     cache_key = start.date().isoformat()
     cached = daily_sales_cache.get(cache_key)
@@ -158,6 +167,36 @@ async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
     daily_sales_cache[cache_key] = report
     daily_sales_cache_time[cache_key] = time.monotonic()
     return copy.deepcopy(report)
+
+
+async def archive_daily_sales(selected_date: str, captured_at: str | None = None) -> dict:
+    """Create the one permitted immutable daily snapshot, if it is absent."""
+    start, _ = daily_bounds(selected_date, settings.timezone)
+    day = start.date().isoformat()
+    lock = daily_sales_archive_locks.setdefault(day, asyncio.Lock())
+    async with lock:
+        existing = await asyncio.to_thread(storage.daily_sales_archive, day)
+        if existing:
+            return copy.deepcopy(existing["report"])
+        captured_at = captured_at or datetime.now(ZoneInfo(settings.timezone)).isoformat()
+        report = archive_snapshot(await _load_daily_sales_live(day, force=True), captured_at)
+        saved, _ = await asyncio.to_thread(
+            storage.save_daily_sales_archive, day, report, captured_at, settings.timezone
+        )
+        return copy.deepcopy(saved["report"])
+
+
+async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
+    """Return live current-day data or the immutable archive for past days."""
+    start, _ = daily_bounds(selected_date, settings.timezone)
+    day = start.date().isoformat()
+    today = datetime.now(ZoneInfo(settings.timezone)).date()
+    if start.date() < today:
+        archive = await asyncio.to_thread(storage.daily_sales_archive, day)
+        if archive:
+            return copy.deepcopy(archive["report"])
+        return historical_live_snapshot(await _load_daily_sales_live(day, force=force))
+    return live_snapshot(await _load_daily_sales_live(day, force=force))
 
 
 def _key_task_cache_key(members):
@@ -1581,6 +1620,19 @@ async def scheduled_telegram_reports_loop():
         await asyncio.sleep(30)
 
 
+async def daily_sales_archive_loop():
+    """Best-effort archive capture after each local calendar day closes."""
+    while True:
+        try:
+            now = datetime.now(ZoneInfo(settings.timezone))
+            due_day = daily_archive_due_date(now, settings.timezone)
+            if due_day:
+                await archive_daily_sales(due_day, captured_at=now.isoformat())
+        except Exception:
+            logger.exception("Daily sales archive capture failed")
+        await asyncio.sleep(DAILY_SALES_ARCHIVE_CHECK_SECONDS)
+
+
 def schedule_snapshot(month: str, period: str, force: bool=False, custom_start: str = "", custom_end: str = ""):
     key=(month,period,custom_start or "",custom_end or "")
     t=sync_tasks.get(key)
@@ -1610,6 +1662,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(refresh_loop())
     global telegram_report_scheduler_task
     telegram_report_scheduler_task = asyncio.create_task(scheduled_telegram_reports_loop())
+    daily_sales_archive_task = asyncio.create_task(daily_sales_archive_loop())
     refresh_trigger.set()
     yield
     task.cancel()
@@ -1622,6 +1675,13 @@ async def lifespan(app: FastAPI):
     telegram_report_scheduler_task.cancel()
     try:
         await telegram_report_scheduler_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    daily_sales_archive_task.cancel()
+    try:
+        await daily_sales_archive_task
     except asyncio.CancelledError:
         pass
     except Exception:

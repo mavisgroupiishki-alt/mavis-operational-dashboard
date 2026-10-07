@@ -1,6 +1,7 @@
 """Bounded, read-only daily Sales report sourced directly from Bitrix24."""
 
 import asyncio
+import copy
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -16,6 +17,41 @@ from .metrics import (
     user_name,
 )
 from .sales_team import SALES_BI_MANAGERS
+
+
+def _snapshot_report(report: dict[str, Any], mode: str, message: str, captured_at: str | None = None) -> dict[str, Any]:
+    """Return a response copy with its data provenance made explicit."""
+    result = copy.deepcopy(report)
+    result["snapshot"] = {
+        "mode": mode,
+        "captured_at": captured_at,
+        "message": message,
+    }
+    return result
+
+
+def live_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    return _snapshot_report(report, "live", "Онлайн-данные Bitrix24 за текущий день.")
+
+
+def historical_live_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    return _snapshot_report(
+        report,
+        "historical_live",
+        "Архивный снимок для этой даты не создан; показаны текущие данные Bitrix24, которые могли измениться после выбранного дня.",
+    )
+
+
+def archive_snapshot(report: dict[str, Any], captured_at: str) -> dict[str, Any]:
+    return _snapshot_report(report, "archive", "Архивный снимок после закрытия дня.", captured_at)
+
+
+def daily_archive_due_date(now: datetime, timezone: str) -> str | None:
+    """Return yesterday only during the narrow local archive window."""
+    local_now = now.astimezone(ZoneInfo(timezone))
+    if local_now.hour != 0 or not 10 <= local_now.minute < 60:
+        return None
+    return (local_now.date() - timedelta(days=1)).isoformat()
 
 def daily_bounds(value: str, timezone: str) -> tuple[datetime, datetime]:
     """Return a timezone-aware half-open interval for an ISO calendar day."""

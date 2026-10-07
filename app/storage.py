@@ -247,6 +247,28 @@ class Storage:
             "saved_at":datetime.now(timezone.utc).isoformat(),
         })
 
+    # ---------- Immutable daily Sales archives ----------
+    def daily_sales_archive(self, day: str) -> dict:
+        value = self._get(f"daily_sales_archive:{day}", {})
+        if not isinstance(value, dict) or not isinstance(value.get("report"), dict):
+            return {}
+        return value
+
+    def save_daily_sales_archive(self, day: str, report: dict, captured_at: str, timezone_name: str = "") -> tuple[dict, bool]:
+        """Persist the first snapshot for a day; later calls must not replace it."""
+        existing = self.daily_sales_archive(day)
+        if existing:
+            return existing, False
+        record = {
+            "version": 1,
+            "day": day,
+            "captured_at": captured_at,
+            "timezone": timezone_name,
+            "report": report,
+        }
+        self._set(f"daily_sales_archive:{day}", record)
+        return record, True
+
     # ---------- Plans ----------
     def plan_dict(self, month: str):
         value = self._get(f"plans:{month}", {})
