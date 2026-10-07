@@ -330,12 +330,14 @@ async def capture_bitrix_bi_reports(
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
                 stage = "фильтрация по менеджерам отдела продаж"
-                await _apply_sales_manager_filter(calls_frame)
+                # Bitrix renders the report tabs in an iframe, but its left
+                # filter panel lives on the parent page.
+                await _apply_sales_manager_filter(page)
                 if relative_date_label:
                     # Selecting the date redraws the side panel in BI Builder,
                     # but preserves already applied employee filters.
                     stage = "выбор даты BI-отчёта"
-                    await _apply_relative_date_filter(calls_frame, relative_date_label)
+                    await _apply_relative_date_filter(page, relative_date_label)
                 stage = "ожидание данных «Лиды/Сделки»"
                 await _wait_for_bi_report_ready(calls_frame)
                 stage = "создание снимка «Лиды/Сделки»"
