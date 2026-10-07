@@ -192,16 +192,30 @@ async def _apply_sales_manager_filter(frame: object) -> None:
     dropdown_open = False
     for manager in SALES_BI_MANAGERS:
         if not dropdown_open:
-            await control.click(timeout=10_000)
-        search = await _last_visible(frame.locator("input[type='search'], input[type='text']"))
+            # Bitrix renders the selector under an animated surface.  Normal
+            # pointer checks time out in headless Chromium although the
+            # control itself is interactive, so target it directly.
+            try:
+                await control.click(timeout=10_000, force=True)
+            except Exception as exc:
+                raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from exc
+        search = await _last_visible(
+            frame.locator("input[type='search'], input[type='text'], input:not([type]), [contenteditable='true']")
+        )
         if search is None:
             raise ReportDeliveryError("Не найден поиск сотрудников в BI-конструкторе")
-        await search.fill(manager, timeout=10_000)
+        try:
+            await search.fill(manager, timeout=10_000, force=True)
+        except Exception as exc:
+            raise ReportDeliveryError("Не удалось найти сотрудника в списке BI-конструктора") from exc
         await frame.wait_for_timeout(250)
         option = await _last_visible(frame.get_by_text(manager, exact=True))
         if option is None:
             raise ReportDeliveryError(f"В BI-конструкторе не найден сотрудник: {manager}")
-        await option.click(timeout=10_000)
+        try:
+            await option.click(timeout=10_000, force=True)
+        except Exception as exc:
+            raise ReportDeliveryError(f"Не удалось выбрать сотрудника: {manager}") from exc
         await frame.wait_for_timeout(250)
         dropdown_open = await search.is_visible()
 
