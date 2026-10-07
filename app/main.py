@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import copy
 import math
 import re
@@ -51,6 +52,7 @@ clean_revenue_tasks = {}
 clean_revenue_failures = {}
 telegram_bi_capture_lock = asyncio.Lock()
 telegram_report_scheduler_task = None
+logger = logging.getLogger(__name__)
 CLEAN_REVENUE_REFRESH_SECONDS = 60
 CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
 # The payment-schedule ledger was introduced after these completed months.
@@ -2691,6 +2693,7 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
             sales_only=body.sales_only,
         )
     except ReportDeliveryError as exc:
+        logger.warning("Telegram report delivery failed: %s", exc)
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
         # This protected test endpoint otherwise turns an actionable failure
