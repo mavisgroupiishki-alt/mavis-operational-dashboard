@@ -385,6 +385,9 @@ async def capture_bitrix_bi_reports(
                         break
                     await page.wait_for_timeout(500)
                 if calls_tab is None or calls_frame is None:
+                    # Preserve the actual BI screen for authenticated preview
+                    # diagnostics; never send it to Telegram.
+                    await page.screenshot(path=str(leads_output_path), full_page=True, timeout=45_000)
                     raise ReportDeliveryError("Вкладка «Звонки» не появилась в текущем BI-отчёте")
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
