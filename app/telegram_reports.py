@@ -20,6 +20,12 @@ RUSSIAN_MONTHS_GENITIVE = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
+SALES_BI_MANAGERS = (
+    "Алена Хурсик",
+    "Ирина Базылева",
+    "Ирина Богомольцева",
+    "Роман Авсеенко",
+)
 
 
 class ReportDeliveryError(RuntimeError):
@@ -56,11 +62,11 @@ def russian_date(value: datetime) -> str:
     return f"{RUSSIAN_WEEKDAYS[value.weekday()]}, {value.day} {RUSSIAN_MONTHS_GENITIVE[value.month - 1]} {value.year}"
 
 
-def _incoming_sales_amount(snapshot: dict) -> float:
+def _clean_sales_amount(snapshot: dict) -> float:
     finance = snapshot.get("clean_revenue") or {}
-    if finance.get("status") in {"online", "stale"} and finance.get("incoming_amount") is not None:
-        return _finite_number(finance["incoming_amount"], "поступления продаж")
-    raise ReportDeliveryError("Поступления продаж из «Графика платежей» недоступны")
+    if finance.get("status") in {"online", "stale"} and finance.get("value") is not None:
+        return _finite_number(finance["value"], "чистая выручка")
+    raise ReportDeliveryError("Чистая выручка из «Графика платежей» недоступна")
 
 
 def _plan_or_dash(snapshot: dict, key: str) -> str:
@@ -76,7 +82,7 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
     production = snapshot.get("production") or {}
     kpi = production.get("kpi") or {}
     date = russian_date(generated_at)
-    sales_amount = _incoming_sales_amount(snapshot)
+    sales_amount = _clean_sales_amount(snapshot)
     sales_plan = _plan_or_dash(snapshot, "sales|overall|")
     closed_count = _format_count(kpi.get("closed_count", 0))
     closed_amount = _format_byn(kpi.get("closed_amount", 0))
@@ -149,6 +155,55 @@ async def _wait_for_bi_report_ready(
                 return
         await frame.wait_for_timeout(poll_ms)
     raise ReportDeliveryError("BI-конструктор не завершил подготовку данных отчёта")
+
+
+async def _last_visible(locator: object) -> object | None:
+    """Return the last visible element from a Playwright locator collection."""
+    for index in range(await locator.count() - 1, -1, -1):
+        candidate = locator.nth(index)
+        if await candidate.is_visible():
+            return candidate
+    return None
+
+
+async def _apply_sales_manager_filter(frame: object) -> None:
+    """Set the BI employee filter to the current sales department only."""
+    employee_label = frame.get_by_text("Сотрудник", exact=True).first
+    await employee_label.wait_for(state="visible", timeout=30_000)
+    control = employee_label.locator("xpath=following-sibling::*[1]")
+    if not await control.is_visible():
+        raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
+
+    dropdown_open = False
+    for manager in SALES_BI_MANAGERS:
+        if not dropdown_open:
+            await control.click(timeout=10_000)
+        search = await _last_visible(frame.locator("input[type='search'], input[type='text']"))
+        if search is None:
+            raise ReportDeliveryError("Не найден поиск сотрудников в BI-конструкторе")
+        await search.fill(manager, timeout=10_000)
+        await frame.wait_for_timeout(250)
+        option = await _last_visible(frame.get_by_text(manager, exact=True))
+        if option is None:
+            raise ReportDeliveryError(f"В BI-конструкторе не найден сотрудник: {manager}")
+        await option.click(timeout=10_000)
+        await frame.wait_for_timeout(250)
+        dropdown_open = await search.is_visible()
+
+    if dropdown_open:
+        await search.press("Escape")
+        await frame.wait_for_timeout(250)
+
+    selected = await control.inner_text()
+    missing = [manager for manager in SALES_BI_MANAGERS if manager not in selected]
+    if missing:
+        raise ReportDeliveryError("Не удалось применить фильтр сотрудников отдела продаж")
+
+    apply_button = await _last_visible(frame.get_by_text("Применить", exact=True))
+    if apply_button is None or not await apply_button.is_enabled():
+        raise ReportDeliveryError("Не удалось применить фильтр сотрудников отдела продаж")
+    await apply_button.click(timeout=10_000)
+    await frame.wait_for_timeout(500)
 
 
 async def capture_bitrix_bi_reports(
@@ -231,6 +286,8 @@ async def capture_bitrix_bi_reports(
                     raise ReportDeliveryError("Вкладка «Звонки» не появилась в текущем BI-отчёте")
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
+                stage = "фильтрация по менеджерам отдела продаж"
+                await _apply_sales_manager_filter(calls_frame)
                 stage = "ожидание данных «Лиды/Сделки»"
                 await _wait_for_bi_report_ready(calls_frame)
                 stage = "создание снимка «Лиды/Сделки»"

@@ -5,22 +5,31 @@ from zoneinfo import ZoneInfo
 
 from app.telegram_reports import (
     ReportDeliveryError,
+    SALES_BI_MANAGERS,
     _safe_page_location,
     _wait_for_bi_report_ready,
     build_daily_report_texts,
 )
 
 
-def snapshot(plan=None, incoming=850):
+def snapshot(plan=None, clean_revenue=700, incoming=850):
     plans = {} if plan is None else {"sales|overall|": {"sales_amount": plan}}
     return {
-        "clean_revenue": {"status": "online", "incoming_amount": incoming},
+        "clean_revenue": {"status": "online", "value": clean_revenue, "incoming_amount": incoming},
         "plans": plans,
         "production": {"kpi": {"closed_count": 0, "closed_amount": 0}},
     }
 
 
 class TelegramReportsTests(unittest.TestCase):
+    def test_bi_reports_are_limited_to_the_sales_department(self):
+        self.assertEqual(SALES_BI_MANAGERS, (
+            "Алена Хурсик",
+            "Ирина Базылева",
+            "Ирина Богомольцева",
+            "Роман Авсеенко",
+        ))
+
     def test_bi_capture_waits_until_loading_indicators_disappear(self):
         frame = _FakeBiFrame([True, False, False])
 
@@ -45,8 +54,8 @@ class TelegramReportsTests(unittest.TestCase):
 
         self.assertEqual(result.sales, (
             "Пятница, 2 октября 2026\n\n"
-            "💰 Сумма продаж - 850 BYN\n\n"
-            "📈 Факт плана продаж октября - 850 BYN / —"
+            "💰 Сумма продаж - 700 BYN\n\n"
+            "📈 Факт плана продаж октября - 700 BYN / —"
         ))
         self.assertEqual(result.experts, (
             "Пятница, 2 октября 2026 🍂\n\n"
@@ -58,9 +67,9 @@ class TelegramReportsTests(unittest.TestCase):
 
     def test_text_refuses_missing_financial_source(self):
         data = snapshot()
-        data["clean_revenue"] = {"status": "updating", "incoming_amount": None}
+        data["clean_revenue"] = {"status": "updating", "value": None, "incoming_amount": 999}
 
-        with self.assertRaisesRegex(ReportDeliveryError, "Поступления продаж"):
+        with self.assertRaisesRegex(ReportDeliveryError, "Чистая выручка"):
             build_daily_report_texts(data, datetime(2026, 10, 2, tzinfo=ZoneInfo("Europe/Minsk")))
 
 
