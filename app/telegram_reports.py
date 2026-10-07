@@ -282,7 +282,9 @@ async def capture_bitrix_bi_reports(
                 args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu", "--disable-extensions"],
             )
             try:
-                page = await browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+                # BI Builder hides its desktop filter sidebar at narrower
+                # viewport widths; use the same wide layout as the source UI.
+                page = await browser.new_page(viewport={"width": 1920, "height": 1200}, device_scale_factor=1)
                 stage = "открытие страницы отчёта"
                 await page.goto(report_url, wait_until="domcontentloaded", timeout=45_000)
                 page_location = _safe_page_location(page.url)
