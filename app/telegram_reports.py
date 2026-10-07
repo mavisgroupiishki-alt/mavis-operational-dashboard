@@ -278,7 +278,12 @@ async def _apply_relative_date_filter(frame: object, label: str) -> None:
         raise ReportDeliveryError("Некорректная дата BI-отчёта")
     # Date and employee filters use different DOM nesting in BI Builder.  The
     # selected period is the reliable clickable part of the date control.
-    control = await _last_visible(frame.get_by_text(re.compile(r"^(Сегодня|Вчера)$")))
+    control = None
+    for _ in range(60):
+        control = await _last_visible(frame.get_by_text(re.compile(r"^(Сегодня|Вчера)$")))
+        if control is not None:
+            break
+        await frame.wait_for_timeout(500)
     if control is None:
         raise ReportDeliveryError("Не найден фильтр даты в BI-конструкторе")
     # BI renders the period picker above a transparent animation layer in
