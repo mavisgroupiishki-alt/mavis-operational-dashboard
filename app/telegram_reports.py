@@ -240,15 +240,23 @@ async def _apply_sales_manager_filter(frame: object) -> None:
 
     await frame.wait_for_timeout(250)
 
-    selected = await control.inner_text()
-    missing = [manager for manager in SALES_BI_MANAGERS if manager not in selected]
+    # The initial "N вариантов" element is replaced by selected chips, so it
+    # cannot be used to read the final state.  The visible chips themselves
+    # are stable after the popup closes.
+    missing = []
+    for manager in SALES_BI_MANAGERS:
+        if await _last_visible(frame.get_by_text(manager, exact=True)) is None:
+            missing.append(manager)
     if missing:
         raise ReportDeliveryError("Не удалось применить фильтр сотрудников отдела продаж")
 
     apply_button = await _last_visible(frame.get_by_text("Применить", exact=True))
     if apply_button is None or not await apply_button.is_enabled():
         raise ReportDeliveryError("Не удалось применить фильтр сотрудников отдела продаж")
-    await apply_button.click(timeout=10_000)
+    try:
+        await apply_button.click(timeout=10_000, force=True)
+    except Exception as exc:
+        raise ReportDeliveryError("Не удалось применить фильтр сотрудников отдела продаж") from exc
     await frame.wait_for_timeout(500)
 
 
