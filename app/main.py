@@ -28,6 +28,7 @@ from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_septemb
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
 from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_deal_id, valid_month as valid_acts_month
+from .daily_sales import build_daily_sales_report, daily_bounds
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
@@ -85,6 +86,9 @@ COMMUNICATION_GAP_DAYS = 14
 acts_experts_cache = {}
 acts_experts_cache_time = {}
 ACTS_EXPERTS_REFRESH_SECONDS = 60
+DAILY_SALES_REFRESH_SECONDS = 120
+daily_sales_cache = {}
+daily_sales_cache_time = {}
 
 
 def current_month():
@@ -141,6 +145,19 @@ async def load_acts_experts(month: str, force: bool = False) -> dict:
     acts_experts_cache[selected_month] = report
     acts_experts_cache_time[selected_month] = time.monotonic()
     return report
+
+
+async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
+    """Load a bounded report directly from Bitrix, independently from BI."""
+    start, _ = daily_bounds(selected_date, settings.timezone)
+    cache_key = start.date().isoformat()
+    cached = daily_sales_cache.get(cache_key)
+    if not force and cached and time.monotonic() - daily_sales_cache_time.get(cache_key, 0) < DAILY_SALES_REFRESH_SECONDS:
+        return copy.deepcopy(cached)
+    report = await build_daily_sales_report(client, cache_key, settings.timezone)
+    daily_sales_cache[cache_key] = report
+    daily_sales_cache_time[cache_key] = time.monotonic()
+    return copy.deepcopy(report)
 
 
 def _key_task_cache_key(members):
@@ -1789,6 +1806,19 @@ async def api_sales_section(
         await warm_details_from_storage(month, period, custom_start, custom_end)
     sales = _apply_runtime(cache[key], detail_cache.get(key, {}), month).get("sales") or {}
     return {"ok": True, "month_key": month, "period": period, "sales": sales}
+
+
+@app.get("/api/sales-daily")
+async def api_sales_daily(request: Request, date: str = Query(default="")):
+    require_full_access(request)
+    selected_date = date or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
+    try:
+        return await load_daily_sales(selected_date)
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
+    except Exception as exc:
+        logger.exception("Daily sales report unavailable")
+        raise HTTPException(503, "Ежедневный отчёт Bitrix временно недоступен") from exc
 
 
 @app.get("/api/sales-calls")
