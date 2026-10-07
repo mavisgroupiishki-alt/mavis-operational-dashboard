@@ -50,3 +50,25 @@ def test_past_day_without_archive_is_marked_as_current_bitrix_data(monkeypatch):
         monkeypatch.setattr(main, "_load_daily_sales_live", bitrix_report)
         result = asyncio.run(main.load_daily_sales("2026-10-06"))
         assert result["snapshot"]["mode"] == "historical_live"
+
+
+def test_daily_sales_report_includes_same_day_clean_revenue(monkeypatch):
+    main.daily_sales_cache.clear()
+    main.daily_sales_cache_time.clear()
+
+    async def bitrix_report(*args, **kwargs):
+        return {"ok": True, "date": "2026-10-07", "leads": {"total": 7}}
+
+    async def clean_revenue(day):
+        assert day == "2026-10-07"
+        return {"status": "online", "value": 1250.50, "date_from": day, "date_to": day}
+
+    monkeypatch.setattr(main, "build_daily_sales_report", bitrix_report)
+    monkeypatch.setattr(main, "load_clean_revenue_day", clean_revenue)
+
+    result = asyncio.run(main._load_daily_sales_live("2026-10-07", force=True))
+
+    assert result["clean_revenue"] == {
+        "status": "online", "value": 1250.50,
+        "date_from": "2026-10-07", "date_to": "2026-10-07",
+    }

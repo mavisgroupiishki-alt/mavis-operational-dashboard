@@ -164,6 +164,9 @@ async def _load_daily_sales_live(selected_date: str, force: bool = False) -> dic
     if not force and cached and time.monotonic() - daily_sales_cache_time.get(cache_key, 0) < DAILY_SALES_REFRESH_SECONDS:
         return copy.deepcopy(cached)
     report = await build_daily_sales_report(client, cache_key, settings.timezone)
+    # The daily card uses the same payment-schedule ledger as the main sales
+    # finance block. A finance outage must not hide an otherwise valid CRM report.
+    report["clean_revenue"] = await load_clean_revenue_day(cache_key)
     daily_sales_cache[cache_key] = report
     daily_sales_cache_time[cache_key] = time.monotonic()
     return copy.deepcopy(report)
@@ -739,6 +742,39 @@ async def load_clean_revenue_through(month: str, report_date: datetime) -> dict:
             "value": round(value, 2),
             "date_from": str(payload.get("dateFrom") or date_from),
             "date_to": str(payload.get("dateTo") or date_to),
+        }
+    except (httpx.HTTPError, TypeError, ValueError):
+        return {"status": "unavailable", "value": None, "reason": "source_unavailable"}
+
+
+async def load_clean_revenue_day(selected_date: str) -> dict:
+    """Return net revenue for one calendar day from the payment-schedule ledger."""
+    try:
+        parsed = datetime.strptime(selected_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return {"status": "unavailable", "value": None, "reason": "invalid_period"}
+    if not settings.clean_revenue_url or not settings.clean_revenue_token:
+        return {"status": "not_configured", "value": None}
+    target = urlparse(settings.clean_revenue_url)
+    if target.scheme != "https" or not target.netloc:
+        return {"status": "invalid_configuration", "value": None}
+    day = parsed.isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=75.0, follow_redirects=False) as session:
+            response = await session.get(
+                settings.clean_revenue_url,
+                params={"date_from": day, "date_to": day, "include_overdue": "0"},
+                headers={"Authorization": f"Bearer {settings.clean_revenue_token}", "Accept": "application/json"},
+            )
+        payload = response.json()
+        value = float(payload.get("cleanRevenue")) if isinstance(payload, dict) else float("nan")
+        if response.status_code != 200 or not payload.get("ok") or not math.isfinite(value):
+            return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
+        return {
+            "status": "online",
+            "value": round(value, 2),
+            "date_from": str(payload.get("dateFrom") or day),
+            "date_to": str(payload.get("dateTo") or day),
         }
     except (httpx.HTTPError, TypeError, ValueError):
         return {"status": "unavailable", "value": None, "reason": "source_unavailable"}
