@@ -410,6 +410,7 @@ async def capture_bitrix_bi_reports(
                     # Selecting the date redraws the side panel in BI Builder,
                     # but preserves already applied employee filters.
                     stage = "выбор даты BI-отчёта"
+                    filter_context = await _find_bi_filter_context(page)
                     await _apply_relative_date_filter(filter_context, relative_date_label)
                 stage = "ожидание данных «Лиды/Сделки»"
                 await _wait_for_bi_report_ready(calls_frame)
