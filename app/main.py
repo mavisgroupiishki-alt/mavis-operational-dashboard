@@ -27,7 +27,7 @@ from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
-from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_deal_id, valid_month as valid_acts_month
+from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
@@ -91,34 +91,6 @@ def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
 
 
-async def enrich_acts_tasks_with_crm_close_dates(tasks: list[dict]) -> dict:
-    """Attach linked deal close dates for the Acts report's month reconciliation."""
-    deal_ids = {linked_deal_id(task) for task in tasks}
-    deal_ids.discard("")
-    if not deal_ids:
-        return {"status": "not_linked", "linked_count": 0, "found_count": 0}
-    try:
-        deals = await asyncio.wait_for(
-            client.deal_list({"@ID": sorted(deal_ids)}, ["ID", "CLOSEDATE"]),
-            timeout=8,
-        )
-    except Exception:
-        # Keep the task report available when CRM is slow; no task is excluded
-        # until the linked deal was actually verified.
-        return {"status": "unavailable", "linked_count": len(deal_ids), "found_count": 0}
-    close_dates = {
-        str(deal.get("ID") or ""): str(deal.get("CLOSEDATE") or "")
-        for deal in deals or []
-    }
-    found_count = 0
-    for task in tasks:
-        deal_id = linked_deal_id(task)
-        if deal_id and deal_id in close_dates:
-            task["ACTS_DEAL_CLOSEDATE"] = close_dates[deal_id]
-            found_count += 1
-    return {"status": "online", "linked_count": len(deal_ids), "found_count": found_count}
-
-
 async def load_acts_experts(month: str, force: bool = False) -> dict:
     """Return the live Acts project report without mixing it into KPI snapshot work."""
     selected_month = valid_acts_month(month, current_month())
@@ -133,9 +105,7 @@ async def load_acts_experts(month: str, force: bool = False) -> dict:
     stages = stages_payload.get("result") or []
     if isinstance(stages, dict):
         stages = list(stages.values())
-    crm_check = await enrich_acts_tasks_with_crm_close_dates(tasks)
     report = build_acts_experts_report(tasks, meta.get("users") or {}, stages, selected_month, client.portal)
-    report["crm_check"] = crm_check
     report["generated_at"] = datetime.now(ZoneInfo(settings.timezone)).isoformat()
     report["refresh_seconds"] = ACTS_EXPERTS_REFRESH_SECONDS
     acts_experts_cache[selected_month] = report
