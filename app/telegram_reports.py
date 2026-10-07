@@ -251,7 +251,8 @@ async def _find_bi_filter_context(page: object) -> object:
             if employee_label is not None:
                 return frame
         await page.wait_for_timeout(500)
-    raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
+    locations = ", ".join(sorted({_safe_page_location(frame.url) for frame in page.frames}))
+    raise ReportDeliveryError(f"Не найден фильтр «Сотрудник» в BI-конструкторе ({locations})")
 
 
 async def capture_bitrix_bi_reports(
