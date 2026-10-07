@@ -243,6 +243,17 @@ async def _apply_relative_date_filter(frame: object, label: str) -> None:
         raise ReportDeliveryError("Не удалось применить дату BI-отчёта")
 
 
+async def _find_bi_filter_context(page: object) -> object:
+    """Find the BI frame that owns the left-side dashboard filters."""
+    for _ in range(60):
+        for frame in page.frames:
+            employee_label = await _last_visible(frame.get_by_text(re.compile(r"Сотрудник", re.IGNORECASE)))
+            if employee_label is not None:
+                return frame
+        await page.wait_for_timeout(500)
+    raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
+
+
 async def capture_bitrix_bi_reports(
     *,
     login: str,
@@ -330,14 +341,13 @@ async def capture_bitrix_bi_reports(
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
                 stage = "фильтрация по менеджерам отдела продаж"
-                # Bitrix renders the report tabs in an iframe, but its left
-                # filter panel lives on the parent page.
-                await _apply_sales_manager_filter(page)
+                filter_context = await _find_bi_filter_context(page)
+                await _apply_sales_manager_filter(filter_context)
                 if relative_date_label:
                     # Selecting the date redraws the side panel in BI Builder,
                     # but preserves already applied employee filters.
                     stage = "выбор даты BI-отчёта"
-                    await _apply_relative_date_filter(page, relative_date_label)
+                    await _apply_relative_date_filter(filter_context, relative_date_label)
                 stage = "ожидание данных «Лиды/Сделки»"
                 await _wait_for_bi_report_ready(calls_frame)
                 stage = "создание снимка «Лиды/Сделки»"
