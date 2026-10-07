@@ -190,9 +190,6 @@ async def _apply_sales_manager_filter(frame: object) -> None:
         raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
 
     for manager in SALES_BI_MANAGERS:
-        # Resetting the multi-select between employees prevents Bitrix from
-        # treating a filter query as text in an already-selected tag.
-        await control.press("Escape")
         # Bitrix renders the selector under an animated surface.  Normal
         # pointer checks time out in headless Chromium although the control
         # itself is interactive, so target it directly.
@@ -222,8 +219,14 @@ async def _apply_sales_manager_filter(frame: object) -> None:
         except Exception as exc:
             raise ReportDeliveryError(f"Не удалось выбрать сотрудника: {manager}") from exc
         await frame.wait_for_timeout(250)
+        # Bitrix closes the result list after each choice, but leaves its
+        # search input visible.  Close it explicitly so the next control
+        # click always opens a fresh employee search, not a selected tag.
+        try:
+            await search.press("Escape", timeout=1_000)
+        except Exception:
+            pass
 
-    await control.press("Escape")
     await frame.wait_for_timeout(250)
 
     selected = await control.inner_text()
