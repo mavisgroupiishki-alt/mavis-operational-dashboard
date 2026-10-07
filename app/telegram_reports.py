@@ -215,11 +215,15 @@ async def _apply_relative_date_filter(frame: object, label: str) -> None:
     control = await _last_visible(frame.get_by_text(re.compile(r"^(Сегодня|Вчера)$")))
     if control is None:
         raise ReportDeliveryError("Не найден фильтр даты в BI-конструкторе")
-    await control.click(timeout=10_000)
+    # BI renders the period picker above a transparent animation layer in
+    # headless Chromium.  A forced click reaches the actual selected-period
+    # control without relying on that transient layer.
+    await control.click(timeout=10_000, force=True)
+    await frame.wait_for_timeout(300)
     option = await _last_visible(frame.get_by_text(label, exact=True))
     if option is None:
         raise ReportDeliveryError(f"В BI-конструкторе не найдена дата: {label}")
-    await option.click(timeout=10_000)
+    await option.click(timeout=10_000, force=True)
     await frame.wait_for_timeout(250)
     if label not in await control.inner_text():
         raise ReportDeliveryError("Не удалось применить дату BI-отчёта")
