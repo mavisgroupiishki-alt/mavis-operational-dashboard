@@ -1,8 +1,7 @@
-"""Server-side rendering and delivery of the daily Telegram reports.
+"""Server-side rendering and delivery of source-backed daily Telegram reports.
 
-The image is intentionally captured from Bitrix BI Builder itself.  It is never
-reconstructed from operational-dashboard data: numeric text and BI image are
-separate, traceable sources.
+Both compact images are captured from the dashboard's direct Bitrix and payment
+ledger report in a headless browser, so no local desktop cursor can appear.
 """
 
 from __future__ import annotations
@@ -57,10 +56,19 @@ def russian_date(value: datetime) -> str:
 
 
 def _clean_sales_amount(snapshot: dict) -> float:
+    """Return month-to-date net revenue for the plan/fact line."""
     finance = snapshot.get("clean_revenue") or {}
     if finance.get("status") in {"online", "stale"} and finance.get("value") is not None:
         return _finite_number(finance["value"], "чистая выручка")
     raise ReportDeliveryError("Чистая выручка из «Графика платежей» недоступна")
+
+
+def _daily_sales_amount(snapshot: dict) -> float:
+    """Return net revenue only for the report date, never the whole month."""
+    finance = ((snapshot.get("daily_sales") or {}).get("clean_revenue") or {})
+    if finance.get("status") in {"online", "stale"} and finance.get("value") is not None:
+        return _finite_number(finance["value"], "дневная чистая выручка")
+    raise ReportDeliveryError("Чистая выручка за день из «Графика платежей» недоступна")
 
 
 def _plan_or_dash(snapshot: dict, key: str) -> str:
@@ -76,7 +84,8 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
     production = snapshot.get("production") or {}
     kpi = production.get("kpi") or {}
     date = russian_date(generated_at)
-    sales_amount = _clean_sales_amount(snapshot)
+    daily_sales_amount = _daily_sales_amount(snapshot)
+    month_sales_amount = _clean_sales_amount(snapshot)
     sales_plan = _plan_or_dash(snapshot, "sales|overall|")
     closed_count = _format_count(kpi.get("closed_count", 0))
     closed_amount = _format_byn(kpi.get("closed_amount", 0))
@@ -84,8 +93,8 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
     return DailyReportTexts(
         sales=(
             f"{date}\n\n"
-            f"💰 Сумма продаж - {_format_byn(sales_amount)}\n\n"
-            f"📈 Факт плана продаж {month_name} - {_format_byn(sales_amount)} / {sales_plan}"
+            f"💰 Сумма продаж - {_format_byn(daily_sales_amount)}\n\n"
+            f"📈 Факт плана продаж {month_name} - {_format_byn(month_sales_amount)} / {sales_plan}"
         ),
         experts=(
             f"{date} 🍂\n\n"
@@ -428,6 +437,95 @@ async def capture_bitrix_bi_reports(
         raise ReportDeliveryError(f"BI-конструктор остановился на этапе: {stage}{location}") from exc
     except Exception as exc:
         raise ReportDeliveryError("Не удалось получить снимок BI-конструктора") from exc
+    return leads_output_path, calls_output_path
+
+
+async def capture_dashboard_daily_reports(
+    *,
+    dashboard_url: str,
+    access_cookie: str,
+    report_date: str,
+    leads_output_path: Path,
+    calls_output_path: Path,
+) -> tuple[Path, Path]:
+    """Capture the dashboard's compact daily blocks without a desktop cursor.
+
+    The report is rendered by a headless browser on Render.  It opens the
+    dashboard's direct Bitrix/ledger report, not the BI Builder page, and
+    captures only the report element rather than the whole application shell.
+    """
+    if not dashboard_url.startswith("https://"):
+        raise ReportDeliveryError("Адрес дашборда для снимка должен быть HTTPS")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+        raise ReportDeliveryError("Дата снимка дашборда задана неверно")
+    try:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise ReportDeliveryError("В образе Render не установлен Playwright") from exc
+
+    leads_output_path.parent.mkdir(parents=True, exist_ok=True)
+    calls_output_path.parent.mkdir(parents=True, exist_ok=True)
+    stage = "запуск браузера"
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu", "--disable-extensions"],
+            )
+            try:
+                context = await browser.new_context(viewport={"width": 1680, "height": 1200}, device_scale_factor=1)
+                if access_cookie:
+                    await context.add_cookies([{
+                        "name": "mavis_access", "value": access_cookie,
+                        "url": dashboard_url,
+                        "httpOnly": True, "secure": True, "sameSite": "Lax",
+                    }])
+                page = await context.new_page()
+                stage = "открытие ежедневного отчёта дашборда"
+                await page.goto(f"{dashboard_url}/#sales", wait_until="domcontentloaded", timeout=45_000)
+                if "/login" in page.url:
+                    raise ReportDeliveryError("Render не смог авторизоваться в дашборде для снимка")
+
+                stage = "открытие ежедневной вкладки"
+                await page.get_by_role("tab", name="Ежедневный отчёт", exact=True).click(timeout=20_000)
+                date_input = page.locator("[data-daily-sales-date]")
+                await date_input.wait_for(state="visible", timeout=20_000)
+                await date_input.fill(report_date)
+                await date_input.press("Tab")
+                await page.locator("[data-daily-sales-refresh]").click(timeout=15_000)
+
+                report = page.locator(".daily-sales-report")
+                stage = "ожидание дневных поступлений"
+                await report.get_by_text("Поступления за день", exact=True).wait_for(state="visible", timeout=90_000)
+                financial_values = report.locator(".daily-sales-finance strong")
+                for _ in range(120):
+                    if await financial_values.count() == 3:
+                        rendered = [await financial_values.nth(index).inner_text() for index in range(3)]
+                        if all(value.strip() and value.strip() != "—" for value in rendered):
+                            break
+                    await page.wait_for_timeout(500)
+                else:
+                    raise ReportDeliveryError("Дашборд не получил дневные поступления или факт плана")
+
+                stage = "создание снимка лидов и сделок"
+                await report.screenshot(path=str(leads_output_path), timeout=45_000)
+
+                stage = "открытие вкладки звонков"
+                await page.get_by_role("tab", name="Звонки", exact=True).click(timeout=15_000)
+                await report.get_by_text("Количество звонков по менеджерам", exact=True).wait_for(
+                    state="visible", timeout=45_000
+                )
+                stage = "создание снимка звонков"
+                await report.screenshot(path=str(calls_output_path), timeout=45_000)
+            finally:
+                await browser.close()
+    except ReportDeliveryError:
+        raise
+    except PlaywrightTimeoutError as exc:
+        raise ReportDeliveryError(f"Дашборд остановился на этапе: {stage}") from exc
+    except Exception as exc:
+        raise ReportDeliveryError("Не удалось создать снимок ежедневного отчёта дашборда") from exc
     return leads_output_path, calls_output_path
 
 

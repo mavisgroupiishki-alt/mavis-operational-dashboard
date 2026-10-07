@@ -12,10 +12,11 @@ from app.telegram_reports import (
 )
 
 
-def snapshot(plan=None, clean_revenue=700, incoming=850):
+def snapshot(plan=None, clean_revenue=700, daily_clean_revenue=120, incoming=850):
     plans = {} if plan is None else {"sales|overall|": {"sales_amount": plan}}
     return {
         "clean_revenue": {"status": "online", "value": clean_revenue, "incoming_amount": incoming},
+        "daily_sales": {"clean_revenue": {"status": "online", "value": daily_clean_revenue}},
         "plans": plans,
         "production": {"kpi": {"closed_count": 0, "closed_amount": 0}},
     }
@@ -54,7 +55,7 @@ class TelegramReportsTests(unittest.TestCase):
 
         self.assertEqual(result.sales, (
             "Пятница, 2 октября 2026\n\n"
-            "💰 Сумма продаж - 700 BYN\n\n"
+            "💰 Сумма продаж - 120 BYN\n\n"
             "📈 Факт плана продаж октября - 700 BYN / —"
         ))
         self.assertEqual(result.experts, (
@@ -70,6 +71,13 @@ class TelegramReportsTests(unittest.TestCase):
         data["clean_revenue"] = {"status": "updating", "value": None, "incoming_amount": 999}
 
         with self.assertRaisesRegex(ReportDeliveryError, "Чистая выручка"):
+            build_daily_report_texts(data, datetime(2026, 10, 2, tzinfo=ZoneInfo("Europe/Minsk")))
+
+    def test_text_refuses_month_revenue_as_a_substitute_for_daily_sales(self):
+        data = snapshot()
+        data.pop("daily_sales")
+
+        with self.assertRaisesRegex(ReportDeliveryError, "за день"):
             build_daily_report_texts(data, datetime(2026, 10, 2, tzinfo=ZoneInfo("Europe/Minsk")))
 
 

@@ -512,7 +512,7 @@ td{padding:11px 9px}
 .rnp-overall-strip strong{font-size:22px;color:#162536}
 .rnp-overall-strip small{color:#7a8d9d}
 .sales-today-card{display:grid;grid-template-columns:minmax(160px,.8fr) minmax(0,1.5fr) auto;gap:18px;align-items:center;margin:0 0 14px;padding:15px 17px;border:1px solid #b9dfe0;border-radius:16px;background:linear-gradient(110deg,#effafa,#f8fcfd);box-shadow:0 8px 20px rgba(40,98,105,.05)}
-.sales-today-title h2{margin:3px 0 0;color:#174f61;font-size:20px;letter-spacing:-.035em}.sales-today-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.sales-today-metrics>div{display:grid;gap:3px;padding:5px 10px;border-left:1px solid #c9e4e5}.sales-today-metrics span{color:#64808d;font-size:11px}.sales-today-metrics strong{color:#173e56;font-size:21px;letter-spacing:-.04em}.sales-today-card .btn{white-space:nowrap}
+.sales-today-title h2{margin:3px 0 0;color:#174f61;font-size:20px;letter-spacing:-.035em}.sales-today-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.sales-today-metrics>div{display:grid;gap:3px;padding:5px 10px;border-left:1px solid #c9e4e5}.sales-today-metrics span{color:#64808d;font-size:11px}.sales-today-metrics strong{color:#173e56;font-size:21px;letter-spacing:-.04em}.sales-today-card .btn{white-space:nowrap}
 .rnp-rule{
   padding:10px 13px;border:1px solid #cbdde9;border-left:4px solid #3c9fd3;
   border-radius:11px;background:#f5fbff;color:#596e80;font-size:13px;margin-bottom:14px

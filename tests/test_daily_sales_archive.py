@@ -61,14 +61,27 @@ def test_daily_sales_report_includes_same_day_clean_revenue(monkeypatch):
 
     async def clean_revenue(day):
         assert day == "2026-10-07"
-        return {"status": "online", "value": 1250.50, "date_from": day, "date_to": day}
+        return {
+            "status": "online", "value": 1250.50, "contractor_amount": 200.0,
+            "incoming_amount": 1450.50, "date_from": day, "date_to": day,
+        }
+
+    async def month_revenue(month, report_at):
+        assert month == "2026-10"
+        assert report_at.date().isoformat() == "2026-10-07"
+        return {"status": "online", "value": 5200.0}
 
     monkeypatch.setattr(main, "build_daily_sales_report", bitrix_report)
     monkeypatch.setattr(main, "load_clean_revenue_day", clean_revenue)
+    monkeypatch.setattr(main, "load_clean_revenue_through", month_revenue)
+    monkeypatch.setattr(main, "_sales_plan_amount", lambda month: 135000.0)
 
     result = asyncio.run(main._load_daily_sales_live("2026-10-07", force=True))
 
     assert result["clean_revenue"] == {
-        "status": "online", "value": 1250.50,
+        "status": "online", "value": 1250.50, "contractor_amount": 200.0,
+        "incoming_amount": 1450.50,
         "date_from": "2026-10-07", "date_to": "2026-10-07",
     }
+    assert result["month_clean_revenue"] == {"status": "online", "value": 5200.0}
+    assert result["sales_plan_amount"] == 135000.0

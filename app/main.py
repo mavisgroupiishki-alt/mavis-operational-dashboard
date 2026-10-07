@@ -38,7 +38,7 @@ from .daily_sales import (
 )
 from .settings import settings
 from .storage import Storage
-from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
+from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
@@ -164,9 +164,18 @@ async def _load_daily_sales_live(selected_date: str, force: bool = False) -> dic
     if not force and cached and time.monotonic() - daily_sales_cache_time.get(cache_key, 0) < DAILY_SALES_REFRESH_SECONDS:
         return copy.deepcopy(cached)
     report = await build_daily_sales_report(client, cache_key, settings.timezone)
-    # The daily card uses the same payment-schedule ledger as the main sales
-    # finance block. A finance outage must not hide an otherwise valid CRM report.
-    report["clean_revenue"] = await load_clean_revenue_day(cache_key)
+    # Keep the three finance numbers distinct.  The ledger gives us the
+    # selected day's incoming amount and clean revenue, while the month-to-date
+    # request is used only for the plan/fact line.  A finance outage must not
+    # hide an otherwise valid CRM report.
+    month = start.strftime("%Y-%m")
+    daily_revenue, month_revenue = await asyncio.gather(
+        load_clean_revenue_day(cache_key),
+        load_clean_revenue_through(month, start),
+    )
+    report["clean_revenue"] = daily_revenue
+    report["month_clean_revenue"] = month_revenue
+    report["sales_plan_amount"] = _sales_plan_amount(month)
     daily_sales_cache[cache_key] = report
     daily_sales_cache_time[cache_key] = time.monotonic()
     return copy.deepcopy(report)
@@ -748,7 +757,7 @@ async def load_clean_revenue_through(month: str, report_date: datetime) -> dict:
 
 
 async def load_clean_revenue_day(selected_date: str) -> dict:
-    """Return net revenue for one calendar day from the payment-schedule ledger."""
+    """Return receipts and net revenue for one calendar day from the ledger."""
     try:
         parsed = datetime.strptime(selected_date, "%Y-%m-%d").date()
     except (TypeError, ValueError):
@@ -768,11 +777,21 @@ async def load_clean_revenue_day(selected_date: str) -> dict:
             )
         payload = response.json()
         value = float(payload.get("cleanRevenue")) if isinstance(payload, dict) else float("nan")
-        if response.status_code != 200 or not payload.get("ok") or not math.isfinite(value):
+        contractor_amount = float(payload.get("contractorAmount")) if isinstance(payload, dict) else float("nan")
+        if (
+            response.status_code != 200
+            or not payload.get("ok")
+            or not math.isfinite(value)
+            or not math.isfinite(contractor_amount)
+        ):
             return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
         return {
             "status": "online",
             "value": round(value, 2),
+            "contractor_amount": round(contractor_amount, 2),
+            # "Поступления" in the dashboard is the confirmed total before
+            # the contractor reserve: net revenue plus that reserve.
+            "incoming_amount": round(value + contractor_amount, 2),
             "date_from": str(payload.get("dateFrom") or day),
             "date_to": str(payload.get("dateTo") or day),
         }
@@ -782,6 +801,16 @@ async def load_clean_revenue_day(selected_date: str) -> dict:
 
 def _clean_revenue_storage_key(month: str) -> str:
     return f"clean_revenue_cache:{month}"
+
+
+def _sales_plan_amount(month: str) -> float | None:
+    """Return the configured monthly sales plan without turning a bad plan into zero."""
+    try:
+        value = (storage.plan_dict(month).get("sales|overall|") or {}).get("sales_amount")
+        number = float(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return round(number, 2) if math.isfinite(number) else None
 
 
 def cached_clean_revenue(month: str) -> dict:
@@ -2732,7 +2761,7 @@ async def deliver_telegram_reports(
     report_at: datetime | None = None,
     sales_only: bool = False,
 ) -> dict:
-    """Send source-backed texts and both adjacent BI report tabs to one chat."""
+    """Send source-backed texts and two compact dashboard report blocks."""
     now = datetime.now(ZoneInfo(settings.timezone))
     report_at = report_at or now
     month = report_at.strftime("%Y-%m")
@@ -2753,6 +2782,10 @@ async def deliver_telegram_reports(
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         if not photos_only:
+            daily_revenue = await load_clean_revenue_day(report_at.date().isoformat())
+            if daily_revenue.get("status") not in {"online", "stale"}:
+                raise ReportDeliveryError("Чистая выручка за день из «Графика платежей» недоступна")
+            snapshot = {**snapshot, "daily_sales": {"clean_revenue": daily_revenue}}
             if report_at.date() != now.date():
                 historical_revenue = await load_clean_revenue_through(month, report_at)
                 if historical_revenue.get("status") not in {"online", "stale"}:
@@ -2775,18 +2808,17 @@ async def deliver_telegram_reports(
         async with telegram_bi_capture_lock:
             try:
                 image_paths = await asyncio.wait_for(
-                    capture_bitrix_bi_reports(
-                        login=settings.bitrix_bi_login,
-                        password=settings.bitrix_bi_password,
-                        report_url=settings.bitrix_bi_report_url,
-                        leads_output_path=settings.data_dir / f"bitrix-daily-leads-{report_at.date().isoformat()}.png",
-                        calls_output_path=settings.data_dir / f"bitrix-daily-calls-{report_at.date().isoformat()}.png",
-                        relative_date_label="Вчера" if report_at.date() == now.date() - timedelta(days=1) else None,
+                    capture_dashboard_daily_reports(
+                        dashboard_url=settings.dashboard_public_url,
+                        access_cookie=session_token(FULL_ACCESS),
+                        report_date=report_at.date().isoformat(),
+                        leads_output_path=settings.data_dir / f"daily-leads-{report_at.date().isoformat()}.png",
+                        calls_output_path=settings.data_dir / f"daily-calls-{report_at.date().isoformat()}.png",
                     ),
                     timeout=180,
                 )
             except asyncio.TimeoutError as exc:
-                raise ReportDeliveryError("BI-конструктор не отдал два снимка за 3 минуты") from exc
+                raise ReportDeliveryError("Дашборд не отдал два снимка за 3 минуты") from exc
         await send_telegram_reports(
             token=settings.telegram_bot_token,
             chat_id=chat_id,
@@ -2797,7 +2829,7 @@ async def deliver_telegram_reports(
         )
     except ReportDeliveryError as exc:
         raise
-    return {"ok": True, "month": month, "report": "bitrix-bi"}
+    return {"ok": True, "month": month, "report": "dashboard-daily"}
 
 
 async def latest_telegram_private_chat_id() -> str:

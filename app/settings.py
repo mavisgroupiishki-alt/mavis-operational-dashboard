@@ -15,6 +15,9 @@ class Settings:
     view_password: str = os.getenv("VIEW_PASSWORD","").strip()
     marketer_password: str = os.getenv("MARKETER_PASSWORD", "").strip()
     dashboard_session_secret: str = os.getenv("DASHBOARD_SESSION_SECRET", "").strip()
+    dashboard_public_url: str = os.getenv(
+        "DASHBOARD_PUBLIC_URL", "https://mavis-operational-dashboard.onrender.com"
+    ).strip().rstrip("/")
     data_dir: Path = Path(os.getenv("DATA_DIR","./data")).expanduser()
     demo_mode: bool = os.getenv("DEMO_MODE","false").lower() in {"1","true","yes","y"}
     supabase_url: str = os.getenv("SUPABASE_URL","").strip()

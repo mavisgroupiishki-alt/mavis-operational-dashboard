@@ -148,6 +148,14 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('averageCheckPlan=getPlan("sales","average_check")', script)
         self.assertIn('salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)', script)
 
+    def test_daily_sales_keeps_daily_receipts_separate_from_month_plan_fact(self):
+        script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()
+
+        self.assertIn("Поступления за день", script)
+        self.assertIn("Чистая выручка за день", script)
+        self.assertIn("month_clean_revenue", script)
+        self.assertIn("sales_plan_amount", script)
+
 
 if __name__ == "__main__":
     unittest.main()
