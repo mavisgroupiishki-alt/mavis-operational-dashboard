@@ -27,7 +27,7 @@ from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
 from .key_tasks import build_key_tasks, build_task_workspace
-from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, valid_month as valid_acts_month
+from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_deal_id, valid_month as valid_acts_month
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_bitrix_bi_reports, send_telegram_reports
@@ -91,6 +91,34 @@ def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
 
 
+async def enrich_acts_tasks_with_crm_close_dates(tasks: list[dict]) -> dict:
+    """Attach linked deal close dates for the Acts report's month reconciliation."""
+    deal_ids = {linked_deal_id(task) for task in tasks}
+    deal_ids.discard("")
+    if not deal_ids:
+        return {"status": "not_linked", "linked_count": 0, "found_count": 0}
+    try:
+        deals = await asyncio.wait_for(
+            client.deal_list({"@ID": sorted(deal_ids)}, ["ID", "CLOSEDATE"]),
+            timeout=8,
+        )
+    except Exception:
+        # Keep the task report available when CRM is slow; no task is excluded
+        # until the linked deal was actually verified.
+        return {"status": "unavailable", "linked_count": len(deal_ids), "found_count": 0}
+    close_dates = {
+        str(deal.get("ID") or ""): str(deal.get("CLOSEDATE") or "")
+        for deal in deals or []
+    }
+    found_count = 0
+    for task in tasks:
+        deal_id = linked_deal_id(task)
+        if deal_id and deal_id in close_dates:
+            task["ACTS_DEAL_CLOSEDATE"] = close_dates[deal_id]
+            found_count += 1
+    return {"status": "online", "linked_count": len(deal_ids), "found_count": found_count}
+
+
 async def load_acts_experts(month: str, force: bool = False) -> dict:
     """Return the live Acts project report without mixing it into KPI snapshot work."""
     selected_month = valid_acts_month(month, current_month())
@@ -105,7 +133,9 @@ async def load_acts_experts(month: str, force: bool = False) -> dict:
     stages = stages_payload.get("result") or []
     if isinstance(stages, dict):
         stages = list(stages.values())
+    crm_check = await enrich_acts_tasks_with_crm_close_dates(tasks)
     report = build_acts_experts_report(tasks, meta.get("users") or {}, stages, selected_month, client.portal)
+    report["crm_check"] = crm_check
     report["generated_at"] = datetime.now(ZoneInfo(settings.timezone)).isoformat()
     report["refresh_seconds"] = ACTS_EXPERTS_REFRESH_SECONDS
     acts_experts_cache[selected_month] = report
@@ -1128,7 +1158,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/schedule"} or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2735,6 +2765,50 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
         # into a bare 500 response.  Do not expose credentials, URLs or raw
         # exception text; the exception class is enough to diagnose it.
         raise HTTPException(500, f"Внутренняя ошибка отправки: {type(exc).__name__}") from exc
+
+
+@app.post("/api/reports/capture-preview")
+async def capture_telegram_report_preview(body: TelegramReportTestBody):
+    """Create BI images for in-chat review without sending anything to Telegram."""
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    try:
+        report_date = datetime.now(ZoneInfo(settings.timezone)).date()
+        if body.report_date:
+            report_date = datetime.strptime(body.report_date, "%Y-%m-%d").date()
+        now = datetime.now(ZoneInfo(settings.timezone))
+        async with telegram_bi_capture_lock:
+            await asyncio.wait_for(
+                capture_bitrix_bi_reports(
+                    login=settings.bitrix_bi_login,
+                    password=settings.bitrix_bi_password,
+                    report_url=settings.bitrix_bi_report_url,
+                    leads_output_path=settings.data_dir / f"bitrix-daily-leads-{report_date.isoformat()}.png",
+                    calls_output_path=settings.data_dir / f"bitrix-daily-calls-{report_date.isoformat()}.png",
+                    relative_date_label="Вчера" if report_date == now.date() - timedelta(days=1) else None,
+                ),
+                timeout=180,
+            )
+        return {"ok": True, "report_date": report_date.isoformat()}
+    except ValueError as exc:
+        raise HTTPException(400, "Дата отчёта должна быть в формате ГГГГ-ММ-ДД") from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(503, "BI-конструктор не отдал два снимка за 3 минуты") from exc
+    except ReportDeliveryError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/reports/capture-preview/{report_date}/{tab}")
+async def get_telegram_report_preview(report_date: str, tab: str, admin_key: str = ""):
+    """Return one locally generated preview image to the authenticated reviewer."""
+    if settings.admin_key and not secrets.compare_digest(admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date) or tab not in {"leads", "calls"}:
+        raise HTTPException(400, "Некорректный запрос снимка")
+    image_path = settings.data_dir / f"bitrix-daily-{tab}-{report_date}.png"
+    if not image_path.is_file():
+        raise HTTPException(404, "Снимок ещё не сформирован")
+    return FileResponse(image_path, media_type="image/png", filename=image_path.name)
 
 
 @app.post("/api/bitrix/event")
