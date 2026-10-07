@@ -196,7 +196,18 @@ async def _apply_sales_manager_filter(frame: object) -> None:
         try:
             await control.click(timeout=10_000, force=True)
         except Exception as exc:
-            raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from exc
+            # After a selection Bitrix replaces the initial "79 вариантов"
+            # node with selected tags.  Re-open through the live filter input
+            # instead of reusing that replaced node.
+            opener = await _last_visible(
+                frame.locator("input[type='search'], input[type='text'], input:not([type]), [contenteditable='true']")
+            )
+            if opener is None:
+                raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from exc
+            try:
+                await opener.click(timeout=10_000, force=True)
+            except Exception as open_exc:
+                raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from open_exc
         search = await _last_visible(
             frame.locator("input[type='search'], input[type='text'], input:not([type]), [contenteditable='true']")
         )
