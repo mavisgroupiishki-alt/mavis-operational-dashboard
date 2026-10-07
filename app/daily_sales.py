@@ -15,6 +15,7 @@ from .metrics import (
     stage_name,
     user_name,
 )
+from .sales_team import SALES_BI_MANAGERS
 
 def daily_bounds(value: str, timezone: str) -> tuple[datetime, datetime]:
     """Return a timezone-aware half-open interval for an ISO calendar day."""
@@ -100,6 +101,14 @@ def _nested_rows(values: dict[str, Counter[str]], child_key: str) -> list[dict[s
         children = _counter_rows(values[name])
         rows.append({"name": name, "count": sum(row["count"] for row in children), child_key: children})
     return rows
+
+
+def sales_team_rows(rows: list[dict[str, Any]], meta: dict[str, Any], user_field: str) -> list[dict[str, Any]]:
+    """Keep the direct report on the same Sales team as the legacy BI report."""
+    return [
+        row for row in rows
+        if user_name(meta, row.get(user_field)) in SALES_BI_MANAGERS
+    ]
 
 
 def summarize_daily_sales(
@@ -215,18 +224,21 @@ async def build_daily_sales_report(client: Any, selected_date: str, timezone: st
     leads, leads_availability = _availability(leads_result)
     sales_deals, sales_deals_availability = _availability(sales_deals_result)
     reanimation_deals, reanimation_deals_availability = _availability(reanimation_deals_result)
+    leads = sales_team_rows(leads, meta_result, "ASSIGNED_BY_ID")
     deals = list({str(row.get("ID") or index): row for index, row in enumerate(sales_deals + reanimation_deals)}.values())
+    deals = sales_team_rows(deals, meta_result, "ASSIGNED_BY_ID")
     deals_availability = {"status": "online"} if (
         sales_deals_availability["status"] == "online" and reanimation_deals_availability["status"] == "online"
     ) else {"status": "partial", "note": "Не все воронки сделок доступны"}
     statistics, calls_availability = _availability(activities_result)
-    activities = [statistic_as_call(row) for row in statistics]
+    activities = sales_team_rows([statistic_as_call(row) for row in statistics], meta_result, "RESPONSIBLE_ID")
     report = summarize_daily_sales(leads, deals, activities, meta_result)
     report.update({
         "ok": True,
         "date": start.date().isoformat(),
         "generated_at": datetime.now(ZoneInfo(timezone)).isoformat(),
         "source": "Bitrix24 CRM (read-only)",
+        "scope": {"managers": list(SALES_BI_MANAGERS)},
         "availability": {
             "leads": leads_availability,
             "deals": deals_availability,

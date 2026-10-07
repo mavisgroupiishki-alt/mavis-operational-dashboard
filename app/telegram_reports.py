@@ -15,19 +15,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from .sales_team import SALES_BI_MANAGERS
+
 RUSSIAN_WEEKDAYS = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
 RUSSIAN_MONTHS_GENITIVE = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
-SALES_BI_MANAGERS = (
-    "Алена Хурсик",
-    "Ирина Базылева",
-    "Ирина Богомольцева",
-    "Роман Авсеенко",
-)
-
-
 class ReportDeliveryError(RuntimeError):
     """A safe, user-facing report delivery failure."""
 

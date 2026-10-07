@@ -1,6 +1,6 @@
 import asyncio
 
-from app.daily_sales import build_daily_sales_report, call_direction, duration_seconds, statistic_direction, summarize_daily_sales
+from app.daily_sales import build_daily_sales_report, call_direction, duration_seconds, sales_team_rows, statistic_direction, summarize_daily_sales
 
 
 def test_call_direction_and_duration_do_not_guess_unknown_values():
@@ -17,6 +17,15 @@ def test_telephony_statistics_use_their_own_documented_call_types():
     assert statistic_direction({"CALL_TYPE": "2"}) == "incoming"
     assert statistic_direction({"CALL_TYPE": 3}) == "incoming"
     assert statistic_direction({"CALL_TYPE": 5}) == "unknown"
+
+
+def test_sales_team_scope_excludes_other_portal_users():
+    rows = sales_team_rows(
+        [{"ASSIGNED_BY_ID": "1"}, {"ASSIGNED_BY_ID": "2"}],
+        {"users": {"1": "Ирина Базылева", "2": "Не из отдела продаж"}},
+        "ASSIGNED_BY_ID",
+    )
+    assert rows == [{"ASSIGNED_BY_ID": "1"}]
 
 
 def test_summary_keeps_unclassified_calls_out_of_directional_metrics():
@@ -65,7 +74,7 @@ class FakeBitrix:
 
     async def meta(self):
         return {
-            "sources": {"DIRECT": "Входящий звонок (прямой)"}, "users": {"7": "Ирина"},
+            "sources": {"DIRECT": "Входящий звонок (прямой)"}, "users": {"7": "Ирина Базылева"},
             "status_by_entity": {"DEAL_STAGE": {"NEW": "1. Новая сделка"}}, "enums": {},
         }
 
@@ -80,7 +89,7 @@ def test_daily_report_uses_one_bitrix_calendar_day():
         "leads": {"status": "online"}, "deals": {"status": "online"}, "calls": {"status": "online"},
     }
     assert report["calls"]["by_manager"] == [{
-        "name": "Ирина", "incoming_count": 0, "outgoing_count": 1,
+        "name": "Ирина Базылева", "incoming_count": 0, "outgoing_count": 1,
         "incoming_minutes": 0.0, "outgoing_minutes": 3.0,
         "unclassified_count": 0, "without_duration_count": 0,
     }]
