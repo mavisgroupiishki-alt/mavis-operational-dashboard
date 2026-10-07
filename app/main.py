@@ -622,6 +622,40 @@ async def load_clean_revenue(month: str):
         return {"status": "unavailable", "value": None, "reason": "source_unexpected_error"}
 
 
+async def load_clean_revenue_through(month: str, report_date: datetime) -> dict:
+    """Read clean revenue accumulated from the first of month through report_date."""
+    date_from, month_end = clean_revenue_period(month)
+    date_to = report_date.date().isoformat()
+    if not date_from or not (date_from <= date_to <= month_end):
+        return {"status": "unavailable", "value": None, "reason": "invalid_period"}
+    if date_to == month_end:
+        return await load_clean_revenue(month)
+    if not settings.clean_revenue_url or not settings.clean_revenue_token:
+        return {"status": "not_configured", "value": None}
+    target = urlparse(settings.clean_revenue_url)
+    if target.scheme != "https" or not target.netloc:
+        return {"status": "invalid_configuration", "value": None}
+    try:
+        async with httpx.AsyncClient(timeout=75.0, follow_redirects=False) as session:
+            response = await session.get(
+                settings.clean_revenue_url,
+                params={"date_from": date_from, "date_to": date_to, "include_overdue": "0"},
+                headers={"Authorization": f"Bearer {settings.clean_revenue_token}", "Accept": "application/json"},
+            )
+        payload = response.json()
+        value = float(payload.get("cleanRevenue")) if isinstance(payload, dict) else float("nan")
+        if response.status_code != 200 or not payload.get("ok") or not math.isfinite(value):
+            return {"status": "unavailable", "value": None, "reason": "source_invalid_payload"}
+        return {
+            "status": "online",
+            "value": round(value, 2),
+            "date_from": str(payload.get("dateFrom") or date_from),
+            "date_to": str(payload.get("dateTo") or date_to),
+        }
+    except (httpx.HTTPError, TypeError, ValueError):
+        return {"status": "unavailable", "value": None, "reason": "source_unavailable"}
+
+
 def _clean_revenue_storage_key(month: str) -> str:
     return f"clean_revenue_cache:{month}"
 
@@ -2496,6 +2530,8 @@ class TelegramReportTestBody(BaseModel):
     chat_id: str
     admin_key: str = ""
     photos_only: bool = False
+    report_date: str = ""
+    sales_only: bool = False
 
 
 class TelegramReportScheduleBody(BaseModel):
@@ -2529,9 +2565,17 @@ async def manual_refresh(admin_key: str = ""):
     return {"ok":True}
 
 
-async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -> dict:
+async def deliver_telegram_reports(
+    chat_id: str,
+    *,
+    photos_only: bool = False,
+    report_at: datetime | None = None,
+    sales_only: bool = False,
+) -> dict:
     """Send source-backed texts and both adjacent BI report tabs to one chat."""
-    month = current_month()
+    now = datetime.now(ZoneInfo(settings.timezone))
+    report_at = report_at or now
+    month = report_at.strftime("%Y-%m")
     try:
         key = (month, "month", "", "")
         # Render starts an asynchronous CRM refresh after each deploy.  A
@@ -2549,10 +2593,15 @@ async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         if not photos_only:
+            if report_at.date() != now.date():
+                historical_revenue = await load_clean_revenue_through(month, report_at)
+                if historical_revenue.get("status") not in {"online", "stale"}:
+                    raise ReportDeliveryError("Чистая выручка за дату отчёта недоступна")
+                snapshot = {**snapshot, "clean_revenue": historical_revenue}
             # The UI may display a stale dashboard while the payment ledger is
-            # warming up.  A Telegram report cannot use an empty revenue value,
-            # so wait once for the authoritative ledger rather than sending 0.
-            if (snapshot.get("clean_revenue") or {}).get("status") not in {"online", "stale"}:
+            # warming up.  A current Telegram report cannot use an empty
+            # revenue value, so wait once rather than sending 0.
+            elif (snapshot.get("clean_revenue") or {}).get("status") not in {"online", "stale"}:
                 refresh_task = schedule_clean_revenue_refresh(month)
                 if refresh_task:
                     try:
@@ -2560,10 +2609,9 @@ async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -
                     except asyncio.TimeoutError as exc:
                         raise ReportDeliveryError("Не дождались поступлений из «Графика платежей»") from exc
                 snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
-            texts = build_daily_report_texts(snapshot, datetime.now(ZoneInfo(settings.timezone)))
+            texts = build_daily_report_texts(snapshot, report_at)
         else:
             texts = DailyReportTexts(sales="", experts="")
-        now = datetime.now(ZoneInfo(settings.timezone))
         async with telegram_bi_capture_lock:
             try:
                 image_paths = await asyncio.wait_for(
@@ -2571,8 +2619,9 @@ async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -
                         login=settings.bitrix_bi_login,
                         password=settings.bitrix_bi_password,
                         report_url=settings.bitrix_bi_report_url,
-                        leads_output_path=settings.data_dir / f"bitrix-daily-leads-{now.date().isoformat()}.png",
-                        calls_output_path=settings.data_dir / f"bitrix-daily-calls-{now.date().isoformat()}.png",
+                        leads_output_path=settings.data_dir / f"bitrix-daily-leads-{report_at.date().isoformat()}.png",
+                        calls_output_path=settings.data_dir / f"bitrix-daily-calls-{report_at.date().isoformat()}.png",
+                        relative_date_label="Вчера" if report_at.date() == now.date() - timedelta(days=1) else None,
                     ),
                     timeout=180,
                 )
@@ -2584,6 +2633,7 @@ async def deliver_telegram_reports(chat_id: str, *, photos_only: bool = False) -
             texts=texts,
             image_paths=image_paths,
             include_texts=not photos_only,
+            include_experts=not sales_only,
         )
     except ReportDeliveryError as exc:
         raise
@@ -2623,11 +2673,23 @@ async def save_telegram_report_schedule(body: TelegramReportScheduleBody):
 
 @app.post("/api/reports/test-send")
 async def send_test_telegram_reports(body: TelegramReportTestBody):
-    """Send current reports only when all source data and the real BI image exist."""
+    """Send verified current or explicitly dated reports with real BI images."""
     if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
         raise HTTPException(403, "Неверный ADMIN_KEY")
     try:
-        return await deliver_telegram_reports(body.chat_id, photos_only=body.photos_only)
+        report_at = None
+        if body.report_date:
+            try:
+                parsed_date = datetime.strptime(body.report_date, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(400, "Дата отчёта должна быть в формате ГГГГ-ММ-ДД") from exc
+            report_at = datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=ZoneInfo(settings.timezone))
+        return await deliver_telegram_reports(
+            body.chat_id,
+            photos_only=body.photos_only,
+            report_at=report_at,
+            sales_only=body.sales_only,
+        )
     except ReportDeliveryError as exc:
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:

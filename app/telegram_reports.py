@@ -206,8 +206,33 @@ async def _apply_sales_manager_filter(frame: object) -> None:
     await frame.wait_for_timeout(500)
 
 
+async def _apply_relative_date_filter(frame: object, label: str) -> None:
+    """Choose a named BI period before the shared filters are applied."""
+    if label not in {"Сегодня", "Вчера"}:
+        raise ReportDeliveryError("Некорректная дата BI-отчёта")
+    date_label = frame.get_by_text(re.compile(r"Дата (?:отч[её]та|звонка)", re.IGNORECASE)).first
+    await date_label.wait_for(state="visible", timeout=30_000)
+    control = date_label.locator("xpath=following-sibling::*[1]")
+    if not await control.is_visible():
+        raise ReportDeliveryError("Не найден фильтр даты в BI-конструкторе")
+    await control.click(timeout=10_000)
+    option = await _last_visible(frame.get_by_text(label, exact=True))
+    if option is None:
+        raise ReportDeliveryError(f"В BI-конструкторе не найдена дата: {label}")
+    await option.click(timeout=10_000)
+    await frame.wait_for_timeout(250)
+    if label not in await control.inner_text():
+        raise ReportDeliveryError("Не удалось применить дату BI-отчёта")
+
+
 async def capture_bitrix_bi_reports(
-    *, login: str, password: str, report_url: str, leads_output_path: Path, calls_output_path: Path
+    *,
+    login: str,
+    password: str,
+    report_url: str,
+    leads_output_path: Path,
+    calls_output_path: Path,
+    relative_date_label: str | None = None,
 ) -> tuple[Path, Path]:
     """Capture the two adjacent tabs of the same BI Builder page."""
     _report_configuration(login, password, report_url)
@@ -286,6 +311,9 @@ async def capture_bitrix_bi_reports(
                     raise ReportDeliveryError("Вкладка «Звонки» не появилась в текущем BI-отчёте")
                 if "auth2.bitrix24.by" in page.url:
                     raise ReportDeliveryError("Bitrix24 требует интерактивное подтверждение входа")
+                if relative_date_label:
+                    stage = "выбор даты BI-отчёта"
+                    await _apply_relative_date_filter(calls_frame, relative_date_label)
                 stage = "фильтрация по менеджерам отдела продаж"
                 await _apply_sales_manager_filter(calls_frame)
                 stage = "ожидание данных «Лиды/Сделки»"
@@ -314,7 +342,13 @@ async def capture_bitrix_bi_reports(
 
 
 async def send_telegram_reports(
-    *, token: str, chat_id: str, texts: DailyReportTexts, image_paths: tuple[Path, Path], include_texts: bool = True
+    *,
+    token: str,
+    chat_id: str,
+    texts: DailyReportTexts,
+    image_paths: tuple[Path, Path],
+    include_texts: bool = True,
+    include_experts: bool = True,
 ) -> None:
     if not token:
         raise ReportDeliveryError("Не задан TELEGRAM_BOT_TOKEN")
@@ -331,7 +365,8 @@ async def send_telegram_reports(
     base_url = f"https://api.telegram.org/bot{token}"
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            for text in (texts.sales, texts.experts) if include_texts else ():
+            report_texts = (texts.sales, texts.experts) if include_experts else (texts.sales,)
+            for text in report_texts if include_texts else ():
                 response = await client.post(f"{base_url}/sendMessage", data={"chat_id": chat_id, "text": text})
                 if not accepted(response):
                     raise ReportDeliveryError("Telegram не принял текст отчёта")
