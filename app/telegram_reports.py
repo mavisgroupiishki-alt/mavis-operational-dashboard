@@ -168,10 +168,24 @@ async def _last_visible(locator: object) -> object | None:
 
 async def _apply_sales_manager_filter(frame: object) -> None:
     """Set the BI employee filter to the current sales department only."""
-    employee_label = frame.get_by_text("Сотрудник", exact=True).first
-    await employee_label.wait_for(state="visible", timeout=30_000)
-    control = employee_label.locator("xpath=following-sibling::*[1]")
-    if not await control.is_visible():
+    employee_label = None
+    for _ in range(60):
+        employee_label = await _last_visible(frame.get_by_text("Сотрудник", exact=True))
+        if employee_label is not None:
+            break
+        await frame.wait_for_timeout(500)
+    if employee_label is None:
+        raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
+    control = None
+    for candidate in (
+        employee_label.locator("xpath=following-sibling::*[1]"),
+        employee_label.locator("xpath=../following-sibling::*[1]"),
+        employee_label.locator("xpath=..").locator("input, button, [role='combobox']"),
+    ):
+        control = await _last_visible(candidate)
+        if control is not None:
+            break
+    if control is None:
         raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
 
     dropdown_open = False
@@ -318,6 +332,7 @@ async def capture_bitrix_bi_reports(
                 if relative_date_label:
                     stage = "выбор даты BI-отчёта"
                     await _apply_relative_date_filter(calls_frame, relative_date_label)
+                    await _wait_for_bi_report_ready(calls_frame)
                 stage = "фильтрация по менеджерам отдела продаж"
                 await _apply_sales_manager_filter(calls_frame)
                 stage = "ожидание данных «Лиды/Сделки»"
