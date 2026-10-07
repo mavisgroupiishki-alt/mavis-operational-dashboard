@@ -129,7 +129,7 @@ async def _bitrix_auth_blocker(page: object) -> str:
 
 
 async def _wait_for_bi_report_ready(
-    frame: object, *, timeout_ms: int = 60_000, poll_ms: int = 500, stable_ms: int = 1_000
+    frame: object, *, timeout_ms: int = 60_000, poll_ms: int = 500, stable_ms: int = 2_000
 ) -> None:
     """Wait until BI Builder has finished preparing the visible report data."""
     loading = frame.get_by_text("Готовим данные отчёта", exact=True)
@@ -145,7 +145,12 @@ async def _wait_for_bi_report_ready(
     for attempt in range(attempts):
         visible = await loading_is_visible()
         loading_seen = loading_seen or visible
-        if not visible and (loading_seen or attempt >= 10):
+        # Filter changes start asynchronous BI requests after the browser has
+        # accepted the click.  In production that loader can first appear
+        # later than the old five-second grace period, producing a screenshot
+        # with “Готовим данные отчёта”.  Keep observing for twelve seconds
+        # before accepting an initially quiet report.
+        if not visible and (loading_seen or attempt >= 24):
             # BI Builder replaces several widgets independently.  Require one
             # additional quiet moment so a late widget cannot produce a blank
             # screenshot after the first loader has disappeared.
