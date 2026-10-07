@@ -88,7 +88,7 @@ class BitrixClient:
         rows = await self.list_all("tasks.task.list", {
             "order": {"ID": "ASC"},
             "filter": {"GROUP_ID": int(group_id), ">=CREATED_DATE": f"{month}-01"},
-            "select": ["ID", "TITLE", "GROUP_ID", "STAGE_ID", "CREATED_BY", "CREATED_DATE"],
+            "select": ["ID", "TITLE", "GROUP_ID", "STAGE_ID", "CREATED_BY", "CREATED_DATE", "UF_CRM_TASK_DEAL", "UF_CRM_TASK"],
         }, limit=5000)
         return [
             row for row in rows or []

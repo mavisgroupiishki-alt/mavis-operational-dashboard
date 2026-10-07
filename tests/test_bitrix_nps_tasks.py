@@ -56,6 +56,22 @@ class BitrixNpsTaskFetchTests(unittest.TestCase):
 
         asyncio.run(check())
 
+    def test_acts_task_fetch_includes_the_linked_crm_deal(self):
+        async def check():
+            client = BitrixClient("https://example.bitrix24.by/rest/1/token")
+            client.list_all = AsyncMock(return_value=[{"ID": "1", "GROUP_ID": "36", "UF_CRM_TASK": "D_900"}])
+            try:
+                rows = await client.acts_tasks_for_month(36, "2026-09")
+            finally:
+                await client.close()
+
+            params = client.list_all.await_args.args[1]
+            self.assertEqual(rows, [{"ID": "1", "GROUP_ID": "36", "UF_CRM_TASK": "D_900"}])
+            self.assertIn("UF_CRM_TASK_DEAL", params["select"])
+            self.assertIn("UF_CRM_TASK", params["select"])
+
+        asyncio.run(check())
+
 
 if __name__ == "__main__":
     unittest.main()

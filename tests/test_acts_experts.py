@@ -22,3 +22,29 @@ def test_report_uses_current_month_task_creator_and_stage_name():
     assert lisa["archive_tasks"][0]["title"] == "Диптера"
     iolanta = next(expert for expert in report["experts"] if expert["name"] == "Иоланта Кананович")
     assert (iolanta["total"], iolanta["scan"], iolanta["archive"], iolanta["no_confirmation"]) == (1, 0, 1, 0)
+
+
+def test_report_excludes_a_task_when_the_linked_deal_closed_in_another_month():
+    report = build_acts_experts_report(
+        tasks=[
+            {
+                "ID": "1", "TITLE": "Акт в сентябре", "CREATED_DATE": "2026-09-02T10:00:00+03:00",
+                "CREATED_BY": "10", "STAGE_ID": "1480", "UF_CRM_TASK_DEAL": ["D_900"],
+                "ACTS_DEAL_CLOSEDATE": "2026-09-15T18:00:00+03:00",
+            },
+            {
+                "ID": "2", "TITLE": "Акт создан в сентябре, сделка в августе", "CREATED_DATE": "2026-09-03T10:00:00+03:00",
+                "CREATED_BY": "10", "STAGE_ID": "1480", "UF_CRM_TASK": "D_901",
+                "ACTS_DEAL_CLOSEDATE": "2026-08-31T18:00:00+03:00",
+            },
+        ],
+        users={"10": "Елизавета Горбатова"},
+        stages=[{"id": "1480", "title": "СКАН ЕСТЬ"}],
+        month="2026-09",
+        portal="https://mavisgroup.bitrix24.by",
+    )
+
+    lisa = next(expert for expert in report["experts"] if expert["name"] == "Елизавета Горбатова")
+    assert (lisa["total"], lisa["scan"], lisa["crm_mismatch_count"]) == (1, 1, 1)
+    assert lisa["crm_mismatch"][0]["deal_id"] == "901"
+    assert lisa["crm_mismatch"][0]["deal_close_date"].startswith("2026-08-31")

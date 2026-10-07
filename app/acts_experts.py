@@ -33,6 +33,22 @@ def _stage_name(stage: Mapping[str, object]) -> str:
     return _clean(stage.get("title") or stage.get("TITLE") or stage.get("name") or stage.get("NAME"))
 
 
+def linked_deal_id(task: Mapping[str, object]) -> str:
+    """Read a Bitrix deal link from either of the task CRM-link fields."""
+    for field in ("UF_CRM_TASK_DEAL", "UF_CRM_TASK", "ufCrmTaskDeal", "ufCrmTask"):
+        value = task.get(field)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        match = re.search(r"(?:^|[^A-Z0-9])D_(\d+)(?:$|[^0-9])", str(value or ""), re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _close_month(task: Mapping[str, object]) -> str:
+    return str(task.get("ACTS_DEAL_CLOSEDATE") or task.get("actsDealClosedate") or "")[:7]
+
+
 def build_acts_experts_report(
     tasks: Iterable[Mapping[str, object]],
     users: Mapping[str, str],
@@ -40,13 +56,16 @@ def build_acts_experts_report(
     month: str,
     portal: str,
 ) -> dict:
-    """Group current-month tasks by task creator (the expert in this project)."""
+    """Group current-month tasks by creator, excluding CRM month mismatches."""
     stage_names = {
         str(stage.get("id") or stage.get("ID") or ""): _stage_name(stage)
         for stage in stages
     }
     people = {
-        _name_key(name): {"name": name, "total": 0, "scan": 0, "archive": 0, "scan_tasks": [], "archive_tasks": [], "pending": []}
+        _name_key(name): {
+            "name": name, "total": 0, "scan": 0, "archive": 0,
+            "scan_tasks": [], "archive_tasks": [], "pending": [], "crm_mismatch": [],
+        }
         for name in EXPERTS
     }
     for task in tasks:
@@ -60,7 +79,6 @@ def build_acts_experts_report(
             continue
         stage_id = str(task.get("STAGE_ID") or task.get("stageId") or "0")
         stage = stage_names.get(stage_id) or ("Без стадии" if stage_id == "0" else f"Стадия {stage_id}")
-        person["total"] += 1
         normalized_stage = _name_key(stage)
         task_id = str(task.get("ID") or task.get("id") or "")
         task_row = {
@@ -68,8 +86,14 @@ def build_acts_experts_report(
             "title": title,
             "stage": stage,
             "created_at": created_at,
+            "deal_id": linked_deal_id(task),
+            "deal_close_date": str(task.get("ACTS_DEAL_CLOSEDATE") or ""),
             "url": f"{portal}/workgroups/group/{ACTS_PROJECT_ID}/tasks/task/view/{task_id}/" if task_id else "",
         }
+        if (close_month := _close_month(task)) and close_month != month:
+            person["crm_mismatch"].append(task_row)
+            continue
+        person["total"] += 1
         if normalized_stage == "скан есть":
             person["scan"] += 1
             person["scan_tasks"].append(task_row)
@@ -80,7 +104,11 @@ def build_acts_experts_report(
             person["pending"].append(task_row)
     experts = []
     for row in people.values():
-        for key in ("scan_tasks", "archive_tasks", "pending"):
+        for key in ("scan_tasks", "archive_tasks", "pending", "crm_mismatch"):
             row[key].sort(key=lambda task: (task["created_at"], task["id"]))
-        experts.append({**row, "no_confirmation": len(row["pending"])})
+        experts.append({
+            **row,
+            "no_confirmation": len(row["pending"]),
+            "crm_mismatch_count": len(row["crm_mismatch"]),
+        })
     return {"ok": True, "month": month, "project_id": ACTS_PROJECT_ID, "experts": experts}
