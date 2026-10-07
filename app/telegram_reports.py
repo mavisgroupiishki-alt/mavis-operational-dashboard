@@ -189,16 +189,17 @@ async def _apply_sales_manager_filter(frame: object) -> None:
     if control is None:
         raise ReportDeliveryError("Не найден фильтр «Сотрудник» в BI-конструкторе")
 
-    dropdown_open = False
     for manager in SALES_BI_MANAGERS:
-        if not dropdown_open:
-            # Bitrix renders the selector under an animated surface.  Normal
-            # pointer checks time out in headless Chromium although the
-            # control itself is interactive, so target it directly.
-            try:
-                await control.click(timeout=10_000, force=True)
-            except Exception as exc:
-                raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from exc
+        # Resetting the multi-select between employees prevents Bitrix from
+        # treating a filter query as text in an already-selected tag.
+        await control.press("Escape")
+        # Bitrix renders the selector under an animated surface.  Normal
+        # pointer checks time out in headless Chromium although the control
+        # itself is interactive, so target it directly.
+        try:
+            await control.click(timeout=10_000, force=True)
+        except Exception as exc:
+            raise ReportDeliveryError("Не удалось открыть список сотрудников BI-конструктора") from exc
         search = await _last_visible(
             frame.locator("input[type='search'], input[type='text'], input:not([type]), [contenteditable='true']")
         )
@@ -208,8 +209,12 @@ async def _apply_sales_manager_filter(frame: object) -> None:
             await search.fill(manager, timeout=10_000, force=True)
         except Exception as exc:
             raise ReportDeliveryError("Не удалось найти сотрудника в списке BI-конструктора") from exc
-        await frame.wait_for_timeout(250)
-        option = await _last_visible(frame.get_by_text(manager, exact=True))
+        option = None
+        for _ in range(40):
+            option = await _last_visible(frame.get_by_text(manager, exact=True))
+            if option is not None:
+                break
+            await frame.wait_for_timeout(250)
         if option is None:
             raise ReportDeliveryError(f"В BI-конструкторе не найден сотрудник: {manager}")
         try:
@@ -217,11 +222,9 @@ async def _apply_sales_manager_filter(frame: object) -> None:
         except Exception as exc:
             raise ReportDeliveryError(f"Не удалось выбрать сотрудника: {manager}") from exc
         await frame.wait_for_timeout(250)
-        dropdown_open = await search.is_visible()
 
-    if dropdown_open:
-        await search.press("Escape")
-        await frame.wait_for_timeout(250)
+    await control.press("Escape")
+    await frame.wait_for_timeout(250)
 
     selected = await control.inner_text()
     missing = [manager for manager in SALES_BI_MANAGERS if manager not in selected]
