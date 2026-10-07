@@ -444,6 +444,7 @@ async def capture_dashboard_daily_reports(
     *,
     dashboard_url: str,
     access_cookie: str,
+    legacy_access_cookie: str,
     report_date: str,
     leads_output_path: Path,
     calls_output_path: Path,
@@ -475,12 +476,21 @@ async def capture_dashboard_daily_reports(
             )
             try:
                 context = await browser.new_context(viewport={"width": 1680, "height": 1200}, device_scale_factor=1)
+                cookies = []
                 if access_cookie:
-                    await context.add_cookies([{
+                    cookies.append({
                         "name": "mavis_access", "value": access_cookie,
                         "url": dashboard_url,
                         "httpOnly": True, "secure": True, "sameSite": "Lax",
-                    }])
+                    })
+                if legacy_access_cookie:
+                    cookies.append({
+                        "name": "mavis_view", "value": legacy_access_cookie,
+                        "url": dashboard_url,
+                        "httpOnly": True, "secure": True, "sameSite": "Lax",
+                    })
+                if cookies:
+                    await context.add_cookies(cookies)
                 page = await context.new_page()
                 stage = "открытие ежедневного отчёта дашборда"
                 await page.goto(f"{dashboard_url}/#sales", wait_until="domcontentloaded", timeout=45_000)

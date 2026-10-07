@@ -2839,6 +2839,7 @@ async def deliver_telegram_reports(
                     capture_dashboard_daily_reports(
                         dashboard_url=settings.dashboard_public_url,
                         access_cookie=session_token(FULL_ACCESS),
+                        legacy_access_cookie=auth_hash() if settings.view_password else "",
                         report_date=report_at.date().isoformat(),
                         leads_output_path=settings.data_dir / f"daily-leads-{report_at.date().isoformat()}.png",
                         calls_output_path=settings.data_dir / f"daily-calls-{report_at.date().isoformat()}.png",
@@ -2967,6 +2968,7 @@ async def capture_telegram_report_preview(body: TelegramReportTestBody):
                 capture_dashboard_daily_reports(
                     dashboard_url=settings.dashboard_public_url,
                     access_cookie=session_token(FULL_ACCESS),
+                    legacy_access_cookie=auth_hash() if settings.view_password else "",
                     report_date=report_date.isoformat(),
                     leads_output_path=settings.data_dir / f"daily-leads-{report_date.isoformat()}.png",
                     calls_output_path=settings.data_dir / f"daily-calls-{report_date.isoformat()}.png",
