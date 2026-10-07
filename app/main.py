@@ -2529,7 +2529,7 @@ class PlanBody(BaseModel):
 
 
 class TelegramReportTestBody(BaseModel):
-    chat_id: str
+    chat_id: str = ""
     admin_key: str = ""
     photos_only: bool = False
     report_date: str = ""
@@ -2679,6 +2679,12 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
     if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
         raise HTTPException(403, "Неверный ADMIN_KEY")
     try:
+        chat_id = body.chat_id.strip()
+        if not chat_id:
+            schedule = storage.get_setting("telegram_report_schedule", {})
+            chat_id = str(schedule.get("chat_id") or "").strip() if isinstance(schedule, dict) else ""
+        if not re.fullmatch(r"-?\d{4,20}", chat_id):
+            raise HTTPException(503, "Канал для Telegram-отчёта не настроен")
         report_at = None
         if body.report_date:
             try:
@@ -2687,7 +2693,7 @@ async def send_test_telegram_reports(body: TelegramReportTestBody):
                 raise HTTPException(400, "Дата отчёта должна быть в формате ГГГГ-ММ-ДД") from exc
             report_at = datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=ZoneInfo(settings.timezone))
         return await deliver_telegram_reports(
-            body.chat_id,
+            chat_id,
             photos_only=body.photos_only,
             report_at=report_at,
             sales_only=body.sales_only,
