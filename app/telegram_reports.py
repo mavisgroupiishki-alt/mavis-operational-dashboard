@@ -210,10 +210,10 @@ async def _apply_relative_date_filter(frame: object, label: str) -> None:
     """Choose a named BI period before the shared filters are applied."""
     if label not in {"Сегодня", "Вчера"}:
         raise ReportDeliveryError("Некорректная дата BI-отчёта")
-    date_label = frame.get_by_text(re.compile(r"Дата (?:отч[её]та|звонка)", re.IGNORECASE)).first
-    await date_label.wait_for(state="visible", timeout=30_000)
-    control = date_label.locator("xpath=following-sibling::*[1]")
-    if not await control.is_visible():
+    # Date and employee filters use different DOM nesting in BI Builder.  The
+    # selected period is the reliable clickable part of the date control.
+    control = await _last_visible(frame.get_by_text(re.compile(r"^(Сегодня|Вчера)$")))
+    if control is None:
         raise ReportDeliveryError("Не найден фильтр даты в BI-конструкторе")
     await control.click(timeout=10_000)
     option = await _last_visible(frame.get_by_text(label, exact=True))
