@@ -181,6 +181,7 @@ async def _apply_sales_manager_filter(frame: object) -> None:
         employee_label.locator("xpath=following-sibling::*[1]"),
         employee_label.locator("xpath=../following-sibling::*[1]"),
         employee_label.locator("xpath=..").locator("input, button, [role='combobox']"),
+        frame.get_by_text(re.compile(r"^\d+\s+вариант", re.IGNORECASE)),
     ):
         control = await _last_visible(candidate)
         if control is not None:
