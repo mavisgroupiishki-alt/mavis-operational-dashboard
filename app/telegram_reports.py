@@ -173,6 +173,13 @@ async def _last_visible(locator: object) -> object | None:
 
 async def _apply_sales_manager_filter(frame: object) -> None:
     """Set the BI employee filter to the current sales department only."""
+    # BI Builder keeps a user click on a chart as a cross-filter.  It is not
+    # part of the scheduled report and can leave every widget empty, so clear
+    # all transient filters before setting the explicit department selection.
+    reset_button = await _last_visible(frame.get_by_text("Сбросить", exact=True))
+    if reset_button is not None and await reset_button.is_enabled():
+        await reset_button.click(timeout=10_000, force=True)
+        await frame.wait_for_timeout(500)
     employee_label = None
     for _ in range(60):
         employee_label = await _last_visible(frame.get_by_text(re.compile(r"Сотрудник", re.IGNORECASE)))
