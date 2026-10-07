@@ -16,14 +16,6 @@ from .metrics import (
     user_name,
 )
 
-
-CALL_SELECT = [
-    "ID", "TYPE_ID", "DIRECTION", "RESPONSIBLE_ID", "OWNER_ID", "OWNER_TYPE_ID",
-    "PROVIDER_ID", "PROVIDER_TYPE_ID", "SUBJECT", "CREATED", "START_TIME", "END_TIME",
-    "DEADLINE", "DURATION", "DURATION_TYPE", "CALL_DURATION", "COMPLETED",
-]
-
-
 def daily_bounds(value: str, timezone: str) -> tuple[datetime, datetime]:
     """Return a timezone-aware half-open interval for an ISO calendar day."""
     selected = date.fromisoformat(str(value or "")[:10])
@@ -50,6 +42,25 @@ def call_direction(activity: dict[str, Any]) -> str:
     if raw in {"2", "OUT", "OUTGOING", "O"}:
         return "outgoing"
     return "unknown"
+
+
+def statistic_direction(statistic: dict[str, Any]) -> str:
+    """Normalize telephony statistics call types (not CRM activity directions)."""
+    raw = str(statistic.get("CALL_TYPE") or "").strip()
+    if raw == "1":
+        return "outgoing"
+    if raw in {"2", "3"}:
+        return "incoming"
+    return "unknown"
+
+
+def statistic_as_call(statistic: dict[str, Any]) -> dict[str, Any]:
+    """Make a telephony statistic consumable by the presentation aggregator."""
+    return {
+        "RESPONSIBLE_ID": statistic.get("PORTAL_USER_ID"),
+        "DIRECTION": statistic_direction(statistic),
+        "CALL_DURATION": statistic.get("CALL_DURATION"),
+    }
 
 
 def duration_seconds(activity: dict[str, Any]) -> float | None:
@@ -176,7 +187,7 @@ def summarize_daily_sales(
             "by_manager": call_rows,
             "unclassified_count": unclassified,
             "without_duration_count": without_duration,
-            "time_basis": "Дата создания CRM-активности",
+            "time_basis": "Дата начала звонка в телефонии Bitrix24",
         },
         "funnel": {
             "status": "not_available",
@@ -191,10 +202,10 @@ async def build_daily_sales_report(client: Any, selected_date: str, timezone: st
     lead_task = client.lead_list({">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, LEAD_SELECT)
     sales_deals_task = client.deal_list({"CATEGORY_ID": 0, ">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, DEAL_SELECT)
     reanimation_deals_task = client.deal_list({"CATEGORY_ID": 20, ">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, DEAL_SELECT)
-    activities_task = client.list_all("crm.activity.list", {
-        "order": {"CREATED": "ASC", "ID": "ASC"},
-        "filter": {"TYPE_ID": 2, ">=CREATED": start.isoformat(), "<CREATED": end.isoformat()},
-        "select": CALL_SELECT,
+    activities_task = client.list_all("voximplant.statistic.get", {
+        "FILTER": {">=CALL_START_DATE": start.isoformat(), "<CALL_START_DATE": end.isoformat()},
+        "SORT": "CALL_START_DATE",
+        "ORDER": "ASC",
     })
     leads_result, sales_deals_result, reanimation_deals_result, activities_result, meta_result = await asyncio.gather(
         lead_task, sales_deals_task, reanimation_deals_task, activities_task, client.meta(), return_exceptions=True
@@ -208,7 +219,8 @@ async def build_daily_sales_report(client: Any, selected_date: str, timezone: st
     deals_availability = {"status": "online"} if (
         sales_deals_availability["status"] == "online" and reanimation_deals_availability["status"] == "online"
     ) else {"status": "partial", "note": "Не все воронки сделок доступны"}
-    activities, calls_availability = _availability(activities_result)
+    statistics, calls_availability = _availability(activities_result)
+    activities = [statistic_as_call(row) for row in statistics]
     report = summarize_daily_sales(leads, deals, activities, meta_result)
     report.update({
         "ok": True,

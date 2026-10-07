@@ -1,6 +1,6 @@
 import asyncio
 
-from app.daily_sales import build_daily_sales_report, call_direction, duration_seconds, summarize_daily_sales
+from app.daily_sales import build_daily_sales_report, call_direction, duration_seconds, statistic_direction, summarize_daily_sales
 
 
 def test_call_direction_and_duration_do_not_guess_unknown_values():
@@ -10,6 +10,13 @@ def test_call_direction_and_duration_do_not_guess_unknown_values():
     assert duration_seconds({"DURATION": 120}) == 120
     assert duration_seconds({"DURATION": 2, "DURATION_TYPE": "min"}) == 120
     assert duration_seconds({"DURATION": "not-a-number"}) is None
+
+
+def test_telephony_statistics_use_their_own_documented_call_types():
+    assert statistic_direction({"CALL_TYPE": 1}) == "outgoing"
+    assert statistic_direction({"CALL_TYPE": "2"}) == "incoming"
+    assert statistic_direction({"CALL_TYPE": 3}) == "incoming"
+    assert statistic_direction({"CALL_TYPE": 5}) == "unknown"
 
 
 def test_summary_keeps_unclassified_calls_out_of_directional_metrics():
@@ -52,9 +59,9 @@ class FakeBitrix:
         return [{"ID": "20", "CATEGORY_ID": 20, "STAGE_ID": "NEW", "ASSIGNED_BY_ID": "7"}]
 
     async def list_all(self, method, params):
-        assert method == "crm.activity.list"
-        assert params["filter"]["TYPE_ID"] == 2
-        return [{"ID": "3", "RESPONSIBLE_ID": "7", "DIRECTION": 2, "DURATION": 180}]
+        assert method == "voximplant.statistic.get"
+        assert params["FILTER"][">=CALL_START_DATE"].startswith("2026-09-30")
+        return [{"ID": "3", "PORTAL_USER_ID": "7", "CALL_TYPE": 1, "CALL_DURATION": 180}]
 
     async def meta(self):
         return {
@@ -72,3 +79,8 @@ def test_daily_report_uses_one_bitrix_calendar_day():
     assert report["availability"] == {
         "leads": {"status": "online"}, "deals": {"status": "online"}, "calls": {"status": "online"},
     }
+    assert report["calls"]["by_manager"] == [{
+        "name": "Ирина", "incoming_count": 0, "outgoing_count": 1,
+        "incoming_minutes": 0.0, "outgoing_minutes": 3.0,
+        "unclassified_count": 0, "without_duration_count": 0,
+    }]
