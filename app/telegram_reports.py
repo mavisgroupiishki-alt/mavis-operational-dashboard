@@ -170,7 +170,7 @@ async def _apply_sales_manager_filter(frame: object) -> None:
     """Set the BI employee filter to the current sales department only."""
     employee_label = None
     for _ in range(60):
-        employee_label = await _last_visible(frame.get_by_text("Сотрудник", exact=True))
+        employee_label = await _last_visible(frame.get_by_text(re.compile(r"Сотрудник", re.IGNORECASE)))
         if employee_label is not None:
             break
         await frame.wait_for_timeout(500)
