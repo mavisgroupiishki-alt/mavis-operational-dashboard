@@ -118,6 +118,19 @@ def _safe_page_location(url: str) -> str:
     return f"{parsed.netloc}{parsed.path}" if parsed.netloc else "неизвестная страница"
 
 
+def _dashboard_financial_values_ready(values: list[str]) -> bool:
+    """Return true only when all three dashboard finance cards show money.
+
+    The page initially renders the same three cards with the ``Считаю…``
+    placeholder. Presence of the elements alone must never permit a report
+    screenshot, otherwise a valid-looking but financially empty report is
+    sent.
+    """
+    if len(values) != 3:
+        return False
+    return all("BYN" in value.upper() and bool(re.search(r"\d", value)) for value in values)
+
+
 async def _bitrix_auth_blocker(page: object) -> str:
     """Describe a post-submit Bitrix auth screen without reading user data."""
     one_time_code = page.locator(
@@ -513,7 +526,7 @@ async def capture_dashboard_daily_reports(
                 for _ in range(120):
                     if await financial_values.count() == 3:
                         rendered = [await financial_values.nth(index).inner_text() for index in range(3)]
-                        if all(value.strip() and value.strip() != "—" for value in rendered):
+                        if _dashboard_financial_values_ready(rendered):
                             break
                     await page.wait_for_timeout(500)
                 else:

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from app.telegram_reports import (
     ReportDeliveryError,
     SALES_BI_MANAGERS,
+    _dashboard_financial_values_ready,
     _safe_page_location,
     _wait_for_bi_report_ready,
     build_daily_report_texts,
@@ -23,6 +24,13 @@ def snapshot(plan=None, clean_revenue=700, daily_clean_revenue=120, incoming=850
 
 
 class TelegramReportsTests(unittest.TestCase):
+    def test_dashboard_capture_refuses_finance_loading_labels(self):
+        self.assertFalse(_dashboard_financial_values_ready(["Считаю…", "Считаю…", "Считаю…"]))
+        self.assertFalse(_dashboard_financial_values_ready(["—", "—", "—"]))
+        self.assertTrue(_dashboard_financial_values_ready([
+            "4 450 BYN", "4 450 BYN", "22 348 BYN / 135 000 BYN",
+        ]))
+
     def test_bi_reports_are_limited_to_the_sales_department(self):
         self.assertEqual(SALES_BI_MANAGERS, (
             "Алена Хурсик",
