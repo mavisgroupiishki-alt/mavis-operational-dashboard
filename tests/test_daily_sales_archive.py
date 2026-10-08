@@ -1,10 +1,19 @@
 import tempfile
 import asyncio
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import app.main as main
 from app.daily_sales import archive_snapshot
 from app.storage import Storage
+
+
+def test_telegram_schedule_uses_the_enabled_channel_on_weekdays_at_18():
+    timezone = ZoneInfo("Europe/Minsk")
+    assert main._scheduled_report_due(datetime(2026, 10, 8, 18, 0, tzinfo=timezone))
+    assert not main._scheduled_report_due(datetime(2026, 10, 8, 18, 15, tzinfo=timezone))
+    assert not main._scheduled_report_due(datetime(2026, 10, 10, 18, 0, tzinfo=timezone))
 
 
 def test_daily_sales_archive_keeps_first_snapshot_for_a_day():
