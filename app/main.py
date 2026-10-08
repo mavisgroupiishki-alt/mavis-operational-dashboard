@@ -2844,7 +2844,7 @@ async def deliver_telegram_reports(
                         leads_output_path=settings.data_dir / f"daily-leads-{report_at.date().isoformat()}.png",
                         calls_output_path=settings.data_dir / f"daily-calls-{report_at.date().isoformat()}.png",
                     ),
-                    timeout=180,
+                    timeout=240,
                 )
             except asyncio.TimeoutError as exc:
                 raise ReportDeliveryError("Дашборд не отдал два снимка за 3 минуты") from exc
@@ -2973,7 +2973,7 @@ async def capture_telegram_report_preview(body: TelegramReportTestBody):
                     leads_output_path=settings.data_dir / f"daily-leads-{report_date.isoformat()}.png",
                     calls_output_path=settings.data_dir / f"daily-calls-{report_date.isoformat()}.png",
                 ),
-                timeout=180,
+                timeout=240,
             )
         return {"ok": True, "report_date": report_date.isoformat()}
     except ValueError as exc:

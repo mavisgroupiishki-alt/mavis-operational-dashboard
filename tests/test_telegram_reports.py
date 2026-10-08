@@ -4,6 +4,7 @@ import unittest
 from zoneinfo import ZoneInfo
 
 from app.telegram_reports import (
+    DASHBOARD_FINANCE_WAIT_MS,
     ReportDeliveryError,
     SALES_BI_MANAGERS,
     _dashboard_financial_values_ready,
@@ -24,6 +25,9 @@ def snapshot(plan=None, clean_revenue=700, daily_clean_revenue=120, incoming=850
 
 
 class TelegramReportsTests(unittest.TestCase):
+    def test_dashboard_capture_waits_longer_than_ledger_request_timeout(self):
+        self.assertGreaterEqual(DASHBOARD_FINANCE_WAIT_MS, 90_000)
+
     def test_dashboard_capture_refuses_finance_loading_labels(self):
         self.assertFalse(_dashboard_financial_values_ready(["Считаю…", "Считаю…", "Считаю…"]))
         self.assertFalse(_dashboard_financial_values_ready(["—", "—", "—"]))

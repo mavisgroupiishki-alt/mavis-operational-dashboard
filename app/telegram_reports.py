@@ -21,6 +21,10 @@ RUSSIAN_MONTHS_GENITIVE = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
+DASHBOARD_FINANCE_WAIT_MS = 100_000
+DASHBOARD_FINANCE_POLL_MS = 500
+
+
 class ReportDeliveryError(RuntimeError):
     """A safe, user-facing report delivery failure."""
 
@@ -523,12 +527,12 @@ async def capture_dashboard_daily_reports(
                 stage = "ожидание дневных поступлений"
                 await report.get_by_text("Поступления за день", exact=True).wait_for(state="visible", timeout=90_000)
                 financial_values = report.locator(".daily-sales-finance strong")
-                for _ in range(120):
+                for _ in range(DASHBOARD_FINANCE_WAIT_MS // DASHBOARD_FINANCE_POLL_MS):
                     if await financial_values.count() == 3:
                         rendered = [await financial_values.nth(index).inner_text() for index in range(3)]
                         if _dashboard_financial_values_ready(rendered):
                             break
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(DASHBOARD_FINANCE_POLL_MS)
                 else:
                     raise ReportDeliveryError("Дашборд не получил дневные поступления или факт плана")
 
