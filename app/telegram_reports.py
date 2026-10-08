@@ -278,13 +278,36 @@ def render_dashboard_daily_reports(
                         for row in (deal_data.get("by_source") or [])]
     deal_stage_rows = [(_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)))
                        for row in (deal_data.get("by_stage") or [])]
+    deal_stage_source_rows = [
+        (_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)),
+         _daily_report_text(" · ".join(
+             f"{source.get('name')} · {_daily_report_row_value(source.get('count', 0))}"
+             for source in (row.get("sources") or [])
+         ), 30))
+        for row in (deal_data.get("by_stage_source") or [])
+    ]
+    deal_manager_rows = [
+        (_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)),
+         _daily_report_text(" · ".join(
+             f"{client_type.get('name')} · {_daily_report_row_value(client_type.get('count', 0))}"
+             for client_type in (row.get("client_types") or [])
+         ), 30))
+        for row in (deal_data.get("by_manager_client_type") or [])
+    ]
 
     top_left_rows = lead_source_rows[:7]
     top_right_rows = lead_manager_rows[:7]
     lower_left_rows = deal_source_rows[:7]
     lower_right_rows = deal_stage_rows[:7]
-    leads_height = 440 + max(len(top_left_rows), len(top_right_rows)) * 48 + max(len(lower_left_rows), len(lower_right_rows)) * 48
-    leads_image = Image.new("RGB", (width, max(1160, leads_height)), background)
+    final_left_rows = deal_stage_source_rows[:7]
+    final_right_rows = deal_manager_rows[:7]
+    leads_height = (
+        480
+        + max(len(top_left_rows), len(top_right_rows)) * 48
+        + max(len(lower_left_rows), len(lower_right_rows)) * 48
+        + max(len(final_left_rows), len(final_right_rows)) * 48
+    )
+    leads_image = Image.new("RGB", (width, max(1420, leads_height)), background)
     leads_draw = ImageDraw.Draw(leads_image)
     leads_draw.rounded_rectangle((margin, 28, width - margin, 188), radius=28, fill="#ffffff", outline="#c9e0ee", width=2)
     leads_draw.text((margin + 28, 54), "Отдел продаж · Bitrix24", font=_daily_report_font(16, bold=True), fill="#68869b")
@@ -304,10 +327,15 @@ def render_dashboard_daily_reports(
     right_bottom = _daily_report_table(leads_draw, x=margin + column_width + gutter, y=tables_y, width=column_width,
                                        title="Лиды по менеджерам", headers=("Менеджер", "Лиды", "Источники"), rows=top_right_rows)
     tables_y = max(left_bottom, right_bottom) + 28
+    left_bottom = _daily_report_table(leads_draw, x=margin, y=tables_y, width=column_width,
+                                      title="Созданные сделки по источникам", headers=("Источник", "Сделки"), rows=lower_left_rows)
+    right_bottom = _daily_report_table(leads_draw, x=margin + column_width + gutter, y=tables_y, width=column_width,
+                                       title="Созданные сделки по стадиям", headers=("Стадия", "Сделки"), rows=lower_right_rows)
+    tables_y = max(left_bottom, right_bottom) + 28
     _daily_report_table(leads_draw, x=margin, y=tables_y, width=column_width,
-                        title="Созданные сделки по источникам", headers=("Источник", "Сделки"), rows=lower_left_rows)
+                        title="Стадии и источники", headers=("Стадия", "Сделки", "Источники"), rows=final_left_rows)
     _daily_report_table(leads_draw, x=margin + column_width + gutter, y=tables_y, width=column_width,
-                        title="Созданные сделки по стадиям", headers=("Стадия", "Сделки"), rows=lower_right_rows)
+                        title="Сделки по менеджерам и типу клиента", headers=("Менеджер", "Сделки", "Тип клиента"), rows=final_right_rows)
     leads_image.save(leads_output_path, format="PNG", optimize=True)
 
     call_rows = call_data.get("by_manager") or []
