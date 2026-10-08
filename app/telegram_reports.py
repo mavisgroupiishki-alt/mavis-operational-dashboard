@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -478,7 +479,7 @@ async def capture_dashboard_daily_reports(
     access_cookie: str,
     legacy_access_cookie: str,
     report_date: str,
-    finance_values: tuple[str, str, str],
+    finance: dict,
     leads_output_path: Path,
     calls_output_path: Path,
 ) -> tuple[Path, Path]:
@@ -492,6 +493,7 @@ async def capture_dashboard_daily_reports(
         raise ReportDeliveryError("Адрес дашборда для снимка должен быть HTTPS")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
         raise ReportDeliveryError("Дата снимка дашборда задана неверно")
+    finance_values = dashboard_finance_display_values(finance)
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
         from playwright.async_api import async_playwright
@@ -525,6 +527,21 @@ async def capture_dashboard_daily_reports(
                 if cookies:
                     await context.add_cookies(cookies)
                 page = await context.new_page()
+                finance_payload = json.dumps(finance, ensure_ascii=False)
+
+                async def fulfill_finance(route):
+                    await route.fulfill(
+                        status=200,
+                        content_type="application/json; charset=utf-8",
+                        body=finance_payload,
+                    )
+
+                # The page normally gets this same payload from the dashboard
+                # API. In an isolated headless context its in-flight request
+                # can race the screenshot. Feed it the already validated
+                # server result so the DOM is rendered normally and cannot
+                # regress to a loading placeholder.
+                await page.route("**/api/sales-daily-finance?*", fulfill_finance)
                 stage = "открытие ежедневного отчёта дашборда"
                 await page.goto(f"{dashboard_url}/#sales", wait_until="domcontentloaded", timeout=45_000)
                 if "/login" in page.url:
@@ -540,22 +557,17 @@ async def capture_dashboard_daily_reports(
 
                 report = page.locator(".daily-sales-report")
                 capture = page.locator(".daily-sales-capture")
-                stage = "подстановка проверенных дневных поступлений"
+                stage = "ожидание проверенных дневных поступлений"
                 await report.get_by_text("Поступления за день", exact=True).wait_for(state="visible", timeout=90_000)
                 financial_values = report.locator(".daily-sales-finance strong")
-                if not _dashboard_financial_values_ready(list(finance_values)):
-                    raise ReportDeliveryError("Некорректные финансовые значения для снимка")
-                await page.evaluate(
-                    """values => {
-                        const cards = [...document.querySelectorAll('.daily-sales-finance strong')];
-                        if (cards.length !== values.length) throw new Error('finance_cards_missing');
-                        cards.forEach((card, index) => { card.textContent = values[index]; });
-                    }""",
-                    list(finance_values),
-                )
-                rendered = [await financial_values.nth(index).inner_text() for index in range(3)]
-                if tuple(rendered) != finance_values:
-                    raise ReportDeliveryError("Дашборд не применил финансовые значения для снимка")
+                for _ in range(DASHBOARD_FINANCE_WAIT_MS // DASHBOARD_FINANCE_POLL_MS):
+                    if await financial_values.count() == 3:
+                        rendered = tuple(await financial_values.nth(index).inner_text() for index in range(3))
+                        if rendered == finance_values:
+                            break
+                    await page.wait_for_timeout(DASHBOARD_FINANCE_POLL_MS)
+                else:
+                    raise ReportDeliveryError("Дашборд не применил проверенные финансовые значения")
 
                 stage = "создание снимка лидов и сделок"
                 await capture.screenshot(path=str(leads_output_path), timeout=45_000)

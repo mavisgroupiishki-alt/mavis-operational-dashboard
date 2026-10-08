@@ -38,7 +38,7 @@ from .daily_sales import (
 )
 from .settings import settings
 from .storage import Storage
-from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, dashboard_finance_display_values, send_telegram_reports
+from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
@@ -2810,7 +2810,6 @@ async def deliver_telegram_reports(
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         capture_finance = await load_daily_sales_finance(report_at.date().isoformat())
-        capture_finance_values = dashboard_finance_display_values(capture_finance)
         if not photos_only:
             snapshot = {
                 **snapshot,
@@ -2828,7 +2827,7 @@ async def deliver_telegram_reports(
                         access_cookie=session_token(FULL_ACCESS),
                         legacy_access_cookie=auth_hash() if settings.view_password else "",
                         report_date=report_at.date().isoformat(),
-                        finance_values=capture_finance_values,
+                        finance=capture_finance,
                         leads_output_path=settings.data_dir / f"daily-leads-{report_at.date().isoformat()}.png",
                         calls_output_path=settings.data_dir / f"daily-calls-{report_at.date().isoformat()}.png",
                     ),
@@ -2951,9 +2950,7 @@ async def capture_telegram_report_preview(body: TelegramReportTestBody):
         report_date = datetime.now(ZoneInfo(settings.timezone)).date()
         if body.report_date:
             report_date = datetime.strptime(body.report_date, "%Y-%m-%d").date()
-        capture_finance_values = dashboard_finance_display_values(
-            await load_daily_sales_finance(report_date.isoformat())
-        )
+        capture_finance = await load_daily_sales_finance(report_date.isoformat())
         async with telegram_bi_capture_lock:
             await asyncio.wait_for(
                 capture_dashboard_daily_reports(
@@ -2961,7 +2958,7 @@ async def capture_telegram_report_preview(body: TelegramReportTestBody):
                     access_cookie=session_token(FULL_ACCESS),
                     legacy_access_cookie=auth_hash() if settings.view_password else "",
                     report_date=report_date.isoformat(),
-                    finance_values=capture_finance_values,
+                    finance=capture_finance,
                     leads_output_path=settings.data_dir / f"daily-leads-{report_date.isoformat()}.png",
                     calls_output_path=settings.data_dir / f"daily-calls-{report_date.isoformat()}.png",
                 ),
