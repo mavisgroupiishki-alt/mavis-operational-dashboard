@@ -25,7 +25,15 @@ def snapshot(plan=None, clean_revenue=700, daily_clean_revenue=120, incoming=850
         "clean_revenue": {"status": "online", "value": clean_revenue, "incoming_amount": incoming},
         "daily_sales": {"clean_revenue": {"status": "online", "value": daily_clean_revenue}},
         "plans": plans,
-        "production": {"kpi": {"closed_count": 0, "closed_amount": 0}},
+        "production": {
+            "kpi": {"closed_count": 0, "closed_amount": 0},
+            "weekly": {
+                "days": {
+                    "closed_count": [0] * 31,
+                    "closed_amount": [0] * 31,
+                },
+            },
+        },
     }
 
 
@@ -133,6 +141,18 @@ class TelegramReportsTests(unittest.TestCase):
             "💰 Сумма закрытых актов - 0 BYN\n\n"
             "✔ Факт отдела октября - 0 BYN"
         ))
+
+    def test_expert_text_uses_daily_closures_but_month_to_date_fact(self):
+        data = snapshot()
+        data["production"]["kpi"] = {"closed_count": 9, "closed_amount": 9000}
+        data["production"]["weekly"]["days"]["closed_count"][6] = 2
+        data["production"]["weekly"]["days"]["closed_amount"][6] = 1350
+
+        result = build_daily_report_texts(data, datetime(2026, 10, 7, tzinfo=ZoneInfo("Europe/Minsk")))
+
+        self.assertIn("Количество закрытых продуктов - 2 шт", result.experts)
+        self.assertIn("Сумма закрытых актов - 1 350 BYN", result.experts)
+        self.assertTrue(result.experts.endswith("Факт отдела октября - 9 000 BYN"))
 
 
     def test_text_refuses_missing_financial_source(self):

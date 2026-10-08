@@ -79,6 +79,21 @@ def _plan_or_dash(snapshot: dict, key: str) -> str:
     return _format_byn(value)
 
 
+def _daily_production_totals(production: dict, generated_at: datetime) -> tuple[float, float]:
+    """Return production closures for the report day, not the month-to-date KPI."""
+    days = ((production.get("weekly") or {}).get("days") or {})
+    index = generated_at.day - 1
+    try:
+        count = days["closed_count"][index]
+        amount = days["closed_amount"][index]
+    except (IndexError, KeyError, TypeError) as exc:
+        raise ReportDeliveryError("Нет дневных данных закрытий экспертов") from exc
+    return (
+        _finite_number(count, "дневное количество закрытых продуктов"),
+        _finite_number(amount, "дневная сумма закрытых актов"),
+    )
+
+
 def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyReportTexts:
     """Return the agreed manager-style text without inventing missing plans."""
     month_name = RUSSIAN_MONTHS_GENITIVE[generated_at.month - 1]
@@ -88,8 +103,10 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
     daily_sales_amount = _daily_sales_amount(snapshot)
     month_sales_amount = _clean_sales_amount(snapshot)
     sales_plan = _plan_or_dash(snapshot, "sales|overall|")
-    closed_count = _format_count(kpi.get("closed_count", 0))
-    closed_amount = _format_byn(kpi.get("closed_amount", 0))
+    daily_closed_count, daily_closed_amount = _daily_production_totals(production, generated_at)
+    month_closed_amount = _format_byn(kpi.get("closed_amount", 0))
+    closed_count = _format_count(daily_closed_count)
+    closed_amount = _format_byn(daily_closed_amount)
 
     return DailyReportTexts(
         sales=(
@@ -101,7 +118,7 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
             f"{date} 🍂\n\n"
             f"✅ Количество закрытых продуктов - {closed_count} шт\n"
             f"💰 Сумма закрытых актов - {closed_amount}\n\n"
-            f"✔ Факт отдела {month_name} - {closed_amount}"
+            f"✔ Факт отдела {month_name} - {month_closed_amount}"
         ),
     )
 
