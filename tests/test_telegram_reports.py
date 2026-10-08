@@ -8,6 +8,7 @@ from app.telegram_reports import (
     ReportDeliveryError,
     SALES_BI_MANAGERS,
     _dashboard_financial_values_ready,
+    _financial_texts_match,
     dashboard_finance_display_values,
     _safe_page_location,
     _wait_for_bi_report_ready,
@@ -44,6 +45,12 @@ class TelegramReportsTests(unittest.TestCase):
         self.assertTrue(_dashboard_financial_values_ready([
             "4 450 BYN", "4 450 BYN", "22 348 BYN / 135 000 BYN",
         ]))
+
+    def test_dashboard_capture_accepts_browser_nonbreaking_spaces_in_money(self):
+        self.assertTrue(_financial_texts_match(
+            ("6\u00a0050 BYN", "4\u202f450 BYN", "22\u00a0348 BYN / 135\u00a0000 BYN"),
+            ("6 050 BYN", "4 450 BYN", "22 348 BYN / 135 000 BYN"),
+        ))
 
     def test_bi_reports_are_limited_to_the_sales_department(self):
         self.assertEqual(SALES_BI_MANAGERS, (

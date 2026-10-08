@@ -136,6 +136,15 @@ def _dashboard_financial_values_ready(values: list[str]) -> bool:
     return all("BYN" in value.upper() and bool(re.search(r"\d", value)) for value in values)
 
 
+def _financial_texts_match(rendered: tuple[str, ...], expected: tuple[str, ...]) -> bool:
+    """Compare monetary strings despite browser non-breaking separators."""
+    normalize = lambda value: re.sub(r"[\s\u00a0\u202f]+", " ", value).strip()
+    return len(rendered) == len(expected) and all(
+        normalize(actual) == normalize(wanted)
+        for actual, wanted in zip(rendered, expected, strict=True)
+    )
+
+
 def dashboard_finance_display_values(finance: dict) -> tuple[str, str, str]:
     """Format the finance API result used for the two server-side images."""
     daily = finance.get("clean_revenue") or {}
@@ -563,7 +572,7 @@ async def capture_dashboard_daily_reports(
                 for _ in range(DASHBOARD_FINANCE_WAIT_MS // DASHBOARD_FINANCE_POLL_MS):
                     if await financial_values.count() == 3:
                         rendered = tuple(await financial_values.nth(index).inner_text() for index in range(3))
-                        if rendered == finance_values:
+                        if _financial_texts_match(rendered, finance_values):
                             break
                     await page.wait_for_timeout(DASHBOARD_FINANCE_POLL_MS)
                 else:
