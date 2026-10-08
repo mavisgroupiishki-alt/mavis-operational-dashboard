@@ -1,8 +1,4 @@
-"""Server-side rendering and delivery of source-backed daily Telegram reports.
-
-Both compact images are captured from the dashboard's direct Bitrix and payment
-ledger report in a headless browser, so no local desktop cursor can appear.
-"""
+"""Server-side rendering and delivery of source-backed daily Telegram reports."""
 
 from __future__ import annotations
 
@@ -158,6 +154,193 @@ def dashboard_finance_display_values(finance: dict) -> tuple[str, str, str]:
         _format_byn(daily.get("value")),
         f"{_format_byn(month.get('value'))} / {_format_byn(finance.get('sales_plan_amount'))}",
     )
+
+
+def _daily_report_font(size: int, *, bold: bool = False):
+    """Load a Cyrillic font installed in both Render and local test hosts."""
+    from PIL import ImageFont
+
+    filenames = (
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf")
+        if bold else
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+    )
+    for filename in filenames:
+        try:
+            return ImageFont.truetype(filename, size=size)
+        except OSError:
+            continue
+    raise ReportDeliveryError("В Render не найден шрифт для изображения ежедневного отчёта")
+
+
+def _daily_report_row_value(value: object) -> str:
+    """Keep integer report metrics compact while preserving decimal minutes."""
+    number = _finite_number(value, "значение отчёта")
+    if number.is_integer():
+        return f"{number:,.0f}".replace(",", " ")
+    return f"{number:,.1f}".replace(",", " ").replace(".", ",")
+
+
+def _daily_report_text(value: object, max_chars: int = 42) -> str:
+    text = str(value or "—").strip()
+    return text if len(text) <= max_chars else f"{text[:max_chars - 1]}…"
+
+
+def _daily_report_table(draw, *, x: int, y: int, width: int, title: str,
+                        headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> int:
+    """Draw one compact, readable dashboard table and return its bottom edge."""
+    from PIL import ImageDraw
+
+    body_rows = rows or [("Нет данных",) + tuple("—" for _ in headers[1:])]
+    row_height = 48
+    title_height = 48
+    header_height = 40
+    height = title_height + header_height + row_height * len(body_rows) + 24
+    radius = 24
+    draw.rounded_rectangle((x, y, x + width, y + height), radius=radius,
+                           fill="#ffffff", outline="#d4e3ed", width=2)
+    title_font = _daily_report_font(22, bold=True)
+    head_font = _daily_report_font(15, bold=True)
+    body_font = _daily_report_font(17, bold=False)
+    draw.text((x + 26, y + 16), title, font=title_font, fill="#183b56")
+    table_y = y + title_height
+    draw.rounded_rectangle((x + 20, table_y, x + width - 20, table_y + header_height), radius=8,
+                           fill="#edf5fa")
+    columns = len(headers)
+    first_width = int((width - 40) * (0.54 if columns > 1 else 1))
+    other_width = ((width - 40 - first_width) // max(1, columns - 1)) if columns > 1 else 0
+    for index, header in enumerate(headers):
+        cell_x = x + 28 if index == 0 else x + 20 + first_width + other_width * (index - 1) + 12
+        draw.text((cell_x, table_y + 11), header.upper(), font=head_font, fill="#6e879a")
+    for row_index, row in enumerate(body_rows):
+        row_y = table_y + header_height + row_height * row_index
+        if row_index % 2:
+            draw.rectangle((x + 20, row_y, x + width - 20, row_y + row_height), fill="#f8fbfd")
+        draw.line((x + 20, row_y + row_height, x + width - 20, row_y + row_height), fill="#e5eef4", width=1)
+        for col, value in enumerate(row):
+            if col == 0:
+                cell_x = x + 28
+                rendered = _daily_report_text(value, 43 if columns == 2 else 27)
+            else:
+                cell_x = x + 20 + first_width + other_width * (col - 1) + 12
+                rendered = _daily_report_text(value, 16)
+            draw.text((cell_x, row_y + 13), rendered, font=body_font, fill="#25394a")
+    return y + height
+
+
+def _daily_report_card(draw, *, x: int, y: int, width: int, label: str, value: str) -> None:
+    draw.rounded_rectangle((x, y, x + width, y + 132), radius=22,
+                           fill="#ffffff", outline="#d4e3ed", width=2)
+    draw.text((x + 24, y + 22), label, font=_daily_report_font(16, bold=True), fill="#7690a3")
+    draw.text((x + 24, y + 62), value, font=_daily_report_font(29, bold=True), fill="#17435f")
+
+
+def render_dashboard_daily_reports(
+    *, report_date: str, report: dict, finance: dict,
+    leads_output_path: Path, calls_output_path: Path,
+) -> tuple[Path, Path]:
+    """Create the two daily report images without launching Chromium on Render.
+
+    The payload is the same direct Bitrix24 and payment-ledger data used by the
+    dashboard. Rendering it locally avoids a browser process being killed by
+    Render before the upload is complete.
+    """
+    from PIL import Image, ImageDraw
+
+    try:
+        report_day = datetime.fromisoformat(report_date)
+    except ValueError as exc:
+        raise ReportDeliveryError("Дата снимка дашборда задана неверно") from exc
+    finance_values = dashboard_finance_display_values(finance)
+    leads_output_path.parent.mkdir(parents=True, exist_ok=True)
+    calls_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    background = "#f2f8fb"
+    width = 1800
+    margin = 36
+    gutter = 28
+    column_width = (width - margin * 2 - gutter) // 2
+    lead_data = report.get("leads") or {}
+    deal_data = report.get("deals") or {}
+    call_data = report.get("calls") or {}
+
+    lead_source_rows = [(_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)))
+                        for row in (lead_data.get("by_source") or [])]
+    lead_manager_rows = [
+        (_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)),
+         _daily_report_text(" · ".join(
+             f"{source.get('name')} · {_daily_report_row_value(source.get('count', 0))}"
+             for source in (row.get("sources") or [])
+         ), 30))
+        for row in (lead_data.get("by_manager_source") or [])
+    ]
+    deal_source_rows = [(_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)))
+                        for row in (deal_data.get("by_source") or [])]
+    deal_stage_rows = [(_daily_report_text(row.get("name")), _daily_report_row_value(row.get("count", 0)))
+                       for row in (deal_data.get("by_stage") or [])]
+
+    top_left_rows = lead_source_rows[:7]
+    top_right_rows = lead_manager_rows[:7]
+    lower_left_rows = deal_source_rows[:7]
+    lower_right_rows = deal_stage_rows[:7]
+    leads_height = 440 + max(len(top_left_rows), len(top_right_rows)) * 48 + max(len(lower_left_rows), len(lower_right_rows)) * 48
+    leads_image = Image.new("RGB", (width, max(1160, leads_height)), background)
+    leads_draw = ImageDraw.Draw(leads_image)
+    leads_draw.rounded_rectangle((margin, 28, width - margin, 188), radius=28, fill="#ffffff", outline="#c9e0ee", width=2)
+    leads_draw.text((margin + 28, 54), "Отдел продаж · Bitrix24", font=_daily_report_font(16, bold=True), fill="#68869b")
+    leads_draw.text((margin + 28, 87), "Ежедневный отчёт", font=_daily_report_font(38, bold=True), fill="#163c59")
+    leads_draw.text((margin + 28, 142), russian_date(report_day), font=_daily_report_font(19), fill="#668298")
+    cards_y = 222
+    card_width = (width - margin * 2 - gutter * 2) // 3
+    _daily_report_card(leads_draw, x=margin, y=cards_y, width=card_width, label="Поступления за день", value=finance_values[0])
+    _daily_report_card(leads_draw, x=margin + card_width + gutter, y=cards_y, width=card_width, label="Чистая выручка за день", value=finance_values[1])
+    _daily_report_card(leads_draw, x=margin + (card_width + gutter) * 2, y=cards_y, width=card_width, label="Факт плана октября", value=finance_values[2])
+    summary_y = cards_y + 164
+    _daily_report_card(leads_draw, x=margin, y=summary_y, width=column_width, label="Лиды", value=_daily_report_row_value(lead_data.get("total", 0)))
+    _daily_report_card(leads_draw, x=margin + column_width + gutter, y=summary_y, width=column_width, label="Созданные сделки", value=_daily_report_row_value(deal_data.get("total", 0)))
+    tables_y = summary_y + 164
+    left_bottom = _daily_report_table(leads_draw, x=margin, y=tables_y, width=column_width,
+                                      title="Лиды по источникам", headers=("Источник", "Лиды"), rows=top_left_rows)
+    right_bottom = _daily_report_table(leads_draw, x=margin + column_width + gutter, y=tables_y, width=column_width,
+                                       title="Лиды по менеджерам", headers=("Менеджер", "Лиды", "Источники"), rows=top_right_rows)
+    tables_y = max(left_bottom, right_bottom) + 28
+    _daily_report_table(leads_draw, x=margin, y=tables_y, width=column_width,
+                        title="Созданные сделки по источникам", headers=("Источник", "Сделки"), rows=lower_left_rows)
+    _daily_report_table(leads_draw, x=margin + column_width + gutter, y=tables_y, width=column_width,
+                        title="Созданные сделки по стадиям", headers=("Стадия", "Сделки"), rows=lower_right_rows)
+    leads_image.save(leads_output_path, format="PNG", optimize=True)
+
+    call_rows = call_data.get("by_manager") or []
+    call_count_rows = [
+        (_daily_report_text(row.get("name")), _daily_report_row_value(row.get("incoming_count", 0)),
+         _daily_report_row_value(row.get("outgoing_count", 0)))
+        for row in call_rows
+    ]
+    call_duration_rows = [
+        (_daily_report_text(row.get("name")), _daily_report_row_value(row.get("incoming_minutes", 0)),
+         _daily_report_row_value(row.get("outgoing_minutes", 0)))
+        for row in call_rows
+    ]
+    calls_height = max(720, 400 + len(call_rows) * 48)
+    calls_image = Image.new("RGB", (width, calls_height), background)
+    calls_draw = ImageDraw.Draw(calls_image)
+    calls_draw.rounded_rectangle((margin, 28, width - margin, 188), radius=28, fill="#ffffff", outline="#c9e0ee", width=2)
+    calls_draw.text((margin + 28, 54), "Отдел продаж · Bitrix24", font=_daily_report_font(16, bold=True), fill="#68869b")
+    calls_draw.text((margin + 28, 87), "Ежедневный отчёт по звонкам", font=_daily_report_font(38, bold=True), fill="#163c59")
+    calls_draw.text((margin + 28, 142), russian_date(report_day), font=_daily_report_font(19), fill="#668298")
+    calls_card_y = 222
+    _daily_report_card(calls_draw, x=margin, y=calls_card_y, width=card_width, label="Звонки", value=_daily_report_row_value(call_data.get("total", 0)))
+    _daily_report_card(calls_draw, x=margin + card_width + gutter, y=calls_card_y, width=card_width,
+                       label="Не классифицировано", value=_daily_report_row_value(call_data.get("unclassified_count", 0)))
+    _daily_report_card(calls_draw, x=margin + (card_width + gutter) * 2, y=calls_card_y, width=card_width,
+                       label="Без длительности", value=_daily_report_row_value(call_data.get("without_duration_count", 0)))
+    table_y = calls_card_y + 164
+    _daily_report_table(calls_draw, x=margin, y=table_y, width=column_width,
+                        title="Количество звонков по менеджерам", headers=("Менеджер", "Входящие", "Исходящие"), rows=call_count_rows)
+    _daily_report_table(calls_draw, x=margin + column_width + gutter, y=table_y, width=column_width,
+                        title="Длительность звонков по менеджерам", headers=("Менеджер", "Входящие, мин", "Исходящие, мин"), rows=call_duration_rows)
+    calls_image.save(calls_output_path, format="PNG", optimize=True)
+    return leads_output_path, calls_output_path
 
 
 async def _bitrix_auth_blocker(page: object) -> str:
@@ -482,7 +665,7 @@ async def capture_bitrix_bi_reports(
     return leads_output_path, calls_output_path
 
 
-async def capture_dashboard_daily_reports(
+async def _capture_dashboard_daily_reports_in_browser(
     *,
     dashboard_url: str,
     access_cookie: str,
@@ -597,6 +780,35 @@ async def capture_dashboard_daily_reports(
     except Exception as exc:
         raise ReportDeliveryError("Не удалось создать снимок ежедневного отчёта дашборда") from exc
     return leads_output_path, calls_output_path
+
+
+async def capture_dashboard_daily_reports(
+    *,
+    dashboard_url: str,
+    access_cookie: str,
+    legacy_access_cookie: str,
+    report_date: str,
+    report: dict,
+    finance: dict,
+    leads_output_path: Path,
+    calls_output_path: Path,
+) -> tuple[Path, Path]:
+    """Render the two report cards from verified dashboard payloads.
+
+    ``dashboard_url`` and the access cookies remain in the interface so the
+    scheduler configuration stays backwards-compatible.  Screenshots no
+    longer launch a second Chromium inside the Render web process: that can
+    exceed the instance memory limit and makes Render return a 502 before an
+    image is written.
+    """
+    del dashboard_url, access_cookie, legacy_access_cookie
+    return render_dashboard_daily_reports(
+        report_date=report_date,
+        report=report,
+        finance=finance,
+        leads_output_path=leads_output_path,
+        calls_output_path=calls_output_path,
+    )
 
 
 async def send_telegram_reports(

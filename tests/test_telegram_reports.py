@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from zoneinfo import ZoneInfo
 
@@ -10,6 +12,7 @@ from app.telegram_reports import (
     _dashboard_financial_values_ready,
     _financial_texts_match,
     dashboard_finance_display_values,
+    render_dashboard_daily_reports,
     _safe_page_location,
     _wait_for_bi_report_ready,
     build_daily_report_texts,
@@ -51,6 +54,43 @@ class TelegramReportsTests(unittest.TestCase):
             ("6\u00a0050 BYN", "4\u202f450 BYN", "22\u00a0348 BYN / 135\u00a0000 BYN"),
             ("6 050 BYN", "4 450 BYN", "22 348 BYN / 135 000 BYN"),
         ))
+
+    def test_server_render_creates_two_nonempty_daily_report_images(self):
+        report = {
+            "leads": {
+                "total": 7,
+                "by_source": [{"name": "Входящий звонок (прямой)", "count": 6}],
+                "by_manager_source": [{"name": "Ирина Базылева", "count": 7, "sources": []}],
+            },
+            "deals": {
+                "total": 3,
+                "by_source": [{"name": "Холодный звонок", "count": 3}],
+                "by_stage": [{"name": "1. Новая сделка", "count": 3}],
+            },
+            "calls": {
+                "total": 12, "unclassified_count": 0, "without_duration_count": 0,
+                "by_manager": [{
+                    "name": "Ирина Базылева", "incoming_count": 2, "outgoing_count": 10,
+                    "incoming_minutes": 2.7, "outgoing_minutes": 38.3,
+                }],
+            },
+        }
+        finance = {
+            "clean_revenue": {"status": "online", "incoming_amount": 6050, "value": 4450},
+            "month_clean_revenue": {"status": "online", "value": 22348},
+            "sales_plan_amount": 135000,
+        }
+        with TemporaryDirectory() as folder:
+            leads, calls = render_dashboard_daily_reports(
+                report_date="2026-10-07", report=report, finance=finance,
+                leads_output_path=Path(folder) / "leads.png",
+                calls_output_path=Path(folder) / "calls.png",
+            )
+            from PIL import Image
+            self.assertEqual(Image.open(leads).size[0], 1800)
+            self.assertEqual(Image.open(calls).size[0], 1800)
+            self.assertGreater(leads.stat().st_size, 10_000)
+            self.assertGreater(calls.stat().st_size, 10_000)
 
     def test_bi_reports_are_limited_to_the_sales_department(self):
         self.assertEqual(SALES_BI_MANAGERS, (
