@@ -455,6 +455,21 @@ def successful_sale_stage_ids(meta: Dict[str, Any]) -> set[str]:
     return result
 
 
+def preplan_stage_ids(meta: Dict[str, Any]) -> set[str]:
+    """Return the live OP stages that make up the pre-plan amount.
+
+    Bitrix stage IDs are portal-specific (and can be custom IDs), therefore
+    use the configured stage title rather than hard-coding an ID.  The agreed
+    pre-plan contains stages 10–12 only.
+    """
+    stages = ((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {})
+    return {
+        str(stage_id)
+        for stage_id, name in stages.items()
+        if re.match(r"^\s*(?:10|11|12)(?!\d)(?:\s|[.):]|$)", str(name or ""))
+    }
+
+
 def is_success_sale_record(r: Dict[str, Any]) -> bool:
     """Hard guard for OP sales.
     A sale is ONLY a deal currently on one of the agreed sale stages
@@ -1046,6 +1061,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
         product_managers.append({"name": m["name"], "categories": cats})
 
     active = await client.deal_list({"CATEGORY_ID": 0, "CLOSED": "N"}, DEAL_SELECT) or []
+    preplan_ids = preplan_stage_ids(meta)
     stages = defaultdict(lambda: {"count": 0, "amount": 0.0})
     active_records = []
     for d in active:
@@ -1064,12 +1080,23 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
     stage_rows = [{"name": k, "count": v["count"], "amount": round(v["amount"], 2)} for k, v in stages.items()]
     stage_rows.sort(key=lambda x: -x["amount"])
     records["active"] = active_records
+    preplan_records = [record for record in active_records if str(record.get("stage_id") or "") in preplan_ids]
+    preplan_stage_names = sorted({str(record.get("stage") or "") for record in preplan_records if record.get("stage")})
+    records["preplan"] = preplan_records
 
     return {
         "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "client_type_blocks": client_type_blocks, "managers": managers,
         "available_sources": sorted({r.get("source") for r in leads + deals if r.get("source")}),
         "product_categories": product_categories, "product_managers": product_managers,
         "stages": stage_rows, "active_deals_count": len(active),
+        "preplan": {
+            "amount": round(sum(float(record.get("amount") or 0) for record in preplan_records), 2),
+            "count": len(preplan_records),
+            "stage_ids": sorted(preplan_ids),
+            "stage_names": preplan_stage_names,
+            "rule": "Открытые сделки на стадиях 10–12 воронки продаж Bitrix24",
+            "amount_source": "Поле «Сумма» сделки Bitrix (OPPORTUNITY)",
+        },
         "sale_filter": {
             "stage_ids": sorted(success_stage_ids),
             "stage_names": success_stage_names,
@@ -1873,6 +1900,8 @@ def filter_sales_details(details, metric, period_type="current", manager=None, g
     if stage:
         rows=[r for r in active if common(r) and r.get("stage")==stage]
         return rows
+    if metric == "preplan":
+        return [r for r in details.get("preplan", []) if common(r)]
     if metric == "active_deals":
         return [r for r in active if common(r)]
     lead_rows=[r for r in leads if common(r) and (period_type!="previous" and r.get("period_type")=="current")]

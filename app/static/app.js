@@ -88,7 +88,7 @@ const SALES_LABELS={
   sold_products:["Продано продуктов","num"],sold_product_amount:["Сумма прод. продуктов","money"],average_product_check:["Средний чек продукта","money"],product_sale_rate:["Продукт → продажа","pct"],
   paid_amount:["Платежи (поле CRM)","money"],net_revenue:["Чистая выручка","money"]
 };
-const SALES_DRILL_LABELS={active_deals:"Незакрытые сделки"};
+const SALES_DRILL_LABELS={active_deals:"Незакрытые сделки",preplan:"Предплан"};
 const PROD_LABELS={
   closed_count:["Закрыто продуктов","num"],closed_amount:["Сумма закрытых","money"],avg_check:["Средний чек","money"],
   new_count:["Пришло за период","num"],new_amount:["Сумма пришедших","money"],period_closed_count:["Закрыто из пришедших","num"],period_closed_amount:["Сумма закрытых из пришедших","money"],new_to_success_pct:["Конверсия периода","pct"],
@@ -265,6 +265,11 @@ function salesSummaryMetric(title,value,type,plan,note="",showPlan=true,financeD
   const completion=hasFact&&hasPlan?`Выполнение ${pct(Number(value)/Number(plan)*100)}`:"Выполнение —";
   const drill=financeDrill?` class="clickable" data-finance-drill="${attr(financeDrill)}" role="button" tabindex="0" title="Открыть список сделок"`:"";
   return `<div${drill}><span>${esc(title)}</span><strong>${hasFact?format(value,type):"—"}</strong>${note?`<small>${esc(note)}</small>`:""}${showPlan?`<small class="rnp-summary-plan">План ${hasPlan?format(plan,type):"—"} · ${completion}</small>`:""}</div>`;
+}
+function preplanSummaryMetric(preplan={}){
+  const amount=Number(preplan.amount||0),count=Number(preplan.count||0);
+  const stages=(preplan.stage_names||[]).join(", ")||"стадии 10–12";
+  return `<div class="clickable" ${drillAttrs("sales","preplan")} role="button" tabindex="0" title="Открыть сделки предпродажи"><span>Предплан</span><strong>${money(amount)}</strong><small>${fmt(count)} сделок · ${esc(stages)}</small><small class="rnp-summary-plan">${esc(preplan.amount_source||"Сумма сделок Bitrix (OPPORTUNITY)")}</small></div>`;
 }
 function salesRevenueHero(s){
   const plan=getPlan("sales","sales_amount"),financial=financialSalesMetrics(s),percent=plan?financial.incoming/plan*100:0;
@@ -1239,6 +1244,7 @@ function renderSales(){
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
   const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales"),averageCheckPlan=getPlan("sales","average_check");
   const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_amount");
+  const preplan=state.sales.preplan||{};
   const legacy=usesDealAmountRevenue();
   const sf=state.sales.sale_filter||{};
   const stageText=(sf.stage_names||[]).length?(sf.stage_names||[]).join(", "):"Предоплата + успешная продажа";
@@ -1251,6 +1257,7 @@ function renderSales(){
 
     <div class="rnp-overall-strip">
       ${legacy?salesSummaryMetric("Сумма продаж",financial.incoming,"money",cleanRevenuePlan,incomingRevenueCaption(),true):`${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")}${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")}${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")}`}
+      ${preplanSummaryMetric(preplan)}
       ${salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)}
       ${salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)}
     </div>
