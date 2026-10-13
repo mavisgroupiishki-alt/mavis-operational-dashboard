@@ -912,8 +912,10 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
             async with session.stream(
                 "GET", url, params=params or {}, headers={"Authorization": f"Bearer {settings.jarvis_operations_token}", "Accept": "application/json"}
             ) as response:
-                if response.status_code != 200 or int(response.headers.get("Content-Length") or 0) > 2 * 1024 * 1024:
-                    raise ValueError("invalid Jarvis response")
+                if response.status_code != 200:
+                    raise ValueError(f"upstream_http_{response.status_code}")
+                if int(response.headers.get("Content-Length") or 0) > 2 * 1024 * 1024:
+                    raise ValueError("response_too_large")
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
                     raw.extend(chunk)
@@ -926,11 +928,12 @@ async def load_jarvis_operations(resource: str, params: dict[str, str] | None = 
         jarvis_operations_cache[cache_key] = result
         jarvis_operations_cache_time[cache_key] = time.monotonic()
         return result
-    except Exception:
+    except Exception as exc:
+        logger.warning("Jarvis operations %s unavailable: %s", resource, exc)
         previous = jarvis_operations_cache.get(cache_key)
         if previous:
             return {**previous, "status": "stale"}
-        return {"ok": False, "status": "unavailable"}
+        return {"ok": False, "status": "unavailable", "reason": str(exc)}
 
 
 async def reactivate_jarvis_deal(deal_id: str):
