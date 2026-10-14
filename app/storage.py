@@ -351,6 +351,48 @@ class Storage:
         team[key] = [x for x in team[key] if x != name]
         self._set("team", team)
 
+    # ---------- Team visibility by month ----------
+    def hidden_team(self, month: str):
+        """Return people hidden only in one reporting month."""
+        try:
+            datetime.strptime(str(month or ""), "%Y-%m")
+        except ValueError as exc:
+            raise ValueError("Месяц должен быть в формате ГГГГ-ММ") from exc
+        value = self._get(f"team_visibility:{month}", {})
+        if not isinstance(value, dict):
+            value = {}
+        return {
+            "managers": [str(name) for name in value.get("managers") or [] if str(name).strip()],
+            "experts": [str(name) for name in value.get("experts") or [] if str(name).strip()],
+        }
+
+    def team_for_month(self, month: str):
+        team = self.team()
+        hidden = self.hidden_team(month)
+        return {
+            "managers": [name for name in team["managers"] if name not in set(hidden["managers"])],
+            "experts": [name for name in team["experts"] if name not in set(hidden["experts"])],
+        }
+
+    def set_team_member_hidden(self, month: str, role: str, name: str, hidden: bool):
+        if role not in {"manager", "expert"}:
+            raise ValueError("Некорректная роль")
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("Укажите сотрудника")
+        team = self.team()
+        key = "managers" if role == "manager" else "experts"
+        if name not in team[key]:
+            raise ValueError("Сотрудник не входит в состав дашборда")
+        value = self.hidden_team(month)
+        names = set(value[key])
+        if hidden:
+            names.add(name)
+        else:
+            names.discard(name)
+        value[key] = sorted(names, key=str.casefold)
+        self._set(f"team_visibility:{month}", value)
+
     # ---------- Key task owners ----------
     def key_task_team(self):
         value = self._get("key_task_team", [])

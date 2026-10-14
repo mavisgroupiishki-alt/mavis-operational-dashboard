@@ -127,6 +127,8 @@ restoreDashboardChatState();
 
 function selectedManagers(){return state?.team?.managers||["Ирина Богомольцева","Роман Авсеенко"]}
 function selectedExperts(){return state?.team?.experts||["Екатерина Николаева","Елизавета Горбатова","Ольга Панькова","Иоланта Кананович"]}
+function teamRoster(){return state?.team_roster||state?.team||{managers:[],experts:[]}}
+function hiddenTeam(role){const key=role==="manager"?"managers":"experts";return new Set(state?.hidden_team?.[key]||[])}
 function availableTeamUsers(){
   const detailed=state?.available_user_options||[];
   if(detailed.length)return detailed;
@@ -511,11 +513,11 @@ function renderOverview(){
   </div>
   <div class="department-split">
     <div class="department-section sales-section">
-      <div class="section-accent-head"><div><div class="eyebrow">ПРОДАЖИ</div><h3>Менеджеры и выполнение</h3></div><button class="btn soft-action" data-open-team="manager">+ Менеджер</button></div>
+      <div class="section-accent-head"><div><div class="eyebrow">ПРОДАЖИ</div><h3>Менеджеры и выполнение</h3></div><div class="toolbar-actions"><button class="btn ghost" data-manage-team="manager">Состав</button><button class="btn soft-action" data-open-team="manager">+ Менеджер</button></div></div>
       ${salesManagerTable(true)}
     </div>
     <div class="department-section production-section">
-      <div class="section-accent-head"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><h3>Эксперты и результат</h3></div><button class="btn soft-action" data-open-team="expert">+ Эксперт</button></div>
+      <div class="section-accent-head"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><h3>Эксперты и результат</h3></div><div class="toolbar-actions"><button class="btn ghost" data-manage-team="expert">Состав</button><button class="btn soft-action" data-open-team="expert">+ Эксперт</button></div></div>
       ${expertTable(true)}
     </div>
   </div><div class="overview-tools"><button type="button" class="btn ghost" data-open-view="risks">Риски</button><button type="button" class="btn ghost" data-open-view="dynamics">Динамика</button><button type="button" class="btn ghost" data-open-view="forecast">Прогноз</button><button type="button" class="btn ghost" data-open-view="plans">Планы и настройки</button></div>`;
@@ -1258,7 +1260,7 @@ function renderSales(){
   $("#sales").innerHTML=`
     <div class="toolbar dept-toolbar rnp-toolbar">
       <div><div class="eyebrow">ОТДЕЛ ПРОДАЖ</div><div class="muted">Три блока продаж → план/факт → недели → дни → источники</div></div>
-      <div class="toolbar-actions"><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Все планы</button></div>
+      <div class="toolbar-actions"><button class="btn ghost" data-manage-team="manager">Состав</button><button class="btn soft-action" data-open-team="manager">+ Менеджер</button><button class="btn ghost" id="openPlanSales">Все планы</button></div>
     </div>${salesWorkspaceTabs()}
     ${salesTodayCard()}
 
@@ -1399,7 +1401,7 @@ function productionSalesIncomingCard(){
 function renderProduction(){
   const weeklyNps=state?.automatic_nps?.overall||{value:null,count:0};
   const p={...state.production.kpi,nps_avg:weeklyNps.value};
-  $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
+  $("#production").innerHTML=`<div class="toolbar dept-toolbar production-toolbar"><div><div class="eyebrow">ПРОИЗВОДСТВО</div><div class="muted">${esc(state.production.period_label)} · результат, поток, воронка и сроки</div></div><div class="toolbar-actions"><button class="btn ghost" data-manage-team="expert">Состав</button><button class="btn soft-action" data-open-team="expert">+ Добавить эксперта</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button class="btn ghost" id="openPlanProd">Изменить планы</button></div></div>
   <div class="department-page-head production-page-head">${deptHero({kind:'production',title:'Результат производства',eyebrow:'ЗАКРЫТЫЕ АКТЫ',value:p.closed_amount,valueType:'money',scope:'production',metric:'closed_amount',substats:[{label:'Закрыто продуктов',value:p.closed_count},{label:'Средний чек',value:p.avg_check,type:'money'},{label:'В нормативе',value:p.within_norm_pct,type:'pct'}]})}${manualNpsCard(p.nps_avg,weeklyNps.count)}</div>
   <div class="section-title">Результат периода</div>
   <div class="kpi-grid compact-cards">${card("Закрыто продуктов",p.closed_count,"production","closed_count","num")}${card("Сумма закрытых",p.closed_amount,"production","closed_amount","money")}${card("Средний чек",p.avg_check,"production","avg_check","money")}</div>
@@ -1429,7 +1431,7 @@ function renderExperts(){
   const cards=experts().map(e=>{const nm=expertNpsMeta(e),nv=nm.value,canOpen=nm.count>0;return `<div class="expert-card"><div class="expert-card-top"><div><div class="expert-name">${esc(e.name)}</div><div class="expert-result">${money(e.closed_amount)}</div></div><button type="button" class="btn nps-button nps-details-trigger" data-open-nps-details="${attr(e.name)}" ${canOpen?'':'disabled'} title="${canOpen?'Открыть оценки NPS':'За этот месяц оценок пока нет'}">${nv===null?`NPS ${esc(npsMonth)} —`:`NPS ${esc(npsMonth)} ${fmt(nv)} · ${fmt(nm.count)} оц.`}${canOpen?'<span aria-hidden="true">›</span>':''}</button></div><div class="expert-stats"><div><span>Закрыто</span><strong>${tdLink(e.closed_count,"production","closed_count","num",{expert:e.name})}</strong></div><div><span>В работе</span><strong>${tdLink(e.active_count,"production","active","num",{expert:e.name})}</strong></div><div><span>В норме</span><strong>${pct(e.within_norm_pct)}</strong></div><div><span>Возвраты</span><strong>${tdLink(e.returns_count,"production","returns_count","num",{expert:e.name})}</strong></div></div><details class="nested"><summary>По продуктам (${e.products.length})</summary><div class="nested-body"><table><thead><tr><th>Продукт</th><th class="num">Закрыто</th><th class="num">План, шт</th><th class="num">% плана</th><th class="num">Сумма</th><th class="num">Срок</th><th class="num">В норме</th><th></th></tr></thead><tbody>${e.products.map(p=>{const plan=expertProductPlan(e.name,p.name);return `<tr><td>${esc(p.name)}</td><td class="num">${tdLink(p.closed_count,"production","closed_count","num",{expert:e.name,product:p.name})}</td><td class="num">${plan?fmt(plan):"—"}</td><td class="num">${plan?pct(p.closed_count/plan*100):"—"}</td><td class="num">${tdLink(p.closed_amount,"production","closed_amount","money",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.avg_days,"production","avg_production_days","days",{expert:e.name,product:p.name})}</td><td class="num">${tdLink(p.within_norm_pct,"production","within_norm_pct","pct",{expert:e.name,product:p.name})}</td><td class="num"><button class="mini-edit" data-edit-expert-product-plan="1" data-expert="${attr(e.name)}" data-product="${attr(p.name)}">План</button></td></tr>`}).join("")}</tbody></table></div></details></div>`}).join("");
   const activeStuck=state.production.active_stuck||{},reasonCards=`<div class="kpi-grid compact-cards reason-coverage-cards">${card("Активные зависшие — все",p.active_stuck_with_reason_count||0,"production","active_stuck_with_reason_count","num",{},`${money(p.active_stuck_with_reason_amount||0)} · ${pct(p.active_stuck_with_reason_pct||0)} из ${fmt(activeStuck.all_count||0)}`)}${card("Активные зависшие — ожидаемое закрытие в месяце",p.active_stuck_with_reason_expected_month_count||0,"production","active_stuck_with_reason_expected_month_count","num",{},`${money(p.active_stuck_with_reason_expected_month_amount||0)} · ${pct(p.active_stuck_with_reason_expected_month_pct||0)} из ${fmt(activeStuck.expected_month_count||0)}`)}</div>`;
   const reasonsBlock=`<section class="expert-stuck-reasons"><div class="section-title">Активные зависшие в производстве</div>${reasonCards}${panel("Разбивка по причинам",activeReasonTable(activeStuck.all_reasons||[],activeStuck.expected_month_reasons||[]),activeStuck.expected_month_rule||"Вторая группа: предполагаемая дата закрытия попадает в выбранный месяц.")}</section>`;
-  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и общий NPS за ${esc(npsMonth)} по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button type="button" class="btn ghost" data-open-nps="">+ Добавить NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${actsExpertsPanel()}${flowBlock}${reasonsBlock}`;
+  $("#experts").innerHTML=`<div class="toolbar dept-toolbar"><div><div class="eyebrow">ЭКСПЕРТЫ</div><div class="muted">Закрытые продукты, нагрузка, нормативы и общий NPS за ${esc(npsMonth)} по дате создания задачи</div></div><div class="toolbar-actions"><button class="btn ghost" data-manage-team="expert">Состав</button><button class="btn primary-light" data-open-team="expert">+ Добавить эксперта из Bitrix</button><button class="btn ghost" data-open-team="expert" data-team-former="1">+ Уволенного из Bitrix</button><button type="button" class="btn ghost" data-open-nps="">+ Добавить NPS вручную</button></div></div><div class="expert-grid">${cards||'<div class="empty">Эксперты не выбраны. Нажми «Добавить эксперта из Bitrix».</div>'}</div>${actsExpertsPanel()}${flowBlock}${reasonsBlock}`;
   void loadActsExperts();
 }
 
@@ -1942,13 +1944,29 @@ function openNpsDetails(expert=""){
   }).join('')||'<div class="empty">Оценок за этот месяц пока нет.</div>';
   $("#npsDetailsDialog").showModal();
 }
-function openTeamDialog(role="expert", formerOnly=false){
+function teamMonthLabel(){
+  const month=$("#month")?.value||"";
+  const date=new Date(`${month}-01T12:00:00`);
+  return Number.isNaN(date.getTime())?month:new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(date);
+}
+function renderTeamVisibility(){
+  const role=$("#teamRole").value,key=role==="manager"?"managers":"experts",names=teamRoster()[key]||[],hidden=hiddenTeam(role),target=$("#teamVisibility");
+  const roleLabel=role==="manager"?"менеджеров":"экспертов";
+  target.innerHTML=`<div class="team-visibility-head"><strong>Состав ${esc(teamMonthLabel())}</strong><span>Только для выбранного месяца</span></div>${names.map(name=>{const isHidden=hidden.has(name);return `<div class="team-visibility-row"><span>${esc(name)}<small>${isHidden?"Скрыт в этом месяце":"Показывается в этом месяце"}</small></span><button type="button" class="btn ghost" data-team-visibility="1" data-role="${role}" data-name="${attr(name)}" data-hidden="${isHidden?"0":"1"}">${isHidden?"Показать":"Скрыть"}</button></div>`}).join("")||`<p class="team-visibility-empty">В составе ${roleLabel} пока никого нет.</p>`}`;
+}
+async function setTeamVisibility(role,name,hidden){
+  const r=await fetch('/api/team/visibility',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({month:$("#month").value,role,name,hidden,admin_key:$("#teamDialogAdminKey").value||''})});
+  if(!r.ok){alert(await r.text());return}
+  const payload=await r.json();state.team=payload.team;state.team_roster=payload.team_roster;state.hidden_team=payload.hidden_team;renderAll();renderTeamVisibility();
+}
+function openTeamDialog(role="expert", formerOnly=false, manageOnly=false){
   teamTargetRole=role;$("#teamRole").value=role;
   const users=availableTeamUsers().filter(user=>!formerOnly||!user.active);
   const active=users.filter(user=>user.active),former=users.filter(user=>!user.active);
   $("#teamUser").innerHTML=`${active.length?`<optgroup label="Работают сейчас">${active.map(user=>`<option value="${attr(user.name)}">${esc(user.name)}</option>`).join('')}</optgroup>`:''}${former.length?`<optgroup label="Уволенные сотрудники">${former.map(user=>`<option value="${attr(user.name)}">${esc(user.name)} · уволен(а)</option>`).join('')}</optgroup>`:''}`;
-  $("#teamDialogTitle").textContent=formerOnly?'Добавить уволенного сотрудника из Bitrix':role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';
-  $("#teamDialogHint").textContent=formerOnly?'Выберите уволенного сотрудника: его исторические показатели останутся в отчётах.':'В списке есть работающие и уволенные сотрудники Bitrix. После добавления показатели сотрудника начнут считаться в дашборде.';
+  $("#teamDialogTitle").textContent=manageOnly?`Состав ${role==='expert'?'экспертов':'менеджеров'}`:formerOnly?'Добавить уволенного сотрудника из Bitrix':role==='expert'?'Добавить эксперта из Bitrix':'Добавить менеджера из Bitrix';
+  $("#teamDialogHint").textContent=manageOnly?'Скрытие действует только для выбранного месяца: история других месяцев не изменится.':formerOnly?'Выберите уволенного сотрудника: его исторические показатели останутся в отчётах.':'В списке есть работающие и уволенные сотрудники Bitrix. После добавления показатели сотрудника начнут считаться в дашборде.';
+  renderTeamVisibility();
   $("#teamDialog").showModal();
 }
 function openPlanDialog(scope="sales",contextType="overall",contextKey=""){
@@ -2118,6 +2136,8 @@ function init(){
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const npsDetails=e.target.closest('[data-open-nps-details]');if(npsDetails){e.stopPropagation();openNpsDetails(npsDetails.dataset.openNpsDetails||'');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert',openTeam.dataset.teamFormer==='1');return}
+    const manageTeam=e.target.closest('[data-manage-team]');if(manageTeam){e.stopPropagation();openTeamDialog(manageTeam.dataset.manageTeam||'expert',false,true);return}
+    const teamVisibility=e.target.closest('[data-team-visibility]');if(teamVisibility){e.stopPropagation();void setTeamVisibility(teamVisibility.dataset.role,teamVisibility.dataset.name,teamVisibility.dataset.hidden==='1');return}
     const actsToggle=e.target.closest('[data-acts-experts-toggle]');if(actsToggle){e.preventDefault();e.stopPropagation();const panel=actsToggle.closest('.acts-experts-panel');if(!panel)return;panel.open=!panel.open;actsToggle.textContent=panel.open?'Свернуть отчёт':'Развернуть отчёт';actsToggle.setAttribute('aria-expanded',String(panel.open));return}
     if(e.target.closest('[data-production-week-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","week","0");return}
     if(e.target.closest('[data-production-product-plans]')){e.preventDefault();e.stopPropagation();openPlanDialog("production","product");return}
@@ -2145,7 +2165,7 @@ function init(){
   document.body.addEventListener('dragover',e=>{const column=e.target.closest('[data-task-drop]');if(!column||!draggedTaskId)return;e.preventDefault();e.dataTransfer.dropEffect='move';column.classList.add('is-drop-target')});
   document.body.addEventListener('dragleave',e=>{const column=e.target.closest('[data-task-drop]');if(column&&!column.contains(e.relatedTarget))column.classList.remove('is-drop-target')});
   document.body.addEventListener('drop',e=>{const column=e.target.closest('[data-task-drop]');if(!column||!draggedTaskId)return;e.preventDefault();column.classList.remove('is-drop-target');moveTaskToStage(draggedTaskId,column.dataset.taskDrop);draggedTaskId=""});
-  document.body.addEventListener('change',e=>{if(e.target.matches('[data-audit-filter]'))renderCrmAuditRows();if(e.target.matches('[data-task-filter]')){taskWorkspaceFilters[e.target.dataset.taskFilter]=e.target.value;renderKeyTasks()}if(e.target.matches('[data-daily-sales-date]')){dailySalesDate=e.target.value;dailySalesData=null;void loadDailySales(true)}if(e.target.id==='keyTaskStatus')updateTaskStageDeadlineState();if(e.target.id==='keyTaskTemplate')applyTaskTemplate(e.target.value)});
+  document.body.addEventListener('change',e=>{if(e.target.matches('[data-audit-filter]'))renderCrmAuditRows();if(e.target.matches('[data-task-filter]')){taskWorkspaceFilters[e.target.dataset.taskFilter]=e.target.value;renderKeyTasks()}if(e.target.matches('[data-daily-sales-date]')){dailySalesDate=e.target.value;dailySalesData=null;void loadDailySales(true)}if(e.target.id==='teamRole')renderTeamVisibility();if(e.target.id==='keyTaskStatus')updateTaskStageDeadlineState();if(e.target.id==='keyTaskTemplate')applyTaskTemplate(e.target.value)});
   $("#closeDrill").addEventListener('click',()=>$("#drillDialog").close());$("#drillSearch").addEventListener('input',renderDrillRows);
   $("#closePlan").addEventListener('click',()=>$("#planDialog").close());$("#planMonth").addEventListener('change',loadPlanDialogMonth);$("#planScope").addEventListener('change',()=>{updatePlanContextTypes();updatePlanKey()});$("#planContextType").addEventListener('change',updatePlanKey);$("#planContextKey").addEventListener('change',buildPlanForm);$("#savePlan").addEventListener('click',savePlan);
 
@@ -2177,7 +2197,7 @@ function init(){
   $("#closeTrafficGroup").addEventListener('click',()=>$("#trafficGroupDialog").close());
   $("#addTrafficSource").addEventListener('click',addTrafficSourceToGroup);
   $("#saveTrafficGroup").addEventListener('click',saveTrafficGroupDialog);
-  $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}state.team=(await r.json()).team;$("#teamDialog").close();renderAll()});
+  $("#saveTeamMember").addEventListener('click',async()=>{const name=$("#teamUser").value,role=$("#teamRole").value;if(!name)return;const r=await fetch('/api/team',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,name,admin_key:$("#teamDialogAdminKey").value||''})});if(!r.ok){alert(await r.text());return}const payload=await r.json(),hidden=state.hidden_team||{managers:[],experts:[]};state.team_roster=payload.team;state.team={managers:(payload.team.managers||[]).filter(name=>!hidden.managers?.includes(name)),experts:(payload.team.experts||[]).filter(name=>!hidden.experts?.includes(name))};$("#teamDialog").close();renderAll()});
   $("#deleteTaskFromDialog").addEventListener('click',()=>{if(taskEditingId)deleteKeyTask(taskEditingId).then(()=>$("#keyTaskDialog").close())});
   $("#archiveTaskFromDialog").addEventListener('click',async()=>{if(!taskEditingId)return;const task=(keyTasksData?.tasks||[]).find(row=>row.id===taskEditingId),response=await fetch(`/api/key-tasks/${encodeURIComponent(taskEditingId)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({archived:!task?.archived,changed_by_profile_id:activeTaskProfileId})});if(!response.ok){alert((await response.json().catch(()=>({detail:"Не удалось изменить архив"}))).detail||"Не удалось изменить архив");return}$("#keyTaskDialog").close();keyTasksData=null;await loadKeyTasks(true)});
   const es=new EventSource('/events');es.addEventListener('update',scheduleBackgroundLoad);es.onerror=()=>{$("#liveDot").className='bad'};
@@ -2280,7 +2300,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.6.42";
+    b.textContent="v3.6.43";
     top.appendChild(b);
   }
 });

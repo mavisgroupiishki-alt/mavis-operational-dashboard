@@ -1429,7 +1429,11 @@ def _apply_runtime(snap, details, month, compact=False):
     else:
         x=copy.deepcopy(snap)
     x['plans']=storage.plan_dict(month)
-    x['team']=storage.team()
+    # The roster remains global; only visibility is scoped to this report month.
+    # Keeping both values lets the UI hide someone without deleting history.
+    x['team_roster']=storage.team()
+    x['hidden_team']=storage.hidden_team(month)
+    x['team']=storage.team_for_month(month)
     x['comments']=storage.comments(month)
     x['manual_nps']=storage.manual_nps(month)
     x['storage_backend']=storage.backend_name
@@ -2063,6 +2067,13 @@ class TeamBody(BaseModel):
     name: str
     admin_key: str = ""
 
+class TeamVisibilityBody(BaseModel):
+    month: str
+    role: str
+    name: str
+    hidden: bool
+    admin_key: str = ""
+
 class KeyTaskMemberBody(BaseModel):
     id: str
     name: str
@@ -2250,6 +2261,21 @@ async def add_team(body: TeamBody):
 async def del_team(role:str,name:str,admin_key:str=''):
     if settings.admin_key and not secrets.compare_digest(admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
     storage.remove_team_member(role,name);return {'ok':True,'team':storage.team()}
+
+@app.put('/api/team/visibility')
+async def set_team_visibility(body: TeamVisibilityBody):
+    if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):
+        raise HTTPException(403,'Неверный ADMIN_KEY')
+    try:
+        storage.set_team_member_hidden(body.month, body.role, body.name, body.hidden)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        'ok': True,
+        'team': storage.team_for_month(body.month),
+        'team_roster': storage.team(),
+        'hidden_team': storage.hidden_team(body.month),
+    }
 
 
 @app.get('/api/key-tasks/team')
