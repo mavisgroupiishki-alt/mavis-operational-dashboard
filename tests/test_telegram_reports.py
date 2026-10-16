@@ -24,6 +24,7 @@ def snapshot(plan=None, clean_revenue=700, daily_clean_revenue=120, incoming=850
     return {
         "clean_revenue": {"status": "online", "value": clean_revenue, "incoming_amount": incoming},
         "daily_sales": {"clean_revenue": {"status": "online", "value": daily_clean_revenue}},
+        "sales": {"preplan": {"amount": 42969, "count": 19}},
         "plans": plans,
         "production": {
             "kpi": {"closed_count": 0, "closed_amount": 0},
@@ -133,7 +134,8 @@ class TelegramReportsTests(unittest.TestCase):
         self.assertEqual(result.sales, (
             "Пятница, 2 октября 2026\n\n"
             "💰 Сумма продаж - 120 BYN\n\n"
-            "📈 Факт плана продаж октября - 700 BYN / —"
+            "📈 Факт плана продаж октября - 700 BYN / —\n\n"
+            "📋 Предплан - 42 969 BYN · 19 сделок"
         ))
         self.assertEqual(result.experts, (
             "Пятница, 2 октября 2026 🍂\n\n"

@@ -2838,8 +2838,10 @@ async def deliver_telegram_reports(
         schedule_snapshot(month, "month", force=True)
         snapshot = await operational_snapshot(source_snapshot, detail_cache.get(key, {}), month)
         capture_finance, capture_report = await asyncio.gather(
-            load_daily_sales_finance(report_at.date().isoformat()),
-            load_daily_sales(report_at.date().isoformat()),
+            # A scheduled message is a financial record: do not reuse a
+            # browser response cached immediately before the send time.
+            load_daily_sales_finance(report_at.date().isoformat(), force=True),
+            load_daily_sales(report_at.date().isoformat(), force=True),
         )
         if not photos_only:
             snapshot = {

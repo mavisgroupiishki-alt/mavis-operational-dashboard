@@ -72,6 +72,18 @@ def _daily_sales_amount(snapshot: dict) -> float:
     raise ReportDeliveryError("Чистая выручка за день из «Графика платежей» недоступна")
 
 
+def _sales_preplan(snapshot: dict) -> tuple[float | None, float | None]:
+    """Return the live Bitrix preplan without inventing a missing amount."""
+    preplan = ((snapshot.get("sales") or {}).get("preplan") or {})
+    amount = preplan.get("amount")
+    count = preplan.get("count")
+    if amount is None:
+        return None, None
+    return _finite_number(amount, "предплан"), (
+        _finite_number(count, "количество сделок предплана") if count is not None else None
+    )
+
+
 def _plan_or_dash(snapshot: dict, key: str) -> str:
     value = (snapshot.get("plans") or {}).get(key, {}).get("sales_amount")
     if value is None:
@@ -103,16 +115,24 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
     daily_sales_amount = _daily_sales_amount(snapshot)
     month_sales_amount = _clean_sales_amount(snapshot)
     sales_plan = _plan_or_dash(snapshot, "sales|overall|")
+    preplan_amount, preplan_count = _sales_preplan(snapshot)
     daily_closed_count, daily_closed_amount = _daily_production_totals(production, generated_at)
     month_closed_amount = _format_byn(kpi.get("closed_amount", 0))
     closed_count = _format_count(daily_closed_count)
     closed_amount = _format_byn(daily_closed_amount)
 
+    preplan_line = "📋 Предплан - —"
+    if preplan_amount is not None:
+        preplan_line = f"📋 Предплан - {_format_byn(preplan_amount)}"
+        if preplan_count is not None:
+            preplan_line += f" · {_format_count(preplan_count)} сделок"
+
     return DailyReportTexts(
         sales=(
             f"{date}\n\n"
             f"💰 Сумма продаж - {_format_byn(daily_sales_amount)}\n\n"
-            f"📈 Факт плана продаж {month_name} - {_format_byn(month_sales_amount)} / {sales_plan}"
+            f"📈 Факт плана продаж {month_name} - {_format_byn(month_sales_amount)} / {sales_plan}\n\n"
+            f"{preplan_line}"
         ),
         experts=(
             f"{date} 🍂\n\n"
