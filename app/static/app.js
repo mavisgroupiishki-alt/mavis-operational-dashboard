@@ -954,6 +954,16 @@ function rnpCleanRevenue(filter={}){
   const previous=rows.filter(row=>row.period_type!=="current").reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
   return {current,previous,total:current+previous};
 }
+function rnpTemporaryAllocation(group){
+  const finance=state?.clean_revenue||{},index=RNP_GROUPS.findIndex(cfg=>cfg.key===group);
+  if(usesDealAmountRevenue()||index<0||!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows)||finance.value===null||finance.value===undefined||!Number.isFinite(Number(finance.value)))return 0;
+  const amounts=RNP_GROUPS.map(cfg=>rnpCleanRevenue({group:cfg.key}).total);
+  if(amounts.some(value=>value===null||!Number.isFinite(Number(value))))return 0;
+  const difference=Math.round(Number(finance.value)*100)-amounts.reduce((sum,value)=>sum+Math.round(Number(value)*100),0);
+  const sign=Math.sign(difference),absolute=Math.abs(difference),base=Math.floor(absolute/RNP_GROUPS.length),remainder=absolute%RNP_GROUPS.length;
+  const share=base+(index<remainder?1:0);
+  return share?sign*share/100:0;
+}
 function rnpCleanRevenueWeeks(group){
   const finance=state?.clean_revenue||{};
   if(!["online","stale"].includes(finance.status)||finance.payment_revenue_available!==true||!Array.isArray(finance.payment_revenue_rows))return null;
@@ -984,18 +994,21 @@ function rnpCleanRevenueWeekTable(cfg){
   </tr>`).join("");
   return `<div class="sales-semantics-note"><strong>Чистая выручка по неделям:</strong> дата банка — для поступления, дата строки графика — для ручного подтверждения, дата полной оплаты сделки — для удержания подрядчика.</div><div class="scroll-x"><table class="rnp-clean-week-table"><thead><tr><th>Неделя</th><th class="num">Чистая выручка</th><th class="num">Поступления по графику</th><th class="num">Подрядчики</th><th class="num">Сделок</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
-function openFinanceDrill(kind,group="",week=""){
+function openFinanceDrill(kind,group="",week="",period=""){
   const finance=state?.clean_revenue||{};
-  const source=(group||week!=="")&&Array.isArray(finance.payment_revenue_rows)
+  const source=week!==""&&Array.isArray(finance.payment_revenue_rows)
     ?finance.payment_revenue_rows
     :Array.isArray(finance.deal_revenue_rows)?finance.deal_revenue_rows:[];
-  const labels={incoming:"Общая сумма поступлений",clean:"Чистая выручка",contractor:"Подрядчики",unclassified:"Не распределено в графике"};
+  const labels={incoming:"Общая сумма поступлений",clean:"Чистая выручка",contractor:"Подрядчики",unclassified:"Не распределено в графике",unclassified_group:"Сделки вне трёх блоков"};
   const range=week===""?null:rnpWeekRanges()[Number(week)];
   const rows=source.filter(row=>{
     if(group&&row.group!==group)return false;
+    if(period==="current"&&row.period_type!=="current")return false;
+    if(period==="previous"&&row.period_type==="current")return false;
     if(range){const day=Number(String(row.date||"").slice(-2));if(!Number.isFinite(day)||day<range.start||day>range.end)return false}
     if(kind==="contractor")return Number(row.contractor_applied||0)!==0;
     if(kind==="unclassified")return row.group==="Не распределено"||!String(row.manager||"").trim();
+    if(kind==="unclassified_group")return !RNP_GROUPS.some(cfg=>cfg.key===row.group);
     return true;
   }).map(row=>{
     const amount=kind==="incoming"?Number(row.bank_confirmed||0)+Number(row.manual_confirmed||0):kind==="contractor"?Number(row.contractor_applied||0):Number(row.clean_revenue||0);
@@ -1004,11 +1017,15 @@ function openFinanceDrill(kind,group="",week=""){
   drillMeta={scope:"finance",metric:kind};drillRows=rows;drillOffset=rows.length;drillTotal=rows.length;
   $("#drillSearch").value="";
   $("#drillTitle").textContent=labels[kind]||"Финансовые строки";
-  $("#drillSubtitle").textContent=["Строки «Графика платежей», связанные со сделками",group,range?`${Number(week)+1} неделя`:""].filter(Boolean).join(" · ");
+  $("#drillSubtitle").textContent=["Строки «Графика платежей», связанные со сделками",group,period==="current"?"Сделки периода":period==="previous"?"Сделки хвоста":"",range?`${Number(week)+1} неделя`:""].filter(Boolean).join(" · ");
   $("#drillDialog").showModal();
   renderDrillRows();
 }
 function optionalMoney(value){return value===null?"—":money(value)}
+function rnpRevenueDrill(value,group,period=""){
+  if(value===null||usesDealAmountRevenue())return optionalMoney(value);
+  return `<button type="button" class="table-drill-link" data-finance-drill="clean" data-finance-group="${attr(group)}" data-finance-period="${attr(period)}" title="Показать сделки">${money(value)}</button>`;
+}
 function rnpMetricDetailRow({label,current,previous,total,plan,logic,showPlan=true}){
   return `<details class="rnp-metric-details"><summary class="rnp-month-row"><span class="rnp-metric-label">${esc(label)}<small>Как считаем</small></span><span>${current}</span><span>${previous}</span><strong>${total}</strong>${showPlan?`<span>${plan||"—"}</span>`:""}</summary><div class="rnp-metric-logic">${esc(logic)}</div></details>`;
 }
@@ -1120,6 +1137,7 @@ function rnpBlock(cfg){
   const g=rnpGroup(cfg.key)||{current:{metrics:{},weeks:{},days:{}},previous:{metrics:{}},total:{metrics:{}}};
   const c=g.current.metrics||{},p=g.previous.metrics||{},t=g.total.metrics||{};
   const revenue=rnpCleanRevenue({group:cfg.key});
+  const adjustment=rnpTemporaryAllocation(cfg.key),displayTotal=revenue.total===null?null:Math.round((revenue.total+adjustment)*100)/100;
   const plan=getPlan("sales","sales_amount","source_group",cfg.key);
 
   return `<details class="rnp-block ${cfg.cls}">
@@ -1137,18 +1155,19 @@ function rnpBlock(cfg){
       <div class="rnp-result-strip rnp-summary-strip">
         <div>
           <span>${usesDealAmountRevenue()?"Сумма продаж периода":"Чистая выручка периода"}</span>
-          <strong>${optionalMoney(revenue.current)}</strong>
+          <strong>${rnpRevenueDrill(revenue.current,cfg.key,"current")}</strong>
           <small>${fmt(c.sales||0)} продаж</small>
         </div>
         <div>
           <span>${usesDealAmountRevenue()?"Сумма продаж / хвост":"Чистая выручка / хвост"}</span>
-          <strong>${optionalMoney(revenue.previous)}</strong>
+          <strong>${rnpRevenueDrill(revenue.previous,cfg.key,"previous")}</strong>
           <small>${fmt(p.sales||0)} продаж</small>
         </div>
         <div class="rnp-total">
           <span>${usesDealAmountRevenue()?"Итого сумма продаж":"Итого чистая выручка"}</span>
-          <strong>${optionalMoney(revenue.total)}</strong>
+          <strong>${Math.abs(adjustment)>0.009?optionalMoney(displayTotal):rnpRevenueDrill(revenue.total,cfg.key)}</strong>
           <small>${fmt(t.sales||0)} продаж</small>
+          ${Math.abs(adjustment)>0.009?`<small>Временно распределено: ${money(adjustment)} · по сделкам: ${rnpRevenueDrill(revenue.total,cfg.key)}</small>`:""}
         </div>
         <div>
           <span>${usesDealAmountRevenue()?"План суммы продаж":"План чистой выручки"}</span>
@@ -1178,14 +1197,12 @@ function salesCleanRevenueReconciliation(){
   if(usesDealAmountRevenue())return "";
   const finance=state?.clean_revenue||{};
   if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return "";
+  if(finance.value===null||finance.value===undefined||!Number.isFinite(Number(finance.value)))return "";
   const linked=finance.deal_revenue_rows.reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
   const classified=RNP_GROUPS.reduce((sum,cfg)=>sum+Number(rnpCleanRevenue({group:cfg.key}).total||0),0);
   const unclassified=linked-classified;
   const ledgerGap=Number(finance.value||0)-linked;
-  const notes=[];
-  if(Math.abs(unclassified)>0.009)notes.push(`не отнесено к трём блокам ${money(unclassified)}`);
-  if(Math.abs(ledgerGap)>0.009)notes.push(`не связано со сделкой ${money(ledgerGap)}`);
-  return `<p class="sales-semantics-note"><strong>Сверка чистой выручки:</strong> по сделкам «Графика платежей» ${money(linked)}${notes.length?` · ${notes.join(" · ")}`:" · вся сумма распределена по трём блокам продаж"}.</p>`;
+  return `<section class="sales-revenue-reconciliation" aria-label="Сверка чистой выручки"><div><h3>Сверка чистой выручки</h3><p>Разница временно распределена поровну между тремя блоками; это условные суммы, не привязанные к сделкам. Ниже — данные до распределения.</p></div><div class="sales-revenue-reconciliation-grid"><div><span>По сделкам трёх блоков</span><strong>${money(classified)}</strong></div><div><span>Сделки вне трёх блоков</span><strong>${Math.abs(unclassified)>0.009?`<button type="button" class="table-drill-link" data-finance-drill="unclassified_group">${money(unclassified)}</button>`:money(unclassified)}</strong></div><div><span>Без разбивки по сделкам</span><strong>${money(ledgerGap)}</strong><small>Требуется сверка в «Графике платежей»</small></div><div><span>Итого чистая выручка</span><strong>${money(finance.value)}</strong></div></div></section>`;
 }
 
 function rnpManagerMatrix(){
@@ -2157,7 +2174,7 @@ function init(){
     if(e.target.closest('#saveDormant')){saveDormant();return}
     const add=e.target.closest('[data-team-add]');if(add){addTeam(add.dataset.teamAdd);return}
     const rem=e.target.closest('[data-team-remove]');if(rem){removeTeam(rem.dataset.role,rem.dataset.name);return}
-    const financeDrill=e.target.closest('[data-finance-drill]');if(financeDrill){e.preventDefault();openFinanceDrill(financeDrill.dataset.financeDrill,financeDrill.dataset.financeGroup||"",financeDrill.dataset.financeWeek||"");return}
+    const financeDrill=e.target.closest('[data-finance-drill]');if(financeDrill){e.preventDefault();e.stopPropagation();openFinanceDrill(financeDrill.dataset.financeDrill,financeDrill.dataset.financeGroup||"",financeDrill.dataset.financeWeek||"",financeDrill.dataset.financePeriod||"");return}
     const x=e.target.closest('[data-drill="1"]');if(x)openDrill(x)
   });
   document.body.addEventListener('input',e=>{if(e.target?.id==='dashboardChatQuestion'){dashboardChatDraft=e.target.value;persistDashboardChatState()}if(e.target.matches('[data-task-search]')){taskWorkspaceFilters.search=e.target.value;renderKeyTasks();requestAnimationFrame(()=>{const field=document.querySelector('[data-task-search]');field?.focus();field?.setSelectionRange(field.value.length,field.value.length)})}});

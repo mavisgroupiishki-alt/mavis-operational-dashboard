@@ -9,6 +9,69 @@ const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,sna
 const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
 const cleanRevenueMatch = source.match(/function rnpCleanRevenue\(filter=\{\}\)\{[\s\S]*?\n\}/);
 const managerTableMatch = source.match(/function salesOperationalManagerTable\(\)\{[\s\S]*?\n\}/);
+const reconciliationMatch = source.match(/function salesCleanRevenueReconciliation\(\)\{[\s\S]*?\n\}/);
+const financeDrillMatch = source.match(/function openFinanceDrill\(kind,group="",week="",period=""\)\{[\s\S]*?\n\}/);
+const temporaryAllocationMatch = source.match(/function rnpTemporaryAllocation\(group\)\{[\s\S]*?\n\}/);
+
+test("temporary allocation reconciles the displayed totals to the cent without modifying deal amounts", () => {
+  assert.ok(temporaryAllocationMatch);
+  const amounts = {cold:3260, incoming:8294, repeat:43965};
+  const context = {state:{clean_revenue:{status:"online",value:63929.88,deal_revenue_available:true,deal_revenue_rows:[]}},
+    RNP_GROUPS:[{key:"cold"},{key:"incoming"},{key:"repeat"}], usesDealAmountRevenue:()=>false,
+    rnpCleanRevenue:({group})=>({total:amounts[group]})};
+  vm.createContext(context);
+  vm.runInContext(`${temporaryAllocationMatch[0]};globalThis.allocate=rnpTemporaryAllocation;`, context);
+  const groups = ["cold", "incoming", "repeat"];
+  assert.deepEqual(groups.map(group=>context.allocate(group)), [2803.63, 2803.63, 2803.62]);
+  assert.equal(groups.reduce((sum,group)=>sum+Math.round((amounts[group]+context.allocate(group))*100),0), 6392988);
+  context.state.clean_revenue.value = 55518.99;
+  assert.deepEqual(groups.map(group=>context.allocate(group)), [-0.01, 0, 0]);
+  context.state.clean_revenue.status = "unavailable";
+  assert.equal(context.allocate("cold"),0);
+});
+
+test("sales block revenue opens exactly its linked deal rows for the selected period", () => {
+  assert.ok(financeDrillMatch);
+  const elements = new Map();
+  const context = {
+    state: {clean_revenue: {deal_revenue_rows: [
+      {deal_id:"1",deal_title:"Текущая",group:"cold",period_type:"current",clean_revenue:3260},
+      {deal_id:"2",deal_title:"Хвост",group:"cold",period_type:"previous",clean_revenue:400},
+      {deal_id:"3",deal_title:"Другой блок",group:"other",period_type:"current",clean_revenue:50},
+    ], payment_revenue_rows: []}},
+    RNP_GROUPS: [{key:"cold"},{key:"other"}], rnpWeekRanges: () => [],
+    $: selector => {if (!elements.has(selector)) elements.set(selector, {showModal(){}}); return elements.get(selector);},
+    renderDrillRows: () => {}, drillMeta: null, drillRows: [], drillOffset: 0, drillTotal: 0,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${financeDrillMatch[0]};globalThis.openFinanceDrill=openFinanceDrill;`, context);
+  context.openFinanceDrill("clean", "cold", "", "current");
+  assert.deepEqual(Array.from(context.drillRows, row => row.deal_id), ["1"]);
+  context.openFinanceDrill("clean", "cold", "", "previous");
+  assert.deepEqual(Array.from(context.drillRows, row => row.deal_id), ["2"]);
+  context.openFinanceDrill("clean", "cold");
+  assert.deepEqual(Array.from(context.drillRows, row => row.deal_id), ["1", "2"]);
+  assert.equal(context.drillRows.reduce((sum, row) => sum + row.amount, 0), 3660);
+});
+
+test("revenue reconciliation shows all amounts without attributing unmatched money to a sales group", () => {
+  assert.ok(reconciliationMatch);
+  const context = {
+    state: { clean_revenue: { status: "online", value: 63930, deal_revenue_available: true,
+      deal_revenue_rows: [{ clean_revenue: 3260 }, { clean_revenue: 8294 }, { clean_revenue: 43965 }, { clean_revenue: 400 }] } },
+    RNP_GROUPS: [{key:"cold"}, {key:"incoming"}, {key:"repeat"}],
+    rnpCleanRevenue: ({group}) => ({total: {cold:3260, incoming:8294, repeat:43965}[group]}),
+    usesDealAmountRevenue: () => false,
+    money: value => `${value} BYN`,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${reconciliationMatch[0]};globalThis.renderReconciliation=salesCleanRevenueReconciliation;`, context);
+  const html = context.renderReconciliation();
+  for (const amount of ["55519 BYN", "400 BYN", "8011 BYN", "63930 BYN"]) assert.ok(html.includes(amount));
+  assert.ok(html.includes('data-finance-drill="unclassified_group"'));
+  context.state.clean_revenue.value = null;
+  assert.equal(context.renderReconciliation(), "");
+});
 
 test("loaded sales details are refreshed when the snapshot revision changes", () => {
   assert.ok(freshnessMatch, "salesDetailsNeedRefresh must exist");
@@ -30,7 +93,7 @@ test("total conversion with tail is calculated from the two visible cohorts", ()
 
 test("clean revenue is summed from the linked payment-schedule deals, not allocated by CRM amount", () => {
   assert.ok(cleanRevenueMatch, "rnpCleanRevenue must exist");
-  const context = { state: { clean_revenue: {
+  const context = { usesDealAmountRevenue: () => false, state: { clean_revenue: {
     status: "online",
     deal_revenue_available: true,
     deal_revenue_rows: [
@@ -50,6 +113,7 @@ test("clean revenue is summed from the linked payment-schedule deals, not alloca
 test("manager table renders when there are sales outside the selected team", () => {
   assert.ok(managerTableMatch, "salesOperationalManagerTable must exist");
   const context = {
+    usesDealAmountRevenue: () => false,
     state: { sales: { overall: { total: { metrics: { deals: 3, sales: 2, sales_amount: 300 } } } } },
     managers: () => [{ name: "Ирина", total: { metrics: { deals: 1, sales: 1, sales_amount: 100 } } }],
     managerCleanRevenue: () => 80,
