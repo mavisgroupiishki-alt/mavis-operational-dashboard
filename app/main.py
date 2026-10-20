@@ -704,6 +704,8 @@ async def load_clean_revenue(month: str):
             "status": "online",
             "value": round(value, 2),
             "contractor_amount": round(contractor_amount, 2),
+            "contractor_bank_paid": None,
+            "contractor_bank_transactions": [],
             # The confirmed incoming amount is deliberately derived from the
             # same ledger values shown to the user: clean revenue already has
             # the contractor reserve deducted, so adding it back reconciles
@@ -721,6 +723,28 @@ async def load_clean_revenue(month: str):
             "payment_revenue_available": isinstance(payload.get("paymentRevenueRows"), list),
             "payment_revenue_rows": payment_revenue_rows,
         }
+        try:
+            bank_paid = float(payload["contractorBankPaid"])
+            if math.isfinite(bank_paid) and bank_paid >= 0:
+                result["contractor_bank_paid"] = round(bank_paid, 2)
+        except (KeyError, TypeError, ValueError):
+            pass
+        if isinstance(payload.get("contractorBankTransactions"), list):
+            for tx in payload["contractorBankTransactions"]:
+                if not isinstance(tx, dict):
+                    continue
+                try:
+                    amount = float(tx.get("amount"))
+                    if not math.isfinite(amount) or amount <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                result["contractor_bank_transactions"].append({
+                    "date": str(tx.get("date") or ""),
+                    "counterparty": str(tx.get("counterparty") or ""),
+                    "amount": round(amount, 2),
+                    "details": str(tx.get("details") or ""),
+                })
         clean_revenue_cache[month] = result
         clean_revenue_cache_time[month] = time.monotonic()
         return result

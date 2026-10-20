@@ -1,11 +1,43 @@
 import asyncio
+from dataclasses import replace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app import main
 
 
 class CleanRevenuePresentationTests(unittest.TestCase):
+    def test_bank_contractor_payments_are_separate_from_deal_cost_and_receipts(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "cleanRevenue": 63930, "contractorAmount": 4400,
+            "contractorBankPaid": 8200, "contractorBankTransactions": [{"date": "2026-10-02", "counterparty": "ОСОС", "amount": 8200}]}
+        session = MagicMock()
+        session.get = AsyncMock(return_value=response)
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=session)
+        context.__aexit__ = AsyncMock(return_value=None)
+        with (patch.object(main, "settings", replace(main.settings, clean_revenue_url="https://example.test/finance", clean_revenue_token="test")),
+              patch.object(main.httpx, "AsyncClient", return_value=context),
+              patch.object(main, "clean_revenue_cache", {}),
+              patch.object(main, "enrich_clean_revenue_deal_rows", new=AsyncMock(return_value=[]))):
+            result = asyncio.run(main.load_clean_revenue("2026-10"))
+        self.assertEqual(result["contractor_bank_paid"], 8200)
+        self.assertEqual(result["contractor_amount"], 4400)
+        self.assertEqual(result["incoming_amount"], 68330)
+        self.assertEqual(result["contractor_bank_transactions"][0]["counterparty"], "ОСОС")
+
+    def test_missing_bank_data_is_not_displayed_as_zero(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"ok": True, "cleanRevenue": 100, "contractorAmount": 10}
+        session = MagicMock(); session.get = AsyncMock(return_value=response)
+        context = MagicMock(); context.__aenter__ = AsyncMock(return_value=session); context.__aexit__ = AsyncMock(return_value=None)
+        with (patch.object(main, "settings", replace(main.settings, clean_revenue_url="https://example.test/finance", clean_revenue_token="test")),
+              patch.object(main.httpx, "AsyncClient", return_value=context),
+              patch.object(main, "clean_revenue_cache", {}),
+              patch.object(main, "enrich_clean_revenue_deal_rows", new=AsyncMock(return_value=[]))):
+            result = asyncio.run(main.load_clean_revenue("2026-10"))
+        self.assertIsNone(result["contractor_bank_paid"])
+
     def test_finance_overdue_rows_are_normalized_and_linked_to_bitrix_deals(self):
         payload = {"overdueScheduleRows": [
             {"scheduleId": "11", "dealId": "44", "dealTitle": "Просрочено", "stageName": "Договор", "date": "2026-09-17", "planned": "1200", "bankConfirmed": 100, "manualConfirmed": "50", "remaining": "1050"},
