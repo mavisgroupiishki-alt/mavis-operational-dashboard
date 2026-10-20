@@ -116,6 +116,13 @@ class PwaAssetTests(unittest.TestCase):
         self.assertIn('function openNpsDetails', script)
         self.assertIn('id="npsDetailsDialog"', html)
 
+    def test_current_month_overall_nps_opens_all_expert_details(self):
+        script = (Path(__file__).resolve().parents[1] / 'app' / 'static' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('data-open-overall-nps="current_month"', script)
+        self.assertIn('Object.entries(period.experts||{}).flatMap', script)
+        self.assertIn('expert_name:name', script)
+        self.assertIn("openNpsDetails('',overallNps.dataset.openOverallNps", script)
+
     def test_former_experts_can_be_added_from_bitrix(self):
         html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text()
         script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text()

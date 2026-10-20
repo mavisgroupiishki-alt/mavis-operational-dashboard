@@ -206,7 +206,9 @@ function manualNpsCard(value,count=0){
   const monthStart=month.month_start||month.period_start,monthEnd=month.month_end||month.period_end;
   const monthLabel=monthStart&&monthEnd?`${new Date(monthStart+'T00:00:00').toLocaleDateString('ru-RU',{month:'long'})} ${new Date(monthStart+'T00:00:00').getFullYear()}`:'предыдущий месяц';
   const monthNote=month.status==='unavailable'?'Источник временно недоступен':month.status==='updating'?'Загружаем задачи из Bitrix':monthCount?`${fmt(monthCount)} оценок · ${new Date(monthStart+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}–${new Date(monthEnd+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}`:'Оценок пока нет';
-  return `<div class="card nps-manual-card"><div class="nps-period-values"><section><div class="kpi-label">NPS за прошлую неделю</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${note}</span></div></section><section class="nps-month-total"><div class="kpi-label">Общий NPS за ${esc(monthLabel)}</div><div class="kpi-value">${npsText(monthValue)}</div><div class="kpi-meta"><span>${monthNote}</span></div></section></div><div class="kpi-note">По дате создания завершённых задач</div></div>`;
+  const current=state?.automatic_nps_current_month||{},currentCount=Number(current?.overall?.count||0),currentLabel=automaticNpsMonthLabel(current);
+  const currentNote=current.status==='unavailable'?'Источник временно недоступен':current.status==='updating'?'Загружаем задачи из Bitrix':currentCount?`${fmt(currentCount)} оценок · Нажмите, чтобы посмотреть`:'Оценок пока нет';
+  return `<div class="card nps-manual-card"><div class="nps-period-values"><section><div class="kpi-label">NPS за прошлую неделю</div><div class="kpi-value">${shown}</div><div class="kpi-meta"><span>${note}</span></div></section><section class="nps-month-total"><div class="kpi-label">Общий NPS за ${esc(monthLabel)}</div><div class="kpi-value">${npsText(monthValue)}</div><div class="kpi-meta"><span>${monthNote}</span></div></section><button type="button" class="nps-month-total nps-overall-trigger" data-open-overall-nps="current_month" ${currentCount?'':'disabled'}><span class="kpi-label">Общий NPS за ${esc(currentLabel)}</span><span class="kpi-value">${npsText(current?.overall?.value)}</span><span class="kpi-meta">${esc(currentNote)}</span></button></div><div class="kpi-note">По дате создания завершённых задач</div></div>`;
 }
 function progressPct(scope,metric,fact,ct="overall",ck=""){const p=getPlan(scope,metric,ct,ck);return p?Math.max(0,Math.min(100,Number(fact||0)/p*100)):0}
 function deptHero({kind,title,eyebrow,value,valueType='money',scope,metric,extra={},planMetric=metric,substats=[]}){
@@ -1933,14 +1935,14 @@ function openNpsDialog(expert=""){
 }
 function openNpsDetails(expert="",periodKey="month"){
   const period=(periodKey==="current_month"?state?.automatic_nps_current_month:state?.automatic_nps_month)||{};
-  const details=period?.experts?.[expert]||{};
-  const tasks=[...(details.tasks||[])].sort((a,b)=>String(b.created_date||'').localeCompare(String(a.created_date||'')));
-  $("#npsDetailsTitle").textContent=`NPS · ${expert}`;
+  const details=expert?(period?.experts?.[expert]||{}):(period.overall||{});
+  const tasks=(expert?[...(details.tasks||[])]:Object.entries(period.experts||{}).flatMap(([name,meta])=>(meta.tasks||[]).map(task=>({...task,expert_name:name})))).sort((a,b)=>String(b.created_date||'').localeCompare(String(a.created_date||'')));
+  $("#npsDetailsTitle").textContent=expert?`NPS · ${expert}`:'Общий NPS · все эксперты';
   $("#npsDetailsSubtitle").textContent=`Общий NPS за ${automaticNpsMonthLabel(period)} · ${fmt(details.count||0)} оценок · по дате создания завершённых задач`;
   $("#npsDetailsBody").innerHTML=tasks.map(task=>{
     const deal=task.deal||{},company=deal.client||(task.deal_id?`Сделка #${task.deal_id}`:'Компания не указана');
     const comment=String(task.comment||'').trim();
-    return `<article class="nps-task-detail"><header><strong>Оценка ${fmt(task.score)}</strong><time>Создано ${esc(task.created_date||'—')}</time></header><div class="nps-task-company">${esc(company)}${deal.stage?` · ${esc(deal.stage)}`:''}</div><div class="nps-task-title">${esc(task.title||'Задача NPS')}</div><div class="nps-task-comment"><strong>Комментарий:</strong> ${comment?esc(comment).replace(/\n/g,'<br>'):'не указан в задаче NPS'}</div><div class="nps-task-links">${task.deal_url?`<a href="${attr(task.deal_url)}" target="_blank" rel="noopener noreferrer">Открыть сделку</a>`:''}${task.task_url?`<a href="${attr(task.task_url)}" target="_blank" rel="noopener noreferrer">Открыть задачу NPS</a>`:''}</div></article>`;
+    return `<article class="nps-task-detail"><header><strong>Оценка ${fmt(task.score)}</strong><time>Создано ${esc(task.created_date||'—')}</time></header>${task.expert_name?`<div class="nps-task-company">Эксперт: ${esc(task.expert_name)}</div>`:''}<div class="nps-task-company">${esc(company)}${deal.stage?` · ${esc(deal.stage)}`:''}</div><div class="nps-task-title">${esc(task.title||'Задача NPS')}</div><div class="nps-task-comment"><strong>Комментарий:</strong> ${comment?esc(comment).replace(/\n/g,'<br>'):'не указан в задаче NPS'}</div><div class="nps-task-links">${task.deal_url?`<a href="${attr(task.deal_url)}" target="_blank" rel="noopener noreferrer">Открыть сделку</a>`:''}${task.task_url?`<a href="${attr(task.task_url)}" target="_blank" rel="noopener noreferrer">Открыть задачу NPS</a>`:''}</div></article>`;
   }).join('')||'<div class="empty">Оценок за этот месяц пока нет.</div>';
   $("#npsDetailsDialog").showModal();
 }
@@ -2135,6 +2137,7 @@ function init(){
     const np=e.target.closest('[data-nps-edit]');if(np){e.stopPropagation();openNpsDialog(np.dataset.expert||'');return}
     const openNps=e.target.closest('[data-open-nps]');if(openNps){e.stopPropagation();openNpsDialog(openNps.dataset.expert||'');return}
     const npsDetails=e.target.closest('[data-open-nps-details]');if(npsDetails){e.stopPropagation();openNpsDetails(npsDetails.dataset.openNpsDetails||'',npsDetails.dataset.npsPeriod||'month');return}
+    const overallNps=e.target.closest('[data-open-overall-nps]');if(overallNps){e.stopPropagation();openNpsDetails('',overallNps.dataset.openOverallNps||'current_month');return}
     const openTeam=e.target.closest('[data-open-team]');if(openTeam){e.stopPropagation();openTeamDialog(openTeam.dataset.openTeam||'expert',openTeam.dataset.teamFormer==='1');return}
     const manageTeam=e.target.closest('[data-manage-team]');if(manageTeam){e.stopPropagation();openTeamDialog(manageTeam.dataset.manageTeam||'expert',false,true);return}
     const teamVisibility=e.target.closest('[data-team-visibility]');if(teamVisibility){e.stopPropagation();void setTeamVisibility(teamVisibility.dataset.role,teamVisibility.dataset.name,teamVisibility.dataset.hidden==='1');return}
