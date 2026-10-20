@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../app/static/styles.css", import.meta.url), "utf8");
 const match = source.match(/function preserveSalesDetails\(previous,nextSales,key\)\{[\s\S]*?\n\}(?=\nfunction salesDetailsNeedRefresh)/);
 const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,snapshotUpdatedAt\)\{[\s\S]*?\n\}/);
 const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
@@ -12,6 +13,13 @@ const managerTableMatch = source.match(/function salesOperationalManagerTable\(\
 const reconciliationMatch = source.match(/function salesCleanRevenueReconciliation\(\)\{[\s\S]*?\n\}/);
 const financeDrillMatch = source.match(/function openFinanceDrill\(kind,group="",week="",period=""\)\{[\s\S]*?\n\}/);
 const temporaryAllocationMatch = source.match(/function rnpTemporaryAllocation\(group\)\{[\s\S]*?\n\}/);
+
+test("deal drilldowns look like the surrounding amounts and retain keyboard focus", () => {
+  assert.match(styles, /\.table-drill-link\s*\{[^}]*background\s*:\s*(?:none|transparent)[^}]*\}/);
+  assert.match(styles, /\.table-drill-link\s*\{[^}]*border\s*:\s*(?:0|none)[^}]*\}/);
+  assert.match(styles, /\.table-drill-link:focus-visible\s*\{/);
+  assert.match(source, /class="table-drill-link" data-finance-drill="clean"/);
+});
 
 test("temporary allocation reconciles the displayed totals to the cent without modifying deal amounts", () => {
   assert.ok(temporaryAllocationMatch);

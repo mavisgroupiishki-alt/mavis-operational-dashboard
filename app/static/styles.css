@@ -543,6 +543,9 @@ td{padding:11px 9px}
 .rnp-result-strip>div{background:#fff;padding:10px 12px;display:flex;flex-direction:column}
 .rnp-result-strip span{font-size:11px;color:#708393}
 .rnp-result-strip strong{font-size:17px;color:#172637}
+.table-drill-link{appearance:none;background:transparent;border:0;padding:0;color:inherit;font:inherit;text-align:inherit;cursor:pointer}
+.table-drill-link:hover{text-decoration:underline;text-underline-offset:3px}
+.table-drill-link:focus-visible{outline:2px solid #168bc3;outline-offset:3px;border-radius:2px}
 .rnp-result-strip small{font-size:11px;color:#7d8d9a}
 .rnp-result-strip .rnp-total{background:var(--rnp-soft)}
 .rnp-month-table{padding:16px 18px}
