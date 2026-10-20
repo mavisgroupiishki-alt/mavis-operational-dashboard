@@ -1571,6 +1571,14 @@ async def operational_snapshot(snap, details, month, compact=False):
             )
         except (KeyError, TypeError, ValueError):
             pass
+        # Persisted snapshots may still contain the previous deal-based net.
+        # Recompute from their gross and actual bank payments before serving.
+        try:
+            gross = float(finance["incoming_amount"])
+            bank_paid = float(finance["contractor_bank_paid"])
+            finance["value"] = round(gross - bank_paid, 2) if math.isfinite(gross) and math.isfinite(bank_paid) and bank_paid >= 0 else None
+        except (KeyError, TypeError, ValueError):
+            finance["value"] = None
     x["clean_revenue"] = finance
     x["automatic_nps"] = cached_automatic_nps()
     x["automatic_nps_month"] = cached_automatic_nps(period="month")
