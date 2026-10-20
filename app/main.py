@@ -465,7 +465,7 @@ def cached_automatic_nps(as_of=None, period="week"):
 
 def schedule_automatic_nps_refresh(as_of=None):
     as_of = as_of or datetime.now(ZoneInfo(settings.timezone))
-    periods = ("week", "month")
+    periods = ("week", "month", "current_month")
     keys = {period: _automatic_nps_key(as_of, period) for period in periods}
     task_key = "|".join(keys.values())
     task = automatic_nps_tasks.get(task_key)
@@ -1529,6 +1529,7 @@ async def operational_snapshot(snap, details, month, compact=False):
         }
         x["automatic_nps"] = cached_automatic_nps()
         x["automatic_nps_month"] = cached_automatic_nps(period="month")
+        x["automatic_nps_current_month"] = cached_automatic_nps(period="current_month")
         schedule_automatic_nps_refresh()
         return x
     # Finance reconciliation may take much longer than the CRM snapshot.
@@ -1550,6 +1551,7 @@ async def operational_snapshot(snap, details, month, compact=False):
     x["clean_revenue"] = finance
     x["automatic_nps"] = cached_automatic_nps()
     x["automatic_nps_month"] = cached_automatic_nps(period="month")
+    x["automatic_nps_current_month"] = cached_automatic_nps(period="current_month")
     schedule_automatic_nps_refresh()
     return x
 

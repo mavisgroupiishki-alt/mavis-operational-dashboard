@@ -6,6 +6,20 @@ from app.nps import aggregate_automatic_nps, previous_calendar_month, previous_c
 AS_OF = datetime.fromisoformat("2026-09-21T09:00:00+03:00")
 
 
+def test_current_month_nps_separates_october_from_september_and_keeps_details():
+    october = datetime.fromisoformat("2026-10-20T09:00:00+03:00")
+    rows = [
+        task(1, "2026-09-30T23:59:59+03:00", "2026-10-02T10:00:00+03:00", 10),
+        task(2, "2026-10-01T00:00:00+03:00", "2026-10-02T10:00:00+03:00", 8, comment="Спасибо"),
+        task(3, "2026-11-01T00:00:00+03:00", "2026-11-02T10:00:00+03:00", 1),
+    ]
+    result = aggregate_automatic_nps(rows, october, period="current_month")
+    assert result["month_start"] == "2026-10-01"
+    assert result["month_end"] == "2026-10-31"
+    assert result["overall"] == {"value": 8.0, "count": 1}
+    assert result["experts"]["Ирина Богомольцева"]["tasks"][0]["comment"] == "Спасибо"
+
+
 def task(identifier, created, closed, score, expert="Ирина Богомольцева", status="5", comment=""):
     return {
         "ID": str(identifier),

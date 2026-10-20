@@ -62,6 +62,12 @@ def automatic_nps_period(as_of=None, timezone_name="Europe/Minsk", period="week"
         return previous_calendar_week(as_of, timezone_name)
     if period == "month":
         return previous_calendar_month(as_of, timezone_name)
+    if period == "current_month":
+        zone = ZoneInfo(timezone_name)
+        now = _as_local(as_of, timezone_name) if as_of else datetime.now(zone)
+        start = datetime.combine(now.date().replace(day=1), time.min, tzinfo=zone)
+        end = datetime.combine((start.date().replace(day=28) + timedelta(days=4)).replace(day=1), time.min, tzinfo=zone)
+        return start, end
     raise ValueError(f"Unsupported automatic NPS period: {period}")
 
 

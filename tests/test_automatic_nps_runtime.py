@@ -32,7 +32,7 @@ def test_refresh_calculates_week_and_previous_month_from_one_task_load():
             args = fetch.await_args.args
             assert args[0] == 114
             assert args[1].date().isoformat() == "2026-08-01"
-            assert args[2].date().isoformat() == "2026-09-21"
+            assert args[2].date().isoformat() == "2026-10-01"
 
     asyncio.run(run())
     cached = main.cached_automatic_nps(AS_OF)
@@ -43,3 +43,20 @@ def test_refresh_calculates_week_and_previous_month_from_one_task_load():
     assert month["month_start"] == "2026-08-01"
     assert month["month_end"] == "2026-08-31"
     assert month["overall"] == {"value": None, "count": 0}
+    current = main.cached_automatic_nps(AS_OF, period="current_month")
+    assert current["month_start"] == "2026-09-01"
+    assert current["month_end"] == "2026-09-30"
+    assert current["overall"] == {"value": 9.0, "count": 1}
+    assert current["experts"]["Ирина Богомольцева"]["tasks"][0]["task_url"].endswith("/42/")
+
+
+def test_october_and_september_nps_use_separate_creation_date_windows():
+    from app.nps import aggregate_automatic_nps
+
+    october = {**_task(), "ID": "43", "CREATED_DATE": "2026-10-05T10:00:00+03:00", "UF_AUTO_213716165780": "7"}
+    as_of = datetime.fromisoformat("2026-10-20T09:00:00+03:00")
+    previous = aggregate_automatic_nps([_task(), october], as_of, period="month")
+    current = aggregate_automatic_nps([_task(), october], as_of, period="current_month")
+    assert previous["overall"] == {"value": 9.0, "count": 1}
+    assert current["overall"] == {"value": 7.0, "count": 1}
+    assert current["experts"]["Ирина Богомольцева"]["tasks"][0]["id"] == "43"

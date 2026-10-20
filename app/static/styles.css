@@ -181,6 +181,7 @@ tr:hover td{background:#f5f9fc}
 .expert-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}
 .expert-card{background:linear-gradient(160deg,#fff,#f8fbfd);border:1px solid var(--line);border-top:4px solid #7f69d8;border-radius:19px;padding:18px;box-shadow:var(--shadow)}
 .expert-card-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.expert-nps-buttons{display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:0}
 .expert-name{font-size:12px;font-weight:700;letter-spacing:.06em;color:#6b7d8d;text-transform:uppercase}
 .expert-result{font-size:31px;font-weight:650;letter-spacing:-.04em;margin-top:7px}
 .nps-button{background:#f1edff;border:1px solid #ddd4fb;color:#634fc2;font-size:11px;white-space:nowrap}.nps-details-trigger{display:inline-flex;align-items:center;gap:7px;text-align:left}.nps-details-trigger:not(:disabled):hover{border-color:#a798e9;background:#e9e3ff}.nps-details-trigger:disabled{cursor:default;opacity:.72}.nps-details-trigger span{font-size:17px;line-height:.7}
