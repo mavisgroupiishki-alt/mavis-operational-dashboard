@@ -1198,18 +1198,6 @@ function rnpBlock(cfg){
   </details>`;
 }
 
-function salesCleanRevenueReconciliation(){
-  if(usesDealAmountRevenue())return "";
-  const finance=state?.clean_revenue||{};
-  if(!["online","stale"].includes(finance.status)||finance.deal_revenue_available!==true||!Array.isArray(finance.deal_revenue_rows))return "";
-  if(finance.value===null||finance.value===undefined||!Number.isFinite(Number(finance.value)))return "";
-  const linked=finance.deal_revenue_rows.reduce((sum,row)=>sum+Number(row.clean_revenue||0),0);
-  const classified=RNP_GROUPS.reduce((sum,cfg)=>sum+Number(rnpCleanRevenue({group:cfg.key}).total||0),0);
-  const unclassified=linked-classified;
-  const ledgerGap=Number(finance.value||0)-linked;
-  return `<section class="sales-revenue-reconciliation" aria-label="Сверка чистой выручки"><div><h3>Сверка чистой выручки</h3><p>В сделках учитываются удержания по графику, в итогах — фактические выплаты банка. Разница временно распределена поровну между тремя блоками; это условные суммы, не привязанные к сделкам.</p></div><div class="sales-revenue-reconciliation-grid"><div><span>По сделкам трёх блоков</span><strong>${money(classified)}</strong></div><div><span>Сделки вне трёх блоков</span><strong>${Math.abs(unclassified)>0.009?`<button type="button" class="table-drill-link" data-finance-drill="unclassified_group">${money(unclassified)}</button>`:money(unclassified)}</strong></div><div><span>Разница методов и нераспределённые суммы</span><strong>${money(ledgerGap)}</strong></div><div><span>Итого чистая выручка</span><strong>${money(finance.value)}</strong></div></div></section>`;
-}
-
 function rnpManagerMatrix(){
   return managers().map(m=>{
     const groups=RNP_GROUPS.map(cfg=>({cfg,g:(m.groups||[]).find(x=>x.name===cfg.key)}));
@@ -1300,7 +1288,6 @@ function renderSales(){
     ${salesOverdueSchedule()}
     ${reactivationBlock()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>
-    ${salesCleanRevenueReconciliation()}
     <div class="sales-semantics-note"><strong>Логика воронки:</strong> «Созданные сделки» включают все сделки, созданные в месяце. «Продажи» и общая сумма поступлений — только стадии 14. Предоплата получена и 15. Продажа успешна. Отказы и слитые сделки в продажи не входят.</div>
 
     <section class="sales-operational-grid" aria-label="Оперативная работа отдела продаж">

@@ -10,7 +10,6 @@ const freshnessMatch = source.match(/function salesDetailsNeedRefresh\(sales,sna
 const totalConversionMatch = source.match(/function rnpTotalDealToSaleRate\(c,p,t\)\{[\s\S]*?\n\}/);
 const cleanRevenueMatch = source.match(/function rnpCleanRevenue\(filter=\{\}\)\{[\s\S]*?\n\}/);
 const managerTableMatch = source.match(/function salesOperationalManagerTable\(\)\{[\s\S]*?\n\}/);
-const reconciliationMatch = source.match(/function salesCleanRevenueReconciliation\(\)\{[\s\S]*?\n\}/);
 const financeDrillMatch = source.match(/function openFinanceDrill\(kind,group="",week="",period=""\)\{[\s\S]*?\n\}/);
 const temporaryAllocationMatch = source.match(/function rnpTemporaryAllocation\(group\)\{[\s\S]*?\n\}/);
 
@@ -62,23 +61,8 @@ test("sales block revenue opens exactly its linked deal rows for the selected pe
   assert.equal(context.drillRows.reduce((sum, row) => sum + row.amount, 0), 3660);
 });
 
-test("revenue reconciliation shows all amounts without attributing unmatched money to a sales group", () => {
-  assert.ok(reconciliationMatch);
-  const context = {
-    state: { clean_revenue: { status: "online", value: 63930, deal_revenue_available: true,
-      deal_revenue_rows: [{ clean_revenue: 3260 }, { clean_revenue: 8294 }, { clean_revenue: 43965 }, { clean_revenue: 400 }] } },
-    RNP_GROUPS: [{key:"cold"}, {key:"incoming"}, {key:"repeat"}],
-    rnpCleanRevenue: ({group}) => ({total: {cold:3260, incoming:8294, repeat:43965}[group]}),
-    usesDealAmountRevenue: () => false,
-    money: value => `${value} BYN`,
-  };
-  vm.createContext(context);
-  vm.runInContext(`${reconciliationMatch[0]};globalThis.renderReconciliation=salesCleanRevenueReconciliation;`, context);
-  const html = context.renderReconciliation();
-  for (const amount of ["55519 BYN", "400 BYN", "8011 BYN", "63930 BYN"]) assert.ok(html.includes(amount));
-  assert.ok(html.includes('data-finance-drill="unclassified_group"'));
-  context.state.clean_revenue.value = null;
-  assert.equal(context.renderReconciliation(), "");
+test("sales page does not display the revenue reconciliation block", () => {
+  assert.doesNotMatch(source, /salesCleanRevenueReconciliation|Сверка чистой выручки/);
 });
 
 test("loaded sales details are refreshed when the snapshot revision changes", () => {
