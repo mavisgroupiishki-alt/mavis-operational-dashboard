@@ -7,7 +7,7 @@ from app import main
 
 
 class CleanRevenuePresentationTests(unittest.TestCase):
-    def test_bank_contractor_payments_are_separate_from_deal_cost_and_receipts(self):
+    def test_net_revenue_subtracts_bank_contractor_payments_from_receipts(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {"ok": True, "cleanRevenue": 63930, "contractorAmount": 4400,
             "contractorBankPaid": 8200, "contractorBankTransactions": [{"date": "2026-10-02", "counterparty": "ОСОС", "amount": 8200}]}
@@ -24,6 +24,8 @@ class CleanRevenuePresentationTests(unittest.TestCase):
         self.assertEqual(result["contractor_bank_paid"], 8200)
         self.assertEqual(result["contractor_amount"], 4400)
         self.assertEqual(result["incoming_amount"], 68330)
+        self.assertEqual(result["value"], 60130)
+        self.assertEqual(result["deal_basis_value"], 63930)
         self.assertEqual(result["contractor_bank_transactions"][0]["counterparty"], "ОСОС")
 
     def test_missing_bank_data_is_not_displayed_as_zero(self):
@@ -37,6 +39,8 @@ class CleanRevenuePresentationTests(unittest.TestCase):
               patch.object(main, "enrich_clean_revenue_deal_rows", new=AsyncMock(return_value=[]))):
             result = asyncio.run(main.load_clean_revenue("2026-10"))
         self.assertIsNone(result["contractor_bank_paid"])
+        self.assertIsNone(result["value"])
+        self.assertEqual(result["incoming_amount"], 110)
 
     def test_finance_overdue_rows_are_normalized_and_linked_to_bitrix_deals(self):
         payload = {"overdueScheduleRows": [

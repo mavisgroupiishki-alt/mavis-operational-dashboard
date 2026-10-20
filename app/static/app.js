@@ -225,7 +225,7 @@ function financeIsAvailable(finance=state?.clean_revenue||{}){return ["online","
 function cleanRevenueCaption(){
   const finance=state?.clean_revenue||{};
   if(finance.status==="deal_amount")return "Сумма успешных сделок Bitrix (OPPORTUNITY)";
-  if(finance.status==="online")return "Чистая выручка из «Графика платежей»";
+  if(finance.status==="online")return finance.contractor_bank_paid==null?"Банковские выплаты временно недоступны":"Поступления минус выплаты подрядчикам по банку";
   if(finance.status==="stale")return "Последняя подтверждённая чистая выручка; источник обновляется";
   if(finance.status==="not_configured")return "Источник чистой выручки ещё не подключён";
   return "Чистая выручка временно недоступна";
@@ -254,7 +254,7 @@ function financialSalesMetrics(s){
 function incomingRevenueCaption(){
   const finance=state?.clean_revenue||{};
   if(finance.status==="deal_amount")return "Сумма успешных сделок Bitrix (OPPORTUNITY)";
-  if(finance.status==="online")return "Чистая выручка + подрядчики из «Графика платежей»";
+  if(finance.status==="online")return "Подтверждённые поступления из «Графика платежей»";
   if(finance.status==="stale")return "Последняя подтверждённая сумма: чистая выручка + подрядчики";
   return "Сумма CRM до восстановления финансового источника";
 }
@@ -1022,7 +1022,7 @@ function openFinanceDrill(kind,group="",week="",period=""){
   drillMeta={scope:"finance",metric:kind};drillRows=rows;drillOffset=rows.length;drillTotal=rows.length;
   $("#drillSearch").value="";
   $("#drillTitle").textContent=labels[kind]||"Финансовые строки";
-  $("#drillSubtitle").textContent=["Строки «Графика платежей», связанные со сделками",group,period==="current"?"Сделки периода":period==="previous"?"Сделки хвоста":"",range?`${Number(week)+1} неделя`:""].filter(Boolean).join(" · ");
+  $("#drillSubtitle").textContent=[kind==="clean"?"По сделкам учитываются удержания графика; выплаты банка показаны отдельно":"Строки «Графика платежей», связанные со сделками",group,period==="current"?"Сделки периода":period==="previous"?"Сделки хвоста":"",range?`${Number(week)+1} неделя`:""].filter(Boolean).join(" · ");
   $("#drillDialog").showModal();
   renderDrillRows();
 }
@@ -1207,7 +1207,7 @@ function salesCleanRevenueReconciliation(){
   const classified=RNP_GROUPS.reduce((sum,cfg)=>sum+Number(rnpCleanRevenue({group:cfg.key}).total||0),0);
   const unclassified=linked-classified;
   const ledgerGap=Number(finance.value||0)-linked;
-  return `<section class="sales-revenue-reconciliation" aria-label="Сверка чистой выручки"><div><h3>Сверка чистой выручки</h3><p>Разница временно распределена поровну между тремя блоками; это условные суммы, не привязанные к сделкам. Ниже — данные до распределения.</p></div><div class="sales-revenue-reconciliation-grid"><div><span>По сделкам трёх блоков</span><strong>${money(classified)}</strong></div><div><span>Сделки вне трёх блоков</span><strong>${Math.abs(unclassified)>0.009?`<button type="button" class="table-drill-link" data-finance-drill="unclassified_group">${money(unclassified)}</button>`:money(unclassified)}</strong></div><div><span>Без разбивки по сделкам</span><strong>${money(ledgerGap)}</strong><small>Требуется сверка в «Графике платежей»</small></div><div><span>Итого чистая выручка</span><strong>${money(finance.value)}</strong></div></div></section>`;
+  return `<section class="sales-revenue-reconciliation" aria-label="Сверка чистой выручки"><div><h3>Сверка чистой выручки</h3><p>В сделках учитываются удержания по графику, в итогах — фактические выплаты банка. Разница временно распределена поровну между тремя блоками; это условные суммы, не привязанные к сделкам.</p></div><div class="sales-revenue-reconciliation-grid"><div><span>По сделкам трёх блоков</span><strong>${money(classified)}</strong></div><div><span>Сделки вне трёх блоков</span><strong>${Math.abs(unclassified)>0.009?`<button type="button" class="table-drill-link" data-finance-drill="unclassified_group">${money(unclassified)}</button>`:money(unclassified)}</strong></div><div><span>Разница методов и нераспределённые суммы</span><strong>${money(ledgerGap)}</strong></div><div><span>Итого чистая выручка</span><strong>${money(finance.value)}</strong></div></div></section>`;
 }
 
 function rnpManagerMatrix(){
@@ -1296,7 +1296,7 @@ function renderSales(){
       ${salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)}
     </div>
 
-    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> ${legacy?"июль и август 2026 считаются по сумме успешных сделок Bitrix (OPPORTUNITY): контура «Чистой выручки» тогда ещё не было.":"поступления и чистая выручка — по графику платежей; подрядчики — фактические банковские выплаты за месяц. Выплаты могут отличаться от удержаний по сделкам."}</div>
+    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> ${legacy?"июль и август 2026 считаются по сумме успешных сделок Bitrix (OPPORTUNITY): контура «Чистой выручки» тогда ещё не было.":"чистая выручка = подтверждённые поступления минус фактические банковские выплаты подрядчикам за месяц. Выплаты могут отличаться от удержаний по сделкам."}</div>
     ${salesOverdueSchedule()}
     ${reactivationBlock()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>

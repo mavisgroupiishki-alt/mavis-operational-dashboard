@@ -702,14 +702,12 @@ async def load_clean_revenue(month: str):
         payment_revenue_rows = await enrich_clean_revenue_deal_rows(month, clean_revenue_payment_rows(payload))
         result = {
             "status": "online",
-            "value": round(value, 2),
+            "value": None,
+            "deal_basis_value": round(value, 2),
             "contractor_amount": round(contractor_amount, 2),
             "contractor_bank_paid": None,
             "contractor_bank_transactions": [],
-            # The confirmed incoming amount is deliberately derived from the
-            # same ledger values shown to the user: clean revenue already has
-            # the contractor reserve deducted, so adding it back reconciles
-            # the two financial cards exactly.
+            # Recover gross receipts before the deal-based contractor reserve.
             "incoming_amount": round(value + contractor_amount, 2),
             "date_from": str(payload.get("dateFrom") or date_from),
             "date_to": str(payload.get("dateTo") or date_to),
@@ -727,6 +725,7 @@ async def load_clean_revenue(month: str):
             bank_paid = float(payload["contractorBankPaid"])
             if math.isfinite(bank_paid) and bank_paid >= 0:
                 result["contractor_bank_paid"] = round(bank_paid, 2)
+                result["value"] = round(result["incoming_amount"] - result["contractor_bank_paid"], 2)
         except (KeyError, TypeError, ValueError):
             pass
         if isinstance(payload.get("contractorBankTransactions"), list):
