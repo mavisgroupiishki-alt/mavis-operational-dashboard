@@ -7,7 +7,7 @@ from app import main
 
 
 class CleanRevenuePresentationTests(unittest.TestCase):
-    def test_net_revenue_subtracts_bank_contractor_payments_from_receipts(self):
+    def test_net_revenue_uses_schedule_and_shows_bank_payments_separately(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {"ok": True, "cleanRevenue": 63930, "contractorAmount": 4400,
             "contractorBankPaid": 8200, "contractorBankTransactions": [{"date": "2026-10-02", "counterparty": "ОСОС", "amount": 8200}]}
@@ -24,7 +24,7 @@ class CleanRevenuePresentationTests(unittest.TestCase):
         self.assertEqual(result["contractor_bank_paid"], 8200)
         self.assertEqual(result["contractor_amount"], 4400)
         self.assertEqual(result["incoming_amount"], 68330)
-        self.assertEqual(result["value"], 60130)
+        self.assertEqual(result["value"], 63930)
         self.assertEqual(result["deal_basis_value"], 63930)
         self.assertEqual(result["contractor_bank_transactions"][0]["counterparty"], "ОСОС")
 
@@ -39,7 +39,7 @@ class CleanRevenuePresentationTests(unittest.TestCase):
               patch.object(main, "enrich_clean_revenue_deal_rows", new=AsyncMock(return_value=[]))):
             result = asyncio.run(main.load_clean_revenue("2026-10"))
         self.assertIsNone(result["contractor_bank_paid"])
-        self.assertIsNone(result["value"])
+        self.assertEqual(result["value"], 100)
         self.assertEqual(result["incoming_amount"], 110)
 
     def test_finance_overdue_rows_are_normalized_and_linked_to_bitrix_deals(self):
@@ -127,7 +127,16 @@ class CleanRevenuePresentationTests(unittest.TestCase):
         ):
             result = asyncio.run(main.operational_snapshot({}, {}, "2026-09"))
 
-        self.assertEqual(result["clean_revenue"]["value"], 32925.0)
+        self.assertEqual(result["clean_revenue"]["value"], 33925.0)
+
+    def test_old_bank_based_snapshot_is_recalculated_using_schedule(self):
+        finance = {"status": "stale", "value": 32925.0, "contractor_amount": 8000.0,
+                   "incoming_amount": 41925.0, "contractor_bank_paid": 9000.0}
+        with (patch.object(main, "_apply_runtime", return_value={"sales": {"overall": {"total": {"metrics": {}}}}}),
+              patch.object(main, "cached_clean_revenue", return_value=finance),
+              patch.object(main, "schedule_clean_revenue_refresh")):
+            result = asyncio.run(main.operational_snapshot({}, {}, "2026-09"))
+        self.assertEqual(result["clean_revenue"]["value"], 33925.0)
 
     def test_failed_finance_refresh_uses_cooldown_before_retrying(self):
         async def exercise():

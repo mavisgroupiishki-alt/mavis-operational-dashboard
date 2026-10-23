@@ -225,7 +225,7 @@ function financeIsAvailable(finance=state?.clean_revenue||{}){return ["online","
 function cleanRevenueCaption(){
   const finance=state?.clean_revenue||{};
   if(finance.status==="deal_amount")return "Сумма успешных сделок Bitrix (OPPORTUNITY)";
-  if(finance.status==="online")return finance.contractor_bank_paid==null?"Банковские выплаты временно недоступны":"Поступления минус выплаты подрядчикам по банку";
+  if(finance.status==="online")return "Поступления минус подрядчики по графику платежей";
   if(finance.status==="stale")return "Последняя подтверждённая чистая выручка; источник обновляется";
   if(finance.status==="not_configured")return "Источник чистой выручки ещё не подключён";
   return "Чистая выручка временно недоступна";
@@ -261,8 +261,8 @@ function incomingRevenueCaption(){
 function contractorCaption(){
   const finance=state?.clean_revenue||{};
   if(finance.status==="deal_amount")return "В историческом периоде подрядчики не выделялись";
-  if(finance.status==="online")return finance.contractor_bank_paid==null?"Банковские данные пока недоступны":"Фактические выплаты по банку";
-  if(finance.status==="stale")return "Последние доступные выплаты по банку";
+  if(finance.status==="online")return "Удержания подрядчиков по графику платежей";
+  if(finance.status==="stale")return "Последние доступные удержания по графику";
   return cleanRevenueCaption();
 }
 function salesSummaryMetric(title,value,type,plan,note="",showPlan=true,financeDrill=""){
@@ -996,7 +996,7 @@ function rnpCleanRevenueWeekTable(cfg){
 }
 function openFinanceDrill(kind,group="",week="",period=""){
   const finance=state?.clean_revenue||{};
-  if(kind==="contractor"){
+  if(kind==="contractor_bank"){
     const rows=(finance.contractor_bank_transactions||[]).map(row=>({title:row.counterparty||"Подрядчик",group:row.counterparty||"Подрядчик",source:"Банковские выплаты",date:row.date,amount:row.amount,stage:row.details||"Оплата подрядчику"}));
     drillMeta={scope:"finance",metric:kind};drillRows=rows;drillOffset=rows.length;drillTotal=rows.length;
     $("#drillSearch").value="";$("#drillTitle").textContent="Выплаты подрядчикам по банку";$("#drillSubtitle").textContent="Банковские списания за выбранный месяц";$("#drillDialog").showModal();renderDrillRows();return;
@@ -1265,7 +1265,7 @@ function renderSales(){
   if(salesWorkspaceTab==="daily"){renderDailySales();return}
   const x=state.sales.overall.total.metrics,financial=financialSalesMetrics(x);
   const cleanRevenuePlan=getPlan("sales","sales_amount"),salesPlan=getPlan("sales","sales"),averageCheckPlan=getPlan("sales","average_check");
-  const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_bank_paid");
+  const cleanRevenue=financeValue("value"),contractors=financeValue("contractor_amount"),bankContractors=financeValue("contractor_bank_paid");
   const preplan=state.sales.preplan||{};
   const legacy=usesDealAmountRevenue();
   const sf=state.sales.sale_filter||{};
@@ -1278,13 +1278,13 @@ function renderSales(){
     ${salesTodayCard()}
 
     <div class="rnp-overall-strip">
-      ${legacy?salesSummaryMetric("Сумма продаж",financial.incoming,"money",cleanRevenuePlan,incomingRevenueCaption(),true):`${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")}${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")}${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")}`}
+      ${legacy?salesSummaryMetric("Сумма продаж",financial.incoming,"money",cleanRevenuePlan,incomingRevenueCaption(),true):`${salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")}${salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")}${salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")}${salesSummaryMetric("Подрядчики по банку",bankContractors,"money",0,"Фактические выплаты по банку",false,"contractor_bank")}`}
       ${preplanSummaryMetric(preplan)}
       ${salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)}
       ${salesSummaryMetric("Средний чек",financial.averageCheck,"money",averageCheckPlan)}
     </div>
 
-    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> ${legacy?"июль и август 2026 считаются по сумме успешных сделок Bitrix (OPPORTUNITY): контура «Чистой выручки» тогда ещё не было.":"чистая выручка = подтверждённые поступления минус фактические банковские выплаты подрядчикам за месяц. Выплаты могут отличаться от удержаний по сделкам."}</div>
+    <div class="sales-semantics-note"><strong>Финансовая логика:</strong> ${legacy?"июль и август 2026 считаются по сумме успешных сделок Bitrix (OPPORTUNITY): контура «Чистой выручки» тогда ещё не было.":"чистая выручка = подтверждённые поступления минус подрядчики по графику платежей. Выплаты подрядчикам по банку показаны отдельно."}</div>
     ${salesOverdueSchedule()}
     ${reactivationBlock()}
     <div class="rnp-three-blocks">${RNP_GROUPS.map(rnpBlock).join("")}</div>

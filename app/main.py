@@ -702,7 +702,7 @@ async def load_clean_revenue(month: str):
         payment_revenue_rows = await enrich_clean_revenue_deal_rows(month, clean_revenue_payment_rows(payload))
         result = {
             "status": "online",
-            "value": None,
+            "value": round(value, 2),
             "deal_basis_value": round(value, 2),
             "contractor_amount": round(contractor_amount, 2),
             "contractor_bank_paid": None,
@@ -725,7 +725,6 @@ async def load_clean_revenue(month: str):
             bank_paid = float(payload["contractorBankPaid"])
             if math.isfinite(bank_paid) and bank_paid >= 0:
                 result["contractor_bank_paid"] = round(bank_paid, 2)
-                result["value"] = round(result["incoming_amount"] - result["contractor_bank_paid"], 2)
         except (KeyError, TypeError, ValueError):
             pass
         if isinstance(payload.get("contractorBankTransactions"), list):
@@ -1565,18 +1564,20 @@ async def operational_snapshot(snap, details, month, compact=False):
     # "Общая сумма поступлений": clean revenue + contractors.
     if finance.get("status") in {"online", "stale"}:
         try:
-            finance.setdefault(
-                "incoming_amount",
-                round(float(finance["value"]) + float(finance["contractor_amount"]), 2),
-            )
+            if finance.get("incoming_amount") is None:
+                basis = finance.get("deal_basis_value")
+                if basis is None and finance.get("contractor_bank_paid") is None:
+                    basis = finance["value"]
+                if basis is not None:
+                    finance["incoming_amount"] = round(float(basis) + float(finance["contractor_amount"]), 2)
         except (KeyError, TypeError, ValueError):
             pass
-        # Persisted snapshots may still contain the previous deal-based net.
-        # Recompute from their gross and actual bank payments before serving.
+        # Recalculate old snapshots that used bank payouts, using the schedule
+        # contractor reserve instead. Bank payouts remain a separate metric.
         try:
             gross = float(finance["incoming_amount"])
-            bank_paid = float(finance["contractor_bank_paid"])
-            finance["value"] = round(gross - bank_paid, 2) if math.isfinite(gross) and math.isfinite(bank_paid) and bank_paid >= 0 else None
+            scheduled = float(finance["contractor_amount"])
+            finance["value"] = round(gross - scheduled, 2) if math.isfinite(gross) and math.isfinite(scheduled) else None
         except (KeyError, TypeError, ValueError):
             finance["value"] = None
     x["clean_revenue"] = finance

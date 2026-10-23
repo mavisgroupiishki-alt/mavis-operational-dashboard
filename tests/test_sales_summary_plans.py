@@ -12,6 +12,8 @@ class SalesSummaryPlansTest(unittest.TestCase):
         self.assertIn('salesSummaryMetric("Общая сумма поступлений",financial.incoming,"money",0,incomingRevenueCaption(),false,"incoming")', source)
         self.assertIn('salesSummaryMetric("Чистая выручка",cleanRevenue,"money",cleanRevenuePlan,cleanRevenueCaption(),true,"clean")', source)
         self.assertIn('salesSummaryMetric("Подрядчики",contractors,"money",0,contractorCaption(),false,"contractor")', source)
+        self.assertIn('financeValue("contractor_amount")', source)
+        self.assertIn('salesSummaryMetric("Подрядчики по банку",bankContractors', source)
         self.assertIn('salesSummaryMetric("Продажи месяца",x.sales,"num",salesPlan)', source)
 
 
