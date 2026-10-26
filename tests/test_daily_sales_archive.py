@@ -80,6 +80,26 @@ def test_daily_sales_report_does_not_wait_for_finance(monkeypatch):
     assert result == {"ok": True, "date": "2026-10-07", "leads": {"total": 7}}
 
 
+def test_live_daily_sales_uses_the_visible_roster_for_the_report_month(monkeypatch):
+    main.daily_sales_cache.clear()
+    main.daily_sales_cache_time.clear()
+    with tempfile.TemporaryDirectory() as directory:
+        storage = Storage(Path(directory) / "dashboard.sqlite3")
+        storage._set("team", {"managers": ["Анастасия Кузьмина", "Игорь"], "experts": []})
+        storage.set_team_member_hidden("2026-10", "manager", "Игорь", True)
+        monkeypatch.setattr(main, "storage", storage)
+
+        async def bitrix_report(_client, selected_date, _timezone, manager_names):
+            assert selected_date == "2026-10-07"
+            assert manager_names == ["Анастасия Кузьмина"]
+            return {"ok": True, "date": selected_date, "leads": {"total": 7}}
+
+        monkeypatch.setattr(main, "build_daily_sales_report", bitrix_report)
+        result = asyncio.run(main._load_daily_sales_live("2026-10-07", force=True))
+
+    assert result["leads"]["total"] == 7
+
+
 def test_daily_sales_finance_loads_after_the_crm_report(monkeypatch):
     main.daily_sales_finance_cache.clear()
     main.daily_sales_finance_cache_time.clear()

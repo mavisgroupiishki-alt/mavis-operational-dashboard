@@ -107,6 +107,15 @@ def current_month():
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m")
 
 
+def _invalidate_daily_sales_cache(month: str | None = None) -> None:
+    """Drop only live reports whose roster may have changed."""
+    prefix = f"{month}-" if month else ""
+    for day in tuple(daily_sales_cache):
+        if not prefix or day.startswith(prefix):
+            daily_sales_cache.pop(day, None)
+            daily_sales_cache_time.pop(day, None)
+
+
 async def enrich_acts_tasks_with_crm_close_dates(tasks: list[dict]) -> dict:
     """Attach linked deal close dates for the Acts report's month reconciliation."""
     deal_ids = {linked_deal_id(task) for task in tasks}
@@ -166,7 +175,12 @@ async def _load_daily_sales_live(selected_date: str, force: bool = False) -> dic
     cached = daily_sales_cache.get(cache_key)
     if not force and cached and time.monotonic() - daily_sales_cache_time.get(cache_key, 0) < DAILY_SALES_REFRESH_SECONDS:
         return copy.deepcopy(cached)
-    report = await build_daily_sales_report(client, cache_key, settings.timezone)
+    report = await build_daily_sales_report(
+        client,
+        cache_key,
+        settings.timezone,
+        storage.team_for_month(start.strftime("%Y-%m"))["managers"],
+    )
     daily_sales_cache[cache_key] = report
     daily_sales_cache_time[cache_key] = time.monotonic()
     return copy.deepcopy(report)
@@ -2289,12 +2303,18 @@ async def get_team(): return storage.team()
 @app.post('/api/team')
 async def add_team(body: TeamBody):
     if settings.admin_key and not secrets.compare_digest(body.admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
-    storage.add_team_member(body.role,body.name);return {'ok':True,'team':storage.team()}
+    storage.add_team_member(body.role,body.name)
+    if body.role == 'manager':
+        _invalidate_daily_sales_cache()
+    return {'ok':True,'team':storage.team()}
 
 @app.delete('/api/team')
 async def del_team(role:str,name:str,admin_key:str=''):
     if settings.admin_key and not secrets.compare_digest(admin_key,settings.admin_key):raise HTTPException(403,'Неверный ADMIN_KEY')
-    storage.remove_team_member(role,name);return {'ok':True,'team':storage.team()}
+    storage.remove_team_member(role,name)
+    if role == 'manager':
+        _invalidate_daily_sales_cache()
+    return {'ok':True,'team':storage.team()}
 
 @app.put('/api/team/visibility')
 async def set_team_visibility(body: TeamVisibilityBody):
@@ -2304,6 +2324,8 @@ async def set_team_visibility(body: TeamVisibilityBody):
         storage.set_team_member_hidden(body.month, body.role, body.name, body.hidden)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if body.role == 'manager':
+        _invalidate_daily_sales_cache(body.month)
     return {
         'ok': True,
         'team': storage.team_for_month(body.month),

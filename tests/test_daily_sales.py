@@ -37,6 +37,7 @@ def test_sales_team_scope_excludes_other_portal_users():
         [{"ASSIGNED_BY_ID": "1"}, {"ASSIGNED_BY_ID": "2"}],
         {"users": {"1": "Ирина Базылева", "2": "Не из отдела продаж"}},
         "ASSIGNED_BY_ID",
+        ["Ирина Базылева"],
     )
     assert rows == [{"ASSIGNED_BY_ID": "1"}]
 
@@ -116,7 +117,9 @@ class FakeBitrix:
 
 
 def test_daily_report_uses_one_bitrix_calendar_day():
-    report = asyncio.run(build_daily_sales_report(FakeBitrix(), "2026-09-30", "Europe/Minsk"))
+    report = asyncio.run(build_daily_sales_report(
+        FakeBitrix(), "2026-09-30", "Europe/Minsk", ["Ирина Базылева"]
+    ))
     assert report["date"] == "2026-09-30"
     assert report["source"] == "Bitrix24 CRM (read-only)"
     assert report["leads"]["total"] == report["calls"]["total"] == 1
@@ -129,3 +132,12 @@ def test_daily_report_uses_one_bitrix_calendar_day():
         "incoming_minutes": 0.0, "outgoing_minutes": 3.0,
         "unclassified_count": 0, "without_duration_count": 0,
     }]
+
+
+def test_daily_report_uses_the_supplied_dashboard_roster_not_a_fixed_legacy_team():
+    report = asyncio.run(build_daily_sales_report(
+        FakeBitrix(), "2026-09-30", "Europe/Minsk", ["Новый сотрудник"]
+    ))
+
+    assert report["scope"] == {"managers": ["Новый сотрудник"]}
+    assert report["leads"]["total"] == report["deals"]["total"] == report["calls"]["total"] == 0

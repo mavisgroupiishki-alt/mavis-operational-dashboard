@@ -16,7 +16,6 @@ from .metrics import (
     stage_name,
     user_name,
 )
-from .sales_team import SALES_BI_MANAGERS
 
 
 def _snapshot_report(report: dict[str, Any], mode: str, message: str, captured_at: str | None = None) -> dict[str, Any]:
@@ -139,11 +138,14 @@ def _nested_rows(values: dict[str, Counter[str]], child_key: str) -> list[dict[s
     return rows
 
 
-def sales_team_rows(rows: list[dict[str, Any]], meta: dict[str, Any], user_field: str) -> list[dict[str, Any]]:
-    """Keep the direct report on the same Sales team as the legacy BI report."""
+def sales_team_rows(
+    rows: list[dict[str, Any]], meta: dict[str, Any], user_field: str, manager_names: list[str]
+) -> list[dict[str, Any]]:
+    """Limit a daily report to the dashboard roster for its reporting month."""
+    allowed = {str(name).strip() for name in manager_names if str(name).strip()}
     return [
         row for row in rows
-        if user_name(meta, row.get(user_field)) in SALES_BI_MANAGERS
+        if user_name(meta, row.get(user_field)) in allowed
     ]
 
 
@@ -241,7 +243,9 @@ def summarize_daily_sales(
     }
 
 
-async def build_daily_sales_report(client: Any, selected_date: str, timezone: str) -> dict[str, Any]:
+async def build_daily_sales_report(
+    client: Any, selected_date: str, timezone: str, manager_names: list[str]
+) -> dict[str, Any]:
     """Load one calendar day from Bitrix and make partial availability explicit."""
     start, end = daily_bounds(selected_date, timezone)
     lead_task = client.lead_list({">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, LEAD_SELECT)
@@ -260,21 +264,23 @@ async def build_daily_sales_report(client: Any, selected_date: str, timezone: st
     leads, leads_availability = _availability(leads_result)
     sales_deals, sales_deals_availability = _availability(sales_deals_result)
     reanimation_deals, reanimation_deals_availability = _availability(reanimation_deals_result)
-    leads = sales_team_rows(leads, meta_result, "ASSIGNED_BY_ID")
+    leads = sales_team_rows(leads, meta_result, "ASSIGNED_BY_ID", manager_names)
     deals = list({str(row.get("ID") or index): row for index, row in enumerate(sales_deals + reanimation_deals)}.values())
-    deals = sales_team_rows(deals, meta_result, "ASSIGNED_BY_ID")
+    deals = sales_team_rows(deals, meta_result, "ASSIGNED_BY_ID", manager_names)
     deals_availability = {"status": "online"} if (
         sales_deals_availability["status"] == "online" and reanimation_deals_availability["status"] == "online"
     ) else {"status": "partial", "note": "Не все воронки сделок доступны"}
     statistics, calls_availability = _availability(activities_result)
-    activities = sales_team_rows([statistic_as_call(row) for row in statistics], meta_result, "RESPONSIBLE_ID")
+    activities = sales_team_rows(
+        [statistic_as_call(row) for row in statistics], meta_result, "RESPONSIBLE_ID", manager_names
+    )
     report = summarize_daily_sales(leads, deals, activities, meta_result)
     report.update({
         "ok": True,
         "date": start.date().isoformat(),
         "generated_at": datetime.now(ZoneInfo(timezone)).isoformat(),
         "source": "Bitrix24 CRM (read-only)",
-        "scope": {"managers": list(SALES_BI_MANAGERS)},
+        "scope": {"managers": list(manager_names)},
         "availability": {
             "leads": leads_availability,
             "deals": deals_availability,
