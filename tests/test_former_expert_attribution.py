@@ -4,10 +4,10 @@ from app.metrics import production_expert_id
 
 
 class FormerExpertAttributionTests(unittest.TestCase):
-    def test_closed_product_uses_person_who_moved_it_to_success(self):
-        deal = {"ASSIGNED_BY_ID": "active-archive-owner", "MOVED_BY_ID": "iolanta"}
+    def test_closed_product_uses_current_responsible_person(self):
+        deal = {"ASSIGNED_BY_ID": "responsible-expert", "MOVED_BY_ID": "tatiana-closer"}
 
-        self.assertEqual(production_expert_id(deal, closed_success=True), "iolanta")
+        self.assertEqual(production_expert_id(deal, closed_success=True), "responsible-expert")
 
     def test_open_product_keeps_current_responsible_person(self):
         deal = {"ASSIGNED_BY_ID": "active-owner", "MOVED_BY_ID": "iolanta"}

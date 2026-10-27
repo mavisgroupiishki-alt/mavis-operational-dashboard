@@ -48,6 +48,44 @@ def test_past_day_reads_archive_without_requesting_bitrix(monkeypatch):
         assert asyncio.run(main.load_daily_sales("2026-10-06")) == archived
 
 
+def test_empty_archive_is_rebuilt_after_its_manager_scope_changes(monkeypatch):
+    main.daily_sales_cache.clear()
+    main.daily_sales_cache_time.clear()
+    with tempfile.TemporaryDirectory() as directory:
+        storage = Storage(Path(directory) / "dashboard.sqlite3")
+        storage._set("team", {"managers": ["Анастасия Кузьмина"], "experts": []})
+        archived = archive_snapshot({
+            "ok": True,
+            "date": "2026-10-26",
+            "scope": {"managers": ["Роман Авсеенко"]},
+            "leads": {"total": 0},
+            "deals": {"total": 0},
+            "calls": {"total": 0},
+        }, "2026-10-27T00:10:00+03:00")
+        storage.save_daily_sales_archive("2026-10-26", archived, "2026-10-27T00:10:00+03:00")
+        monkeypatch.setattr(main, "storage", storage)
+
+        async def bitrix_report(_selected_date, force=False):
+            assert force is True
+            return {
+                "ok": True,
+                "date": "2026-10-26",
+                "scope": {"managers": ["Анастасия Кузьмина"]},
+                "leads": {"total": 2},
+                "deals": {"total": 1},
+                "calls": {"total": 3},
+            }
+
+        monkeypatch.setattr(main, "_load_daily_sales_live", bitrix_report)
+        result = asyncio.run(main.load_daily_sales("2026-10-26"))
+        saved = storage.daily_sales_archive("2026-10-26")
+
+    assert result["calls"]["total"] == 3
+    assert result["snapshot"]["message"] == "Архив пересобран после изменения состава менеджеров."
+    assert saved["report"]["scope"]["managers"] == ["Анастасия Кузьмина"]
+    assert saved["original_report"]["scope"]["managers"] == ["Роман Авсеенко"]
+
+
 def test_past_day_without_archive_is_marked_as_current_bitrix_data(monkeypatch):
     with tempfile.TemporaryDirectory() as directory:
         storage = Storage(Path(directory) / "dashboard.sqlite3")

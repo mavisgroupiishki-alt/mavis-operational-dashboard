@@ -31,10 +31,12 @@ from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_dea
 from .daily_sales import (
     archive_snapshot,
     build_daily_sales_report,
+    corrected_archive_snapshot,
     daily_archive_due_date,
     daily_bounds,
     historical_live_snapshot,
     live_snapshot,
+    should_rebuild_empty_archive,
 )
 from .settings import settings
 from .storage import Storage
@@ -211,6 +213,19 @@ async def load_daily_sales(selected_date: str, force: bool = False) -> dict:
     if start.date() < today:
         archive = await asyncio.to_thread(storage.daily_sales_archive, day)
         if archive:
+            managers = storage.team_for_month(start.strftime("%Y-%m"))["managers"]
+            if should_rebuild_empty_archive(archive["report"], managers):
+                try:
+                    corrected_at = datetime.now(ZoneInfo(settings.timezone)).isoformat()
+                    repaired = corrected_archive_snapshot(
+                        await _load_daily_sales_live(day, force=True), corrected_at
+                    )
+                    saved = await asyncio.to_thread(
+                        storage.correct_empty_daily_sales_archive, day, repaired, corrected_at
+                    )
+                    return copy.deepcopy(saved["report"])
+                except Exception:
+                    logger.exception("Daily sales archive repair failed for %s", day)
             return copy.deepcopy(archive["report"])
         return historical_live_snapshot(await _load_daily_sales_live(day, force=force))
     return live_snapshot(await _load_daily_sales_live(day, force=force))

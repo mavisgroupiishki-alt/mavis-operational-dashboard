@@ -1114,16 +1114,13 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
 
 
 def production_expert_id(deal: Dict[str, Any], closed_success: bool = False) -> Any:
-    """Attribute a completed product to the person who moved it to success.
+    """Attribute every production result to the deal's responsible expert.
 
-    Closed production cards are often reassigned when an employee leaves.  The
-    current ``ASSIGNED_BY_ID`` then describes the archive owner, not the expert
-    who completed the work.  Bitrix keeps the latter in ``MOVED_BY_ID`` for the
-    final stage transition.  Non-final rows deliberately stay assigned to the
-    current responsible person.
+    ``MOVED_BY_ID`` is only the person who changed the final stage; it can be a
+    supervisor or an operator and is not the owner of the client work.  The
+    expert dashboard therefore uses Bitrix's ``ASSIGNED_BY_ID`` consistently
+    for open and closed cards.
     """
-    if closed_success and deal.get("MOVED_BY_ID"):
-        return deal.get("MOVED_BY_ID")
     return deal.get("ASSIGNED_BY_ID")
 
 

@@ -45,6 +45,32 @@ def archive_snapshot(report: dict[str, Any], captured_at: str) -> dict[str, Any]
     return _snapshot_report(report, "archive", "Архивный снимок после закрытия дня.", captured_at)
 
 
+def corrected_archive_snapshot(report: dict[str, Any], captured_at: str) -> dict[str, Any]:
+    """Mark a repaired empty archive without disguising it as the first capture."""
+    return _snapshot_report(
+        report,
+        "archive",
+        "Архив пересобран после изменения состава менеджеров.",
+        captured_at,
+    )
+
+
+def should_rebuild_empty_archive(report: dict[str, Any], manager_names: list[str]) -> bool:
+    """Only repair the known stale-roster case; valid archives stay immutable."""
+    archived_names = {
+        str(name).strip().casefold()
+        for name in ((report.get("scope") or {}).get("managers") or [])
+        if str(name).strip()
+    }
+    current_names = {str(name).strip().casefold() for name in manager_names if str(name).strip()}
+    if not archived_names or not current_names or archived_names == current_names:
+        return False
+    return all(
+        int(((report.get(section) or {}).get("total") or 0)) == 0
+        for section in ("leads", "deals", "calls")
+    )
+
+
 def daily_archive_due_date(now: datetime, timezone: str) -> str | None:
     """Return yesterday only during the narrow local archive window."""
     local_now = now.astimezone(ZoneInfo(timezone))

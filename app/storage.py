@@ -269,6 +269,20 @@ class Storage:
         self._set(f"daily_sales_archive:{day}", record)
         return record, True
 
+    def correct_empty_daily_sales_archive(self, day: str, report: dict, corrected_at: str) -> dict:
+        """Replace only a known empty archive while retaining the original for rollback."""
+        existing = self.daily_sales_archive(day)
+        if not existing:
+            raise ValueError("Архив за день не найден")
+        record = dict(existing)
+        record["version"] = max(int(record.get("version") or 1), 2)
+        record.setdefault("original_report", existing["report"])
+        record["report"] = report
+        record["corrected_at"] = corrected_at
+        record["correction_reason"] = "empty_archive_manager_scope_changed"
+        self._set(f"daily_sales_archive:{day}", record)
+        return record
+
     # ---------- Plans ----------
     def plan_dict(self, month: str):
         value = self._get(f"plans:{month}", {})
