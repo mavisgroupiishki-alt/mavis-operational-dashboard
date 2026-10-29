@@ -18,6 +18,12 @@ class Settings:
     dashboard_public_url: str = os.getenv(
         "DASHBOARD_PUBLIC_URL", "https://mavis-operational-dashboard.onrender.com"
     ).strip().rstrip("/")
+    # Local Bitrix24 application. These values are intentionally server-only:
+    # the browser sends a short-lived launch token, never a dashboard secret.
+    bitrix_portal_domain: str = os.getenv("BITRIX_PORTAL_DOMAIN", "").strip().lower()
+    bitrix_local_session_secret: str = os.getenv("BITRIX_LOCAL_SESSION_SECRET", "").strip()
+    bitrix_local_session_seconds: int = int(os.getenv("BITRIX_LOCAL_SESSION_SECONDS", "28800"))
+    bitrix_director_user_ids: str = os.getenv("BITRIX_DIRECTOR_USER_IDS", "").strip()
     data_dir: Path = Path(os.getenv("DATA_DIR","./data")).expanduser()
     demo_mode: bool = os.getenv("DEMO_MODE","false").lower() in {"1","true","yes","y"}
     supabase_url: str = os.getenv("SUPABASE_URL","").strip()

@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
+from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, director_ids, issue_session, portal_host, read_session
 from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
@@ -38,6 +39,7 @@ from .daily_sales import (
     live_snapshot,
     should_rebuild_empty_archive,
 )
+from .personal_workspace import build_personal_workday
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
@@ -1301,6 +1303,59 @@ def request_access_role(request: Request):
     return ""
 
 
+def bitrix_local_app_ready() -> bool:
+    return bool(
+        portal_host(settings.bitrix_portal_domain)
+        and settings.bitrix_local_session_secret
+    )
+
+
+def request_bitrix_identity(request: Request) -> BitrixIdentity | None:
+    """Read only a server-signed identity; browser values never define a user."""
+    if not bitrix_local_app_ready():
+        return None
+    identity = read_session(
+        request.cookies.get(BITRIX_SESSION_COOKIE, ""),
+        secret=settings.bitrix_local_session_secret,
+    )
+    if not identity or identity.portal != portal_host(settings.bitrix_portal_domain):
+        return None
+    return identity
+
+
+def require_bitrix_identity(request: Request) -> BitrixIdentity:
+    identity = request_bitrix_identity(request)
+    if not identity:
+        raise HTTPException(401, "Откройте личный кабинет из Bitrix24")
+    return identity
+
+
+async def verify_bitrix_launch(domain: str, launch_token: str) -> tuple[str, str]:
+    """Verify the Bitrix frame token server-side without persisting it."""
+    expected_domain = portal_host(settings.bitrix_portal_domain)
+    actual_domain = portal_host(domain)
+    if not expected_domain or actual_domain != expected_domain:
+        raise HTTPException(403, "Запуск разрешён только из настроенного портала Bitrix24")
+    if not launch_token or len(launch_token) > 10_000:
+        raise HTTPException(401, "Bitrix24 не передал токен запуска")
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as session:
+            response = await session.post(
+                f"https://{actual_domain}/rest/user.current.json",
+                data={"auth": launch_token},
+            )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        user = payload.get("result") if isinstance(payload, dict) else None
+        user_id = str((user or {}).get("ID") or "")
+        if response.status_code != 200 or not user_id.isdigit():
+            raise HTTPException(401, "Bitrix24 не подтвердил пользователя")
+        return actual_domain, user_id
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(503, "Не удалось проверить вход в Bitrix24") from None
+
+
 def is_marketer(request: Request):
     return getattr(request.state, "dashboard_access", "") == MARKETER_ACCESS
 
@@ -1348,7 +1403,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/launch", "/cabinet", "/api/cabinet/me", "/api/cabinet/workday", "/api/cabinet/listening", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -1899,13 +1954,80 @@ async def logout():
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(ACCESS_COOKIE)
     response.delete_cookie("mavis_view")
+    response.delete_cookie(BITRIX_SESSION_COOKIE, samesite="none")
     return response
+
+
+@app.post("/bitrix/launch")
+async def bitrix_launch(request: Request):
+    """Accept the Bitrix iframe launch form and immediately discard its token."""
+    if not bitrix_local_app_ready():
+        raise HTTPException(503, "Локальное приложение Bitrix24 ещё не настроено")
+    form = await request.form()
+    domain = str(form.get("DOMAIN") or form.get("domain") or "")
+    launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
+    portal, user_id = await verify_bitrix_launch(domain, launch_token)
+    role = "director" if user_id in director_ids(settings.bitrix_director_user_ids) else "manager"
+    token = issue_session(
+        portal=portal,
+        user_id=user_id,
+        role=role,
+        secret=settings.bitrix_local_session_secret,
+        ttl_seconds=settings.bitrix_local_session_seconds,
+    )
+    response = RedirectResponse("/cabinet", status_code=303)
+    response.set_cookie(
+        BITRIX_SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=max(60, min(settings.bitrix_local_session_seconds, 12 * 60 * 60)),
+    )
+    return response
+
+
+@app.get("/cabinet", response_class=HTMLResponse)
+async def cabinet(request: Request):
+    require_bitrix_identity(request)
+    return HTMLResponse("""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>MAVIS · Моя работа</title><style>body{margin:0;background:#eef4f8;color:#173042;font-family:system-ui,sans-serif}.wrap{max-width:1120px;margin:auto;padding:28px}.eyebrow{font-size:12px;font-weight:800;letter-spacing:.12em;color:#657d8e;text-transform:uppercase}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}.card{background:#fff;border:1px solid #d6e4ed;border-radius:18px;padding:20px;box-shadow:0 8px 28px #1b52610c}.card span{color:#627b8b;font-size:13px}.card b{display:block;font-size:31px;margin-top:7px}.note{margin-top:18px;color:#637c8d}.error{color:#a63737}.link{color:#087d8e;text-decoration:none;font-weight:800}</style></head><body><main class='wrap'><p class='eyebrow'>Отдел продаж · Bitrix24</p><h1>Моя работа</h1><p id='subtitle'>Загружаю вчерашние показатели…</p><section id='cards' class='grid'></section><p id='note' class='note'></p></main><script>(async()=>{const [res,meRes]=await Promise.all([fetch('/api/cabinet/workday'),fetch('/api/cabinet/me')]);const data=await res.json(),me=await meRes.json();if(!res.ok){document.getElementById('subtitle').className='error';document.getElementById('subtitle').textContent=data.detail||'Не удалось загрузить кабинет';return}const c=data.calls,d=data.deals,t=data.tasks;document.getElementById('subtitle').textContent='Данные за '+data.date;const cards=[['Успешные звонки',c.successful_from_minute+' / '+c.target],['Все звонки',c.total],['Просроченные дела',t.overdue_count],['Просроченные сделки',d.overdue_count],['Сделки без дела',d.without_open_task_count],['Без источника',d.missing_source_count],['Без типа клиента',d.missing_client_type_count]];if(me.role==='director')cards.push(['Прослушка команды','<a class="link" href="/api/cabinet/listening">Открыть Джарвис →</a>']);document.getElementById('cards').innerHTML=cards.map(x=>'<article class="card"><span>'+x[0]+'</span><b>'+x[1]+'</b></article>').join('');document.getElementById('note').textContent='SLA этапов и реестр ИСО/СУОТ будут добавлены после подключения источников.'})()</script></body></html>""")
+
+
+@app.get("/api/cabinet/me")
+async def api_cabinet_me(request: Request):
+    identity = require_bitrix_identity(request)
+    return {"ok": True, "user_id": identity.user_id, "role": identity.role, "portal": identity.portal, "expires_at": identity.expires_at}
+
+
+@app.get("/api/cabinet/workday")
+async def api_cabinet_workday(request: Request, date: str = Query(default="")):
+    identity = require_bitrix_identity(request)
+    selected_date = date or (datetime.now(ZoneInfo(settings.timezone)) - timedelta(days=1)).date().isoformat()
+    try:
+        return await build_personal_workday(client, identity.user_id, selected_date, settings.timezone)
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
+    except Exception:
+        logger.exception("Personal Bitrix workspace unavailable")
+        raise HTTPException(503, "Данные личного кабинета Bitrix24 временно недоступны") from None
+
+
+@app.get("/api/cabinet/listening")
+async def api_cabinet_listening(request: Request):
+    identity = require_bitrix_identity(request)
+    if identity.role != "director":
+        raise HTTPException(403, "Прослушка команды доступна только руководителю")
+    payload = await api_jarvis()
+    if not isinstance(payload, dict) or not payload.get("ok") or not payload.get("url"):
+        raise HTTPException(503, "Прослушка Джарвиса временно недоступна")
+    return RedirectResponse(str(payload["url"]), status_code=302)
 
 
 @app.middleware("http")
 async def no_cache_frontend(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    if request.url.path in {"/", "/cabinet"} or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

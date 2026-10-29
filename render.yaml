@@ -13,6 +13,12 @@ services:
         value: "300"
       - key: DATA_DIR
         value: /var/data
+      - key: BITRIX_PORTAL_DOMAIN
+        value: mavisgroup.bitrix24.by
+      - key: BITRIX_DIRECTOR_USER_IDS
+        value: "14,2110"
+      - key: BITRIX_LOCAL_SESSION_SECRET
+        sync: false
       - key: BITRIX_WEBHOOK
         sync: false
       - key: BITRIX_EVENT_TOKEN
