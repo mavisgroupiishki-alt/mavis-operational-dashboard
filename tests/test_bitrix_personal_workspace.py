@@ -79,7 +79,7 @@ class BitrixIdentityTests(unittest.TestCase):
         with patch.object(main, "settings", configured), TestClient(fixed_main.app, base_url="https://testserver") as client:
             self.assertEqual(client.get("/api/cabinet/me?user_id=77").status_code, 401)
 
-    def test_listening_is_only_available_to_a_director(self):
+    def test_listening_scopes_a_manager_to_own_calls_and_director_to_team(self):
         configured = replace(
             main.settings,
             bitrix_portal_domain="mavisgroup.bitrix24.by",
@@ -96,15 +96,17 @@ class BitrixIdentityTests(unittest.TestCase):
         )
         with (
             patch.object(main, "settings", configured),
-            patch.object(main, "api_jarvis", new=AsyncMock(return_value={"ok": True, "url": "https://jarvis.test/dashboard-embed"})),
+            patch.object(main, "jarvis_embed_payload", side_effect=lambda **kwargs: {"ok": True, "url": f"https://jarvis.test/dashboard-embed?role={kwargs['role']}&user_id={kwargs['user_id']}"}),
             TestClient(fixed_main.app, base_url="https://testserver") as client,
         ):
             client.cookies.set("mavis_bitrix_session", manager_session)
-            self.assertEqual(client.get("/api/cabinet/listening").status_code, 403)
+            manager_response = client.get("/api/cabinet/listening", follow_redirects=False)
+            self.assertEqual(manager_response.status_code, 302)
+            self.assertIn("role=manager&user_id=9", manager_response.headers["location"])
             client.cookies.set("mavis_bitrix_session", director_session)
             response = client.get("/api/cabinet/listening", follow_redirects=False)
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.headers["location"], "https://jarvis.test/dashboard-embed")
+            self.assertIn("role=director&user_id=", response.headers["location"])
 
 
 class _Client:

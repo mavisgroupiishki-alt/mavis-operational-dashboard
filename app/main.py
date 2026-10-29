@@ -2022,9 +2022,10 @@ async def api_cabinet_workday(request: Request, date: str = Query(default="")):
 @app.get("/api/cabinet/listening")
 async def api_cabinet_listening(request: Request):
     identity = require_bitrix_identity(request)
-    if identity.role != "director":
-        raise HTTPException(403, "Прослушка команды доступна только руководителю")
-    payload = await api_jarvis()
+    payload = jarvis_embed_payload(
+        role="director" if identity.role == "director" else "manager",
+        user_id="" if identity.role == "director" else identity.user_id,
+    )
     if not isinstance(payload, dict) or not payload.get("ok") or not payload.get("url"):
         raise HTTPException(503, "Прослушка Джарвиса временно недоступна")
     return RedirectResponse(str(payload["url"]), status_code=302)
@@ -2188,20 +2189,35 @@ async def api_reactivate_recommendation(deal_id: str, request: Request):
     return await reactivate_jarvis_deal(deal_id)
 
 
-@app.get("/api/jarvis")
-async def api_jarvis():
-    """Build a short-lived signed Jarvis entry URL; the shared token stays server-side."""
+def jarvis_embed_payload(*, role: str = "dashboard", user_id: str = "") -> dict[str, Any]:
+    """Build a short-lived, role-bound Jarvis handoff without exposing its secret."""
     base_url = settings.jarvis_operations_url.rstrip("/")
     target = urlparse(base_url)
     if not base_url or target.scheme != "https" or not target.netloc or not settings.jarvis_operations_token:
-        return JSONResponse({"ok": False, "status": "not_configured"}, status_code=503)
+        return {"ok": False, "status": "not_configured"}
+    if role not in {"dashboard", "director", "manager"}:
+        return {"ok": False, "status": "invalid_role"}
+    if role == "manager" and not str(user_id).isdigit():
+        return {"ok": False, "status": "invalid_manager"}
     issued_at = int(time.time())
     signature = hmac.new(
         settings.jarvis_operations_token.encode("utf-8"),
-        f"mavis-dashboard-embed:{issued_at}".encode("utf-8"),
+        f"mavis-dashboard-embed:{issued_at}:{role}:{user_id}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return {"ok": True, "url": f"{base_url}/dashboard-embed?{urlencode({'ts': issued_at, 'sig': signature})}"}
+    return {
+        "ok": True,
+        "url": f"{base_url}/dashboard-embed?{urlencode({'ts': issued_at, 'sig': signature, 'role': role, 'user_id': user_id})}",
+    }
+
+
+@app.get("/api/jarvis")
+async def api_jarvis():
+    """Build a short-lived signed Jarvis team entry for the main dashboard."""
+    payload = jarvis_embed_payload()
+    if not payload.get("ok"):
+        return JSONResponse(payload, status_code=503)
+    return payload
 
 
 @app.get("/api/crm-audit")
