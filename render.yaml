@@ -17,6 +17,8 @@ services:
         value: mavisgroup.bitrix24.by
       - key: BITRIX_DIRECTOR_USER_IDS
         value: "14,2110"
+      - key: BITRIX_LOCAL_APPLICATION_TOKEN
+        sync: false
       - key: BITRIX_LOCAL_SESSION_SECRET
         sync: false
       - key: BITRIX_WEBHOOK

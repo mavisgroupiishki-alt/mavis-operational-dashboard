@@ -21,6 +21,7 @@ class Settings:
     # Local Bitrix24 application. These values are intentionally server-only:
     # the browser sends a short-lived launch token, never a dashboard secret.
     bitrix_portal_domain: str = os.getenv("BITRIX_PORTAL_DOMAIN", "").strip().lower()
+    bitrix_local_application_token: str = os.getenv("BITRIX_LOCAL_APPLICATION_TOKEN", "").strip()
     bitrix_local_session_secret: str = os.getenv("BITRIX_LOCAL_SESSION_SECRET", "").strip()
     bitrix_local_session_seconds: int = int(os.getenv("BITRIX_LOCAL_SESSION_SECONDS", "28800"))
     bitrix_director_user_ids: str = os.getenv("BITRIX_DIRECTOR_USER_IDS", "").strip()

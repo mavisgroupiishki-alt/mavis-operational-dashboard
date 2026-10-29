@@ -1306,6 +1306,7 @@ def request_access_role(request: Request):
 def bitrix_local_app_ready() -> bool:
     return bool(
         portal_host(settings.bitrix_portal_domain)
+        and settings.bitrix_local_application_token
         and settings.bitrix_local_session_secret
     )
 
@@ -1965,7 +1966,12 @@ async def bitrix_launch(request: Request):
         raise HTTPException(503, "Локальное приложение Bitrix24 ещё не настроено")
     form = await request.form()
     domain = str(form.get("DOMAIN") or form.get("domain") or "")
+    application_token = str(form.get("APPLICATION_TOKEN") or form.get("application_token") or "")
     launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
+    if not application_token or not secrets.compare_digest(
+        application_token, settings.bitrix_local_application_token
+    ):
+        raise HTTPException(403, "Bitrix24 не подтвердил источник запуска")
     portal, user_id = await verify_bitrix_launch(domain, launch_token)
     role = "director" if user_id in director_ids(settings.bitrix_director_user_ids) else "manager"
     token = issue_session(
