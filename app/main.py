@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
-from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, director_ids, issue_session, portal_host, read_session
+from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, application_token_fingerprint, director_ids, issue_session, portal_host, read_session
 from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
@@ -1306,9 +1306,29 @@ def request_access_role(request: Request):
 def bitrix_local_app_ready() -> bool:
     return bool(
         portal_host(settings.bitrix_portal_domain)
-        and settings.bitrix_local_application_token
         and settings.bitrix_local_session_secret
     )
+
+
+def bitrix_local_token_key(portal: str) -> str:
+    return f"bitrix_local_application_token:{portal_host(portal)}"
+
+
+def stored_bitrix_application_fingerprint(portal: str) -> str:
+    return str(storage.get_setting(bitrix_local_token_key(portal), "") or "")
+
+
+def verified_bitrix_application_token(portal: str, token: str) -> bool:
+    """Accept an optional env override or the one-way reference created on install."""
+    try:
+        supplied = application_token_fingerprint(token, secret=settings.bitrix_local_session_secret)
+    except ValueError:
+        return False
+    if settings.bitrix_local_application_token:
+        expected = application_token_fingerprint(settings.bitrix_local_application_token, secret=settings.bitrix_local_session_secret)
+    else:
+        expected = stored_bitrix_application_fingerprint(portal)
+    return bool(expected and secrets.compare_digest(supplied, expected))
 
 
 def request_bitrix_identity(request: Request) -> BitrixIdentity | None:
@@ -1404,7 +1424,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/launch", "/cabinet", "/api/cabinet/me", "/api/cabinet/workday", "/api/cabinet/listening", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/api/cabinet/me", "/api/cabinet/workday", "/api/cabinet/listening", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -1959,6 +1979,32 @@ async def logout():
     return response
 
 
+@app.post("/bitrix/install", response_class=HTMLResponse)
+async def bitrix_install(request: Request):
+    """Finish first installation without retaining the plaintext Bitrix token."""
+    if not bitrix_local_app_ready():
+        raise HTTPException(503, "Локальное приложение Bitrix24 ещё не настроено")
+    form = await request.form()
+    domain = str(form.get("DOMAIN") or form.get("domain") or "")
+    application_token = str(form.get("APPLICATION_TOKEN") or form.get("application_token") or "")
+    launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
+    portal, user_id = await verify_bitrix_launch(domain, launch_token)
+    if user_id not in director_ids(settings.bitrix_director_user_ids):
+        raise HTTPException(403, "Устанавливать приложение могут только руководители")
+    try:
+        fingerprint = application_token_fingerprint(application_token, secret=settings.bitrix_local_session_secret)
+    except ValueError:
+        raise HTTPException(403, "Bitrix24 не передал токен установки")
+    existing = stored_bitrix_application_fingerprint(portal)
+    if existing and not secrets.compare_digest(existing, fingerprint):
+        raise HTTPException(403, "Источник установки Bitrix24 не совпадает с зарегистрированным")
+    if not existing:
+        storage.set_setting(bitrix_local_token_key(portal), fingerprint)
+    return HTMLResponse("""<!doctype html><html lang='ru'><head><meta charset='utf-8'>
+    <title>MAVIS · Моя работа</title><script src='https://api.bitrix24.com/api/v1/'></script></head>
+    <body><p>Подключаю кабинет…</p><script>BX24.init(function(){BX24.installFinish();});</script></body></html>""")
+
+
 @app.post("/bitrix/launch")
 async def bitrix_launch(request: Request):
     """Accept the Bitrix iframe launch form and immediately discard its token."""
@@ -1968,9 +2014,7 @@ async def bitrix_launch(request: Request):
     domain = str(form.get("DOMAIN") or form.get("domain") or "")
     application_token = str(form.get("APPLICATION_TOKEN") or form.get("application_token") or "")
     launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
-    if not application_token or not secrets.compare_digest(
-        application_token, settings.bitrix_local_application_token
-    ):
+    if not verified_bitrix_application_token(domain, application_token):
         raise HTTPException(403, "Bitrix24 не подтвердил источник запуска")
     portal, user_id = await verify_bitrix_launch(domain, launch_token)
     role = "director" if user_id in director_ids(settings.bitrix_director_user_ids) else "manager"

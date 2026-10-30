@@ -69,6 +69,44 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 403)
             verifier.assert_not_awaited()
 
+    def test_first_install_keeps_only_a_fingerprint_and_then_allows_launch(self):
+        configured = replace(
+            main.settings,
+            bitrix_portal_domain="mavisgroup.bitrix24.by",
+            bitrix_local_application_token="",
+            bitrix_local_session_secret="x" * 32,
+            bitrix_director_user_ids="14",
+        )
+        saved = {}
+        verifier = AsyncMock(return_value=("mavisgroup.bitrix24.by", "14"))
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main, "verify_bitrix_launch", new=verifier),
+            patch.object(main.storage, "get_setting", side_effect=lambda key, default="": saved.get(key, default)),
+            patch.object(main.storage, "set_setting", side_effect=lambda key, value: saved.__setitem__(key, value)),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            installed = client.post("/bitrix/install", data={"DOMAIN": "mavisgroup.bitrix24.by", "AUTH_ID": "install", "APPLICATION_TOKEN": "bitrix-private-token"})
+            self.assertEqual(installed.status_code, 200)
+            self.assertNotIn("bitrix-private-token", str(saved))
+            launched = client.post("/bitrix/launch", data={"DOMAIN": "mavisgroup.bitrix24.by", "AUTH_ID": "launch", "APPLICATION_TOKEN": "bitrix-private-token"}, follow_redirects=False)
+            self.assertEqual(launched.status_code, 303)
+
+    def test_first_install_rejects_non_director(self):
+        configured = replace(
+            main.settings,
+            bitrix_portal_domain="mavisgroup.bitrix24.by",
+            bitrix_local_application_token="",
+            bitrix_local_session_secret="x" * 32,
+            bitrix_director_user_ids="14",
+        )
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main, "verify_bitrix_launch", new=AsyncMock(return_value=("mavisgroup.bitrix24.by", "99"))),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            self.assertEqual(client.post("/bitrix/install", data={"DOMAIN": "mavisgroup.bitrix24.by", "AUTH_ID": "install", "APPLICATION_TOKEN": "token"}).status_code, 403)
+
     def test_cabinet_api_rejects_an_unverified_browser_user_id(self):
         configured = replace(
             main.settings,

@@ -49,6 +49,18 @@ def _secret(secret: str) -> bytes:
     return value.encode("utf-8")
 
 
+def application_token_fingerprint(token: str, *, secret: str) -> str:
+    """Create a non-reversible server-side reference for a Bitrix app token."""
+    value = str(token or "")
+    if not value or len(value) > 10_000:
+        raise ValueError("Некорректный токен локального приложения Bitrix24")
+    return hmac.new(
+        _secret(secret),
+        f"mavis-bitrix-app:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def issue_session(*, portal: str, user_id: str, role: str, secret: str, ttl_seconds: int, now: int | None = None) -> str:
     if role not in {"manager", "director"}:
         raise ValueError("Недопустимая роль Bitrix")
