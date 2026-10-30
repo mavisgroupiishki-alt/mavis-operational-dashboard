@@ -86,7 +86,7 @@ class BitrixIdentityTests(unittest.TestCase):
             patch.object(main.storage, "set_setting", side_effect=lambda key, value: saved.__setitem__(key, value)),
             TestClient(fixed_main.app, base_url="https://testserver") as client,
         ):
-            installed = client.post("/bitrix/install", data={"DOMAIN": "mavisgroup.bitrix24.by", "AUTH_ID": "install", "APPLICATION_TOKEN": "bitrix-private-token"})
+            installed = client.post("/bitrix/install?DOMAIN=mavisgroup.bitrix24.by", data={"AUTH_ID": "install", "APPLICATION_TOKEN": "bitrix-private-token"})
             self.assertEqual(installed.status_code, 200)
             self.assertNotIn("bitrix-private-token", str(saved))
             launched = client.post("/bitrix/launch", data={"DOMAIN": "mavisgroup.bitrix24.by", "AUTH_ID": "launch", "APPLICATION_TOKEN": "bitrix-private-token"}, follow_redirects=False)

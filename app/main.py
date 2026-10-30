@@ -1986,7 +1986,7 @@ async def bitrix_install(request: Request):
     if not bitrix_local_app_ready():
         raise HTTPException(503, "Локальное приложение Bitrix24 ещё не настроено")
     form = await request.form()
-    domain = str(form.get("DOMAIN") or form.get("domain") or "")
+    domain = str(form.get("DOMAIN") or form.get("domain") or request.query_params.get("DOMAIN") or "")
     application_token = str(form.get("APPLICATION_TOKEN") or form.get("application_token") or "")
     launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
     portal, user_id = await verify_bitrix_launch(domain, launch_token)
@@ -2012,7 +2012,7 @@ async def bitrix_launch(request: Request):
     if not bitrix_local_app_ready():
         raise HTTPException(503, "Локальное приложение Bitrix24 ещё не настроено")
     form = await request.form()
-    domain = str(form.get("DOMAIN") or form.get("domain") or "")
+    domain = str(form.get("DOMAIN") or form.get("domain") or request.query_params.get("DOMAIN") or "")
     application_token = str(form.get("APPLICATION_TOKEN") or form.get("application_token") or "")
     launch_token = str(form.get("AUTH_ID") or form.get("auth") or "")
     if not verified_bitrix_application_token(domain, application_token):
