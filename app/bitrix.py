@@ -104,7 +104,7 @@ class BitrixClient:
         return await self.list_all("tasks.task.list",{
             "order":{"DEADLINE":"ASC","ID":"DESC"},
             "filter":{"RESPONSIBLE_ID":int(user_id)},
-            "select":["ID","TITLE","STATUS","REAL_STATUS","DEADLINE","CREATED_DATE","PRIORITY","GROUP_ID","GROUP_NAME","RESPONSIBLE_ID"],
+            "select":["ID","TITLE","STATUS","REAL_STATUS","DEADLINE","CREATED_DATE","PRIORITY","GROUP_ID","GROUP_NAME","RESPONSIBLE_ID","UF_CRM_TASK_DEAL","UF_CRM_TASK"],
         }, limit=limit)
     async def product_rows(self,deal_id):
         try:

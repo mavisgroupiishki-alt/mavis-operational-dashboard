@@ -146,6 +146,23 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertIn("role=director&user_id=", response.headers["location"])
 
+    def test_director_can_configure_salary_but_manager_cannot(self):
+        configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
+        director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        manager = issue_session(portal="mavisgroup.bitrix24.by", user_id="9", role="manager", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        saved = {}
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main.storage, "set_setting", side_effect=lambda key, value: saved.__setitem__(key, value)),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            client.cookies.set("mavis_bitrix_session", manager)
+            self.assertEqual(client.put("/api/cabinet/salary", json={"user_id": "9", "monthly_base": 1000, "commission_percent": 5, "monthly_plan": 10000}).status_code, 403)
+            client.cookies.set("mavis_bitrix_session", director)
+            response = client.put("/api/cabinet/salary", json={"user_id": "9", "monthly_base": 1000, "commission_percent": 5, "monthly_plan": 10000})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(saved["cabinet_salary:9"]["commission_percent"], 5)
+
 
 class _Client:
     portal = "https://mavisgroup.bitrix24.by"
@@ -168,7 +185,14 @@ class _Client:
 
     async def deal_list(self, filters, _select):
         self.assert_user(filters["ASSIGNED_BY_ID"])
-        return [{"ID": "10", "TITLE": "Без источника", "CLOSEDATE": "2026-10-28T10:00:00+03:00", "SOURCE_ID": "", "UF_CRM_171455": ""}]
+        return [{"ID": "10", "TITLE": "Без источника", "STAGE_ID": "NEW", "CLOSEDATE": "2026-10-28T10:00:00+03:00", "SOURCE_ID": "", "UF_CRM_171455": ""}]
+
+    async def lead_list(self, filters, _select):
+        self.assert_user(filters["ASSIGNED_BY_ID"])
+        return [{"ID": "88", "TITLE": "Новый лид"}]
+
+    async def meta(self):
+        return {"users": {"12": "Анна Жихарева"}, "status_by_entity": {"DEAL_STAGE": {"NEW": "1. Новая сделка"}}}
 
     @staticmethod
     def assert_user(user_id):
@@ -188,7 +212,10 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["tasks"]["overdue_count"], 1)
         self.assertEqual(result["deals"]["without_open_task_count"], 0)
         self.assertEqual(result["availability"]["stage_sla"], "not_configured")
-        self.assertEqual(result["availability"]["iso_suot_registry"], "not_configured")
+        self.assertEqual(result["availability"]["iso_suot_registry"], "needs_connection")
+        self.assertEqual(result["profile"]["name"], "Анна Жихарева")
+        self.assertEqual(result["leads"]["month_count"], 1)
+        self.assertEqual(result["deals"]["stages"][0]["name"], "1. Новая сделка")
 
 
 if __name__ == "__main__":
