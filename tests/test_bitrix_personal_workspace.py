@@ -149,6 +149,25 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertIn("role=director&user_id=", response.headers["location"])
 
+    def test_director_can_open_alena_workspace_but_manager_cannot_switch_employee(self):
+        configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
+        director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        manager = issue_session(portal="mavisgroup.bitrix24.by", user_id="9", role="manager", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        meta = {"user_options": [{"id": "2272", "name": "Алена Хурсик", "active": True}]}
+        calls = AsyncMock(return_value={"ok": True, "status": "online", "data": {"summary": {}, "calls": []}})
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main.client, "meta", new=AsyncMock(return_value=meta)),
+            patch.object(main, "load_jarvis_operations", new=calls),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            client.cookies.set("mavis_bitrix_session", manager)
+            self.assertEqual(client.get("/api/cabinet/calls?manager_id=2272").status_code, 403)
+            client.cookies.set("mavis_bitrix_session", director)
+            response = client.get("/api/cabinet/calls?manager_id=2272")
+            self.assertEqual(response.status_code, 200)
+            calls.assert_awaited_once_with("personal-calls", {"manager_id": "2272"})
+
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
         director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)

@@ -41,6 +41,8 @@ from .daily_sales import (
     should_rebuild_empty_archive,
 )
 from .personal_workspace import build_personal_workday
+from .sales_team import SALES_BI_MANAGERS
+from .cabinet_ui import cabinet_html
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
@@ -955,7 +957,7 @@ def schedule_clean_revenue_refresh(month: str):
 
 async def load_jarvis_operations(resource: str, params: dict[str, str] | None = None):
     """Proxy a bounded read-only Jarvis payload so its token never reaches the browser."""
-    allowed = {"sales-calls", "crm-audit", "marketing", "reactivation-recommendations"}
+    allowed = {"sales-calls", "personal-calls", "crm-audit", "marketing", "reactivation-recommendations"}
     if resource not in allowed:
         return {"ok": False, "status": "invalid_resource"}
     if not settings.jarvis_operations_url or not settings.jarvis_operations_token:
@@ -1432,7 +1434,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/api/cabinet/me", "/api/cabinet/workday", "/api/cabinet/listening", "/api/cabinet/salary", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2045,26 +2047,73 @@ async def bitrix_launch(request: Request):
     return response
 
 
-@app.get("/cabinet", response_class=HTMLResponse)
-async def cabinet(request: Request):
+@app.get("/cabinet-legacy", response_class=HTMLResponse)
+async def legacy_cabinet(request: Request):
     require_bitrix_identity(request)
     return HTMLResponse(r"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>MAVIS · Моя работа</title>
 <style>:root{--ink:#16354a;--muted:#70889a;--line:#d9e6ed;--sky:#e9f8fc;--teal:#007f87;--mint:#dff7ef;--warn:#fff3dc;--danger:#fff0ef;background:#f3f7f9}*{box-sizing:border-box}body{margin:0;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:radial-gradient(circle at 85% 0,#e0f7f5 0,transparent 27rem),#f3f7f9}.shell{max-width:1480px;margin:auto;padding:24px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px}.rail,.panel,.hero{background:#fff;border:1px solid var(--line);box-shadow:0 14px 42px #173d4b0b}.rail{border-radius:24px;padding:22px;height:max-content;position:sticky;top:16px}.brand{font-weight:900;letter-spacing:.11em;font-size:11px;color:var(--teal)}.avatar{width:66px;height:66px;margin:27px 0 12px;border-radius:20px;display:grid;place-items:center;background:linear-gradient(135deg,#d5f5ee,#cce8fb);font-weight:900;font-size:22px;color:#12677a}.rail h2{font-size:21px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px;line-height:1.45}.nav{display:grid;gap:3px;margin:28px 0}.nav a{color:#456477;text-decoration:none;padding:10px;border-radius:10px;font-weight:700;font-size:14px}.nav a:hover{background:#edf7f8;color:var(--teal)}.badge{display:inline-block;background:#e7f5f3;color:#087776;border-radius:999px;padding:5px 9px;font-weight:800;font-size:12px}.main{min-width:0}.hero{border-radius:24px;padding:24px 28px;margin-bottom:18px;display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.eyebrow{margin:0;color:#5d8191;font-size:11px;font-weight:900;letter-spacing:.13em;text-transform:uppercase}.hero h1{font-size:34px;letter-spacing:-.035em;margin:7px 0}.hero-actions{display:flex;gap:8px;align-items:center}.button{border:1px solid #bad8e4;background:#fff;color:#21536d;padding:10px 13px;border-radius:11px;font:inherit;font-weight:800;cursor:pointer}.button.primary{background:#0b7886;color:#fff;border-color:#0b7886}.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}.kpi{background:#fff;border:1px solid var(--line);border-radius:18px;padding:17px}.kpi.accent{background:linear-gradient(135deg,#e6faf7,#f7ffff)}.kpi small{color:var(--muted);font-weight:800}.kpi b{display:block;font-size:27px;margin-top:7px;letter-spacing:-.04em}.kpi em{font-style:normal;font-size:12px;color:#608091}.workspace{display:grid;grid-template-columns:1.25fr .9fr;gap:18px}.panel{border-radius:20px;padding:20px;min-width:0}.panel h2{font-size:18px;margin:0 0 4px;letter-spacing:-.02em}.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:16px}.stage-list,.task-list,.hint-list{display:grid;gap:8px}.row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid #e7eef2;font-size:14px}.row:first-child{border-top:0}.row a{color:#175d78;font-weight:800;text-decoration:none}.chip{padding:5px 8px;border-radius:999px;background:#eaf4fa;color:#39718c;font-size:11px;font-weight:900}.risk{background:var(--danger);border-color:#f0cbc8}.warn{background:var(--warn)}.split{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.income{background:linear-gradient(135deg,#173b50,#1b6972);color:#fff}.income .muted{color:#d3edf0}.income strong{font-size:31px;letter-spacing:-.05em}.income .button{margin-top:13px}.calls{margin-top:18px}.calls iframe{display:block;width:100%;height:620px;border:1px solid var(--line);border-radius:14px;background:#f5fafb}.empty{padding:16px;border:1px dashed #bed4df;border-radius:12px;color:#617d8c;font-size:14px}.salary-form{display:none;margin-top:15px;padding-top:15px;border-top:1px solid #57909a}.salary-form.show{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.salary-form label{font-size:11px;font-weight:800}.salary-form input{width:100%;margin-top:4px;border:1px solid #b7d4dc;border-radius:8px;padding:8px;background:#fff;color:#17354a}.notice{padding:12px 14px;border-radius:12px;background:#fff9e9;color:#76551e;font-size:13px;line-height:1.45}.preview{display:none}@media(max-width:1050px){.shell{grid-template-columns:1fr}.rail{position:static}.nav{grid-template-columns:repeat(4,auto);overflow:auto;margin:15px 0}.kpis{grid-template-columns:repeat(2,1fr)}}@media(max-width:720px){.shell{padding:12px}.hero{padding:18px;display:block}.hero h1{font-size:28px}.hero-actions{margin-top:12px}.workspace,.split{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}.calls iframe{height:520px}.salary-form.show{grid-template-columns:1fr}}</style></head><body><div class='shell'><aside class='rail'><div class='brand'>MAVIS · МОЯ РАБОТА</div><div class='avatar' id='avatar'>М</div><h2 id='name'>Загружаю профиль</h2><p class='muted' id='role'>Личный кабинет менеджера</p><span class='badge'>Онлайн из Bitrix24</span><nav class='nav'><a href='#deals'>Сделки</a><a href='#tasks'>Дела</a><a href='#hints'>Подсказки</a><a href='#calls'>Звонки</a></nav><p class='muted'>В кабинете видны только ваши сделки, дела и звонки.</p></aside><main class='main'><header class='hero'><div><p class='eyebrow'>Рабочий стол · продажи</p><h1 id='headline'>Мой рабочий день</h1><p class='muted' id='subtitle'>Загружаю актуальные данные Bitrix24…</p></div><div class='hero-actions'><button class='button' onclick='load()'>Обновить</button><button id='preview' class='button preview' onclick='togglePreview()'>Смотреть как менеджер</button></div></header><section class='kpis' id='kpis'></section><section class='workspace'><article class='panel' id='deals'><div class='panel-head'><div><p class='eyebrow'>Воронка</p><h2>Мои сделки в работе</h2></div><span class='chip' id='deal-count'></span></div><div class='stage-list' id='stages'></div></article><article class='panel' id='tasks'><div class='panel-head'><div><p class='eyebrow'>Очередь</p><h2>Дела: сегодня и следующий рабочий день</h2></div></div><div class='task-list' id='tasks-list'></div></article></section><section class='split'><article class='panel income'><p class='eyebrow'>Мой доход</p><h2>Зарплата на сегодня</h2><strong id='salary'>Не настроено</strong><p class='muted' id='salary-note'>Руководитель задаёт базу, процент и личный план.</p><button class='button' id='salary-edit' onclick='showSalary()'>Настроить расчёт</button><form id='salary-form' class='salary-form' onsubmit='saveSalary(event)'><label>База / месяц<input name='monthly_base' type='number' min='0' step='0.01'></label><label>% от факта<input name='commission_percent' type='number' min='0' max='100' step='0.01'></label><label>План / месяц<input name='monthly_plan' type='number' min='0' step='0.01'></label><button class='button primary' type='submit'>Сохранить</button></form></article><article class='panel' id='hints'><p class='eyebrow'>Контроль качества</p><h2>Где нужна ваша реакция</h2><div class='hint-list' id='hints-list'></div></article></section><section class='panel calls' id='calls'><div class='panel-head'><div><p class='eyebrow'>Качество общения</p><h2>Мои звонки и разборы</h2><p class='muted'>Записи, оценка и рекомендации открываются прямо здесь.</p></div><span class='badge'>Только ваши звонки</span></div><iframe id='jarvis' title='Мои звонки и разборы' loading='lazy'></iframe></section></main></div><script>let preview=false,me=null,data=null;const q=s=>document.querySelector(s);const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));const money=v=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Number(v||0))+' BYN';const row=(item,meta='')=>`<div class='row'><a href='${esc(item.url||'#')}' target='_blank' rel='noopener'>${esc(item.title||item.name||'Без названия')}</a><span class='chip'>${esc(meta)}</span></div>`;async function load(){const suffix=preview?'?preview=manager':'';const [m,r,s]=await Promise.all([fetch('/api/cabinet/me'+suffix),fetch('/api/cabinet/workday'+suffix),fetch('/api/cabinet/salary'+suffix)]);me=await m.json();data=await r.json();const salary=await s.json();if(!r.ok){q('#subtitle').textContent=data.detail||'Данные временно недоступны';return}render(salary);q('#jarvis').src='/api/cabinet/listening'+suffix}function render(salary){const c=data.calls,d=data.deals,t=data.tasks,l=data.leads;const name=data.profile?.name||'Менеджер';q('#name').textContent=name;q('#avatar').textContent=name.split(/\s+/).map(x=>x[0]).slice(0,2).join('').toUpperCase();q('#headline').textContent='Здравствуйте, '+name.split(' ')[0];q('#subtitle').textContent='Данные Bitrix24 за '+data.date+' · обновлены сейчас';q('#role').textContent=me.role==='director'&&!preview?'Руководитель · полный доступ':'Менеджер по продажам';q('#preview').style.display=me.role==='director'&&!preview?'inline-block':'none';q('#salary-edit').style.display=me.role==='director'?'inline-block':'none';q('#kpis').innerHTML=[['Сделки в работе',d.active_count,'разбивка по этапам ниже'],['Новые лиды',l.month_count,'с начала месяца'],['План / факт',money(salary.monthly_plan||0)+' / '+money(d.fact_amount),'успешные сделки месяца'],['Предплан',money(d.preplan_amount),d.preplan_count+' сделок на этапах 10–12'],['Успешные звонки',c.successful_from_minute+' / '+c.target,'длительность от 1 минуты'],['Дела',t.today_count+' сегодня · '+t.tomorrow_count+' далее','выходные исключены'],['Просрочено',t.overdue_count+' дел · '+d.overdue_count+' сделок','нужно разобрать'],['Без дела',d.without_open_task_count,'сделок без открытого дела']].map((x,i)=>`<article class='kpi ${i===2?'accent':''}'><small>${x[0]}</small><b>${x[1]}</b><em>${x[2]}</em></article>`).join('');q('#deal-count').textContent=d.active_count+' в работе';q('#stages').innerHTML=d.stages?.length?d.stages.map(x=>`<div class='row'><span>${esc(x.name)}</span><b>${x.count}</b><span class='chip'>${money(x.amount)}</span></div>`).join(''):'<div class=empty>Открытых сделок нет.</div>';const tasks=[...t.today.map(x=>row(x,'сегодня')),...t.tomorrow.map(x=>row(x,'следующий рабочий день')),...t.overdue.slice(0,5).map(x=>row(x,'просрочено'))];q('#tasks-list').innerHTML=tasks.length?tasks.join(''):'<div class=empty>На сегодня и следующий рабочий день открытых дел нет.</div>';const hints=[...d.without_open_task.slice(0,3).map(x=>row(x,'создайте следующее дело')),...d.missing_source.slice(0,2).map(x=>row(x,'заполните источник')),...(data.iso_suot?.candidates||[]).slice(0,2).map(x=>row(x,'проверьте ИСО/СУОТ'))];q('#hints-list').innerHTML=hints.length?hints.join(''):'<div class=empty>Сейчас нет сделок без обязательного следующего действия.</div>';if(salary.configured){q('#salary').textContent=money(salary.today_amount);q('#salary-note').textContent='База на рабочие дни + '+salary.commission_percent+'% от факта '+money(d.fact_amount)+'.'}else{q('#salary').textContent='Не настроено';q('#salary-note').textContent='Руководитель ещё не задал правила расчёта для этого менеджера.'}const f=q('#salary-form');f.monthly_base.value=salary.monthly_base||'';f.commission_percent.value=salary.commission_percent||'';f.monthly_plan.value=salary.monthly_plan||''}function togglePreview(){preview=true;load()}function showSalary(){q('#salary-form').classList.toggle('show')}async function saveSalary(e){e.preventDefault();const f=e.currentTarget,p=Object.fromEntries(new FormData(f));p.user_id=data.user_id;const r=await fetch('/api/cabinet/salary',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok){alert((await r.json()).detail||'Не удалось сохранить');return}f.classList.remove('show');load()}load()</script></body></html>""")
 
 
+@app.get("/cabinet", response_class=HTMLResponse)
+async def cabinet(request: Request):
+    require_bitrix_identity(request)
+    return HTMLResponse(cabinet_html())
+
+
 @app.get("/api/cabinet/me")
 async def api_cabinet_me(request: Request):
     identity = require_bitrix_identity(request)
-    preview = request.query_params.get("preview") == "manager" and identity.role == "director"
-    return {"ok": True, "user_id": identity.user_id, "role": "manager" if preview else identity.role, "portal": identity.portal, "expires_at": identity.expires_at, "preview": preview}
+    return {"ok": True, "user_id": identity.user_id, "role": identity.role, "portal": identity.portal, "expires_at": identity.expires_at}
+
+
+def _normalized_employee_name(value: Any) -> str:
+    return re.sub(r"\\s+", " ", str(value or "").strip().casefold().replace("ё", "е"))
+
+
+async def _cabinet_managers() -> list[dict[str, str]]:
+    """Resolve the configured sales roster to current Bitrix IDs on the server."""
+    configured_names = [*storage.team().get("managers", []), *SALES_BI_MANAGERS]
+    wanted = {_normalized_employee_name(name) for name in configured_names if str(name).strip()}
+    meta = await client.meta()
+    users = meta.get("user_options") or []
+    managers = [
+        {"id": str(row.get("id") or ""), "name": str(row.get("name") or "")}
+        for row in users
+        if row.get("active") and _normalized_employee_name(row.get("name")) in wanted and str(row.get("id") or "").isdigit()
+    ]
+    return sorted({row["id"]: row for row in managers}.values(), key=lambda row: row["name"].casefold())
+
+
+async def _cabinet_subject(request: Request) -> tuple[BitrixIdentity, str]:
+    """Select a manager only for a verified director; managers always remain self-scoped."""
+    identity = require_bitrix_identity(request)
+    requested = str(request.query_params.get("manager_id") or "").strip()
+    if not requested:
+        return identity, identity.user_id
+    if identity.role != "director":
+        raise HTTPException(403, "Просмотр другого сотрудника доступен только руководителю")
+    if not requested.isdigit():
+        raise HTTPException(400, "Некорректный сотрудник")
+    managers = await _cabinet_managers()
+    if requested not in {row["id"] for row in managers}:
+        raise HTTPException(403, "Сотрудник не входит в состав продаж")
+    return identity, requested
+
+
+@app.get("/api/cabinet/managers")
+async def api_cabinet_managers(request: Request):
+    identity = require_bitrix_identity(request)
+    if identity.role != "director":
+        raise HTTPException(403, "Список сотрудников доступен только руководителю")
+    return {"ok": True, "managers": await _cabinet_managers()}
 
 
 @app.get("/api/cabinet/workday")
 async def api_cabinet_workday(request: Request, date: str = Query(default="")):
-    identity = require_bitrix_identity(request)
+    _, user_id = await _cabinet_subject(request)
     selected_date = date or (datetime.now(ZoneInfo(settings.timezone)) - timedelta(days=1)).date().isoformat()
     try:
-        return await build_personal_workday(client, identity.user_id, selected_date, settings.timezone)
+        return await build_personal_workday(client, user_id, selected_date, settings.timezone)
     except ValueError as exc:
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
     except Exception:
@@ -2072,13 +2121,22 @@ async def api_cabinet_workday(request: Request, date: str = Query(default="")):
         raise HTTPException(503, "Данные личного кабинета Bitrix24 временно недоступны") from None
 
 
+@app.get("/api/cabinet/calls")
+async def api_cabinet_calls(request: Request):
+    _, user_id = await _cabinet_subject(request)
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": user_id})
+    if not payload.get("ok"):
+        raise HTTPException(503, "Звонки Jarvis временно недоступны")
+    return payload
+
+
 @app.get("/api/cabinet/listening")
 async def api_cabinet_listening(request: Request):
-    identity = require_bitrix_identity(request)
-    preview = request.query_params.get("preview") == "manager" and identity.role == "director"
+    identity, user_id = await _cabinet_subject(request)
+    preview = user_id != identity.user_id
     payload = jarvis_embed_payload(
         role="manager" if preview or identity.role != "director" else "director",
-        user_id=identity.user_id if preview or identity.role != "director" else "",
+        user_id=user_id if preview or identity.role != "director" else "",
     )
     if not isinstance(payload, dict) or not payload.get("ok") or not payload.get("url"):
         raise HTTPException(503, "Прослушка Джарвиса временно недоступна")
@@ -2105,15 +2163,15 @@ def _cabinet_salary(user_id: str, report_date: str, fact_amount: float = 0.0) ->
 
 @app.get("/api/cabinet/salary")
 async def api_cabinet_salary(request: Request, date: str = Query(default=""), fact_amount: float = Query(default=0)):
-    identity = require_bitrix_identity(request)
+    _, user_id = await _cabinet_subject(request)
     selected_date = date or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
     if not fact_amount:
         try:
-            workday = await build_personal_workday(client, identity.user_id, selected_date, settings.timezone)
+            workday = await build_personal_workday(client, user_id, selected_date, settings.timezone)
             fact_amount = float(((workday.get("deals") or {}).get("fact_amount") or 0))
         except Exception:
             logger.warning("Salary preview is shown without a live fact amount", exc_info=True)
-    return _cabinet_salary(identity.user_id, selected_date, fact_amount)
+    return _cabinet_salary(user_id, selected_date, fact_amount)
 
 
 @app.put("/api/cabinet/salary")
