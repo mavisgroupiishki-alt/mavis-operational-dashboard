@@ -11,6 +11,9 @@ from app.personal_workspace import build_personal_workday
 
 
 class BitrixIdentityTests(unittest.TestCase):
+    def test_salary_route_is_allowed_to_use_the_signed_bitrix_cookie(self):
+        self.assertTrue(main.is_public_path("/api/cabinet/salary"))
+
     def test_portal_host_rejects_paths_credentials_and_invalid_ports(self):
         self.assertEqual(portal_host("mavisgroup.bitrix24.by"), "mavisgroup.bitrix24.by")
         self.assertEqual(portal_host("https://evil.test/mavisgroup.bitrix24.by"), "")
