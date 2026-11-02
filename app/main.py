@@ -2180,12 +2180,6 @@ def _cabinet_salary(user_id: str, report_date: str, fact_amount: float = 0.0) ->
 async def api_cabinet_salary(request: Request, date: str = Query(default=""), fact_amount: float = Query(default=0)):
     _, user_id = await _cabinet_subject(request)
     selected_date = date or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
-    if not fact_amount:
-        try:
-            workday = await build_personal_workday(client, user_id, selected_date, settings.timezone)
-            fact_amount = float(((workday.get("deals") or {}).get("fact_amount") or 0))
-        except Exception:
-            logger.warning("Salary preview is shown without a live fact amount", exc_info=True)
     return _cabinet_salary(user_id, selected_date, fact_amount)
 
 

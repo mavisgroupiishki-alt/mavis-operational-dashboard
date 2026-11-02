@@ -185,6 +185,20 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(saved["cabinet_salary:9"]["commission_percent"], 5)
 
+    def test_salary_uses_the_fact_already_loaded_by_the_workspace(self):
+        configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
+        director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        loader = AsyncMock()
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main, "build_personal_workday", new=loader),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            client.cookies.set("mavis_bitrix_session", director)
+            response = client.get("/api/cabinet/salary?fact_amount=1200")
+            self.assertEqual(response.status_code, 200)
+            loader.assert_not_awaited()
+
 
 class _Client:
     portal = "https://mavisgroup.bitrix24.by"
