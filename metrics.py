@@ -1,0 +1,2053 @@
+import asyncio
+import copy
+import calendar
+import json
+import math
+import re
+import time
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+BASE_DIR = Path(__file__).resolve().parent
+REFERENCE = json.loads((BASE_DIR / "reference_data.json").read_text(encoding="utf-8"))
+PROD_NORMS = REFERENCE.get("production_norms", {})
+SOURCE_MAP = REFERENCE.get("source_groups", {})
+
+SALES_CATEGORY_IDS = [0]
+REANIMATION_CATEGORY_ID = 20
+PROD_CATEGORY = 28
+DORMANT_CATEGORY = 30
+
+SALES_WON = "WON"
+PROD_WON = "C28:WON"
+PROD_RETURN = "C28:APOLOGY"
+
+F_SERVICE = "UF_CRM_1765113071"
+F_EXPECTED_CLOSE = "UF_CRM_1765875991647"
+F_PROD_START = "UF_CRM_1703225329"
+F_RETURN_REASON = "UF_CRM_1764496013454"
+F_STUCK_REASON_OLD = "UF_CRM_1764496088031"
+F_STUCK_REASON_NEW = "UF_CRM_1785932240544"
+F_SALES_MANAGER = "UF_CRM_1674809919"
+F_SALES_LINK = "UF_CRM_1765117204"
+F_PAID_OLD = "UF_CRM_1654754709"
+F_PAID = "UF_CRM_1779453856340"
+F_NET_REVENUE = "UF_CRM_1787226797"
+F_OUR_AMOUNT = "UF_CRM_MPS_OUR_AMOUNT"
+F_CONTRACTOR_COST = "UF_CRM_MPS_CONTRACTOR_COST"
+F_PAYMENTS_TOTAL = "UF_CRM_MPS_PAYMENTS_TOTAL"
+F_PAYMENT_REMAINDER = "UF_CRM_MPS_REMAINDER"
+F_NEXT_PAYMENT = "UF_CRM_MPS_NEXT_DATE"
+F_NPS = "UF_CRM_1781707277198"
+F_ACT = "UF_CRM_1785928288816"
+F_DEAL_CLIENT_TYPE = "UF_CRM_1756973967704"
+F_LEAD_CLIENT_TYPE = "UF_CRM_1756973545759"
+
+DEAL_SELECT = [
+    "ID", "TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
+    "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
+    F_SERVICE, F_EXPECTED_CLOSE, F_PROD_START, F_RETURN_REASON, F_STUCK_REASON_OLD, F_STUCK_REASON_NEW,
+    F_SALES_MANAGER, F_SALES_LINK, F_PAID_OLD, F_PAID, F_NET_REVENUE, F_OUR_AMOUNT,
+    F_CONTRACTOR_COST, F_PAYMENTS_TOTAL, F_PAYMENT_REMAINDER, F_NEXT_PAYMENT, F_NPS, F_ACT, F_DEAL_CLIENT_TYPE,
+]
+LEAD_SELECT = [
+    "ID", "TITLE", "STATUS_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "DATE_CREATE", "DATE_MODIFY",
+    "ASSIGNED_BY_ID", "OPPORTUNITY", "CURRENCY_ID", F_LEAD_CLIENT_TYPE
+]
+
+SALES_METRICS = [
+    "leads", "qualified", "qualified_rate", "lead_to_deal_rate",
+    "lead_to_sale_rate", "qualified_to_sale_rate",
+    "deals", "lost_deals", "deal_amount",
+    "sales", "sales_amount", "average_check", "deal_to_sale_rate", "tail_deal_to_sale_rate", "total_deal_to_sale_rate", "products_per_deal",
+    "products", "product_amount", "sold_products", "sold_product_amount", "average_product_check",
+    "product_sale_rate", "paid_amount", "net_revenue"
+]
+
+PROD_METRICS = [
+    "closed_amount", "closed_count", "new_count", "new_amount", "period_closed_count", "period_closed_amount",
+    "new_to_success_pct", "avg_check", "capacity_count", "capacity_amount", "returns_count", "returns_amount",
+    "avg_production_days", "avg_deviation_days", "within_norm_pct", "nps_avg", "act_share_pct",
+    "dormant_count", "returned_to_production", "dormant_with_reason_pct"
+]
+
+
+def num(v: Any) -> float:
+    if v in (None, "", False):
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, list):
+        return sum(num(x) for x in v)
+    s = str(v).strip().replace(" ", "").replace(",", ".")
+    if "|" in s:
+        s = s.split("|", 1)[0]
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def pct(a: float, b: float) -> float:
+    return round(a / b * 100, 1) if b else 0.0
+
+
+def observed_period_end(range_end: datetime, now: datetime) -> datetime:
+    """Do not count future arrivals in a period that includes today."""
+    tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
+    return min(range_end, tomorrow)
+
+
+def has_sales_origin(deal: Dict[str, Any]) -> bool:
+    """Whether the production card is linked to a Sales-department deal.
+
+    ``F_SALES_LINK`` is a Bitrix CRM-link field, whose response shape varies
+    between portals (a scalar, an array or a nested value).  A non-empty link
+    is the source-of-truth that the product was handed over from Sales.
+    """
+    def present(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(present(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return any(present(item) for item in value)
+        return str(value or "").strip().lower() not in {"", "0", "false", "none", "null"}
+
+    return present(deal.get(F_SALES_LINK))
+
+
+def exclude_dormant_to_production(deals: List[Dict[str, Any]], dormant_to_production_ids: Iterable[str]) -> List[Dict[str, Any]]:
+    """Keep only sales hand-offs that did not enter production from «Зависшие»."""
+    excluded = {str(deal_id) for deal_id in dormant_to_production_ids if deal_id}
+    return [deal for deal in deals if str(deal.get("ID") or "") not in excluded]
+
+
+def was_in_production_on(deal: Dict[str, Any], boundary: datetime, tz: ZoneInfo) -> bool:
+    """Whether a production card was active at the opening of ``boundary``."""
+    started = parse_dt(deal.get(F_PROD_START), tz) or parse_dt(deal.get("DATE_CREATE"), tz)
+    closed = parse_dt(deal.get("CLOSEDATE"), tz)
+    return bool(started and started < boundary and (not closed or closed >= boundary))
+
+
+def parse_dt(v: Any, tz: Optional[ZoneInfo] = None) -> Optional[datetime]:
+    if not v:
+        return None
+    if isinstance(v, datetime):
+        d = v
+    else:
+        s = str(v).strip()
+        try:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                d = datetime.strptime(s[:10], "%Y-%m-%d")
+            except Exception:
+                return None
+    if tz:
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        else:
+            d = d.astimezone(tz)
+    return d
+
+
+def iso(d: datetime) -> str:
+    return d.isoformat()
+
+
+def money(d: Dict[str, Any]) -> float:
+    return num(d.get("OPPORTUNITY"))
+
+
+def month_bounds(month_key: str, tz_name: str) -> Tuple[datetime, datetime, datetime, str]:
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    try:
+        y, m = [int(x) for x in month_key.split("-")]
+    except Exception:
+        y, m = now.year, now.month
+    start = datetime(y, m, 1, tzinfo=tz)
+    end = datetime(y + (m == 12), 1 if m == 12 else m + 1, 1, tzinfo=tz)
+    prev1_month = m - 1
+    prev1_year = y
+    if prev1_month == 0:
+        prev1_month = 12
+        prev1_year -= 1
+    prev2_month = prev1_month - 1
+    prev2_year = prev1_year
+    if prev2_month == 0:
+        prev2_month = 12
+        prev2_year -= 1
+    previous_two_start = datetime(prev2_year, prev2_month, 1, tzinfo=tz)
+    return start, end, previous_two_start, now.isoformat()
+
+
+def period_bounds(month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = "") -> Tuple[datetime, datetime, str]:
+    start, end, _, _ = month_bounds(month_key, tz_name)
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    if period == "custom" and custom_start and custom_end:
+        try:
+            a = datetime.strptime(custom_start[:10], "%Y-%m-%d").replace(tzinfo=tz)
+            b_inclusive = datetime.strptime(custom_end[:10], "%Y-%m-%d").replace(tzinfo=tz)
+            if b_inclusive < a:
+                a, b_inclusive = b_inclusive, a
+            b = b_inclusive + timedelta(days=1)
+            return a, b, f"{a.strftime('%d.%m.%Y')}–{b_inclusive.strftime('%d.%m.%Y')}"
+        except Exception:
+            pass
+    if period == "last_week":
+        anchor = min(now, end - timedelta(seconds=1))
+        monday = anchor.date() - timedelta(days=anchor.weekday())
+        this_monday = datetime.combine(monday, datetime.min.time(), tzinfo=tz)
+        return this_monday - timedelta(days=7), this_monday, "Прошедшая неделя"
+    if period == "this_week":
+        anchor = min(now, end - timedelta(seconds=1))
+        monday = anchor.date() - timedelta(days=anchor.weekday())
+        this_monday = datetime.combine(monday, datetime.min.time(), tzinfo=tz)
+        return max(start, this_monday), min(end, this_monday + timedelta(days=7)), "Текущая неделя"
+    return start, end, "Текущий месяц"
+
+
+def month_diff(d: Optional[datetime], month_start: datetime) -> Optional[int]:
+    if not d:
+        return None
+    return (d.year * 12 + d.month) - (month_start.year * 12 + month_start.month)
+
+
+def week_of_month(d: Optional[datetime], month_start: datetime) -> int:
+    """RNP week index: calendar week Mon-Sun, anchored by the Monday
+    containing the 1st day of the selected month.
+
+    Example for Sep-2026:
+      0 = 31.08-06.09 (facts inside selected month: 01-06.09)
+      1 = 07-13.09
+      2 = 14-20.09
+      3 = 21-27.09
+      4 = 28.09-04.10 (facts inside selected month: 28-30.09)
+    """
+    if not d or d.year != month_start.year or d.month != month_start.month:
+        return -1
+    first_monday = month_start.date() - timedelta(days=month_start.weekday())
+    idx = (d.date() - first_monday).days // 7
+    return min(4, max(0, idx))
+
+
+def business_days(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
+    if not a or not b:
+        return None
+    start, end = a.date(), b.date()
+    if end < start:
+        return 0
+    n = 0
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+def calendar_days(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
+    if not a or not b:
+        return None
+    return max(0, (b.date() - a.date()).days)
+
+
+def norm_text(s: Any) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip().lower().replace("ё", "е"))
+
+
+def sales_block(
+    client_type: Any,
+    source: str,
+    source_overrides: Optional[Dict[str, str]] = None,
+    *,
+    source_missing: bool = False,
+) -> str:
+    """Exact RNP traffic classification.
+
+    Manual source override from dashboard has the highest priority.
+
+    Agreed AUTO rules:
+    - Partnerka Beltehexpertiza -> Cold (regardless of client type).
+    - Cold call:
+        New -> Cold
+        Existing -> Repeat
+    - Incoming direct call:
+        New -> Incoming
+        Existing -> Repeat
+    - Reanimation:
+        New -> Cold
+        Existing -> Repeat
+    - Google/Yandex calls and website requests, recommendation,
+      "sources ended", and open-line channels -> Incoming.
+    - Sources transferred by an expert -> Repeat.
+    - Remaining Existing clients -> Repeat.
+    - Remaining New/unknown clients -> Incoming.
+    """
+    source_overrides = source_overrides or {}
+    explicit = source_overrides.get(str(source or ""))
+    if explicit:
+        if explicit == "__ignore__":
+            return "Не учитывать"
+        if explicit in {
+            "Холодные продажи",
+            "Входящий трафик продажи",
+            "Повторные продажи по базе",
+            "Прочее",
+        }:
+            return explicit
+
+    # Renewals created automatically by a Bitrix business process do not
+    # carry a source.  They are not new incoming traffic: the contact already
+    # exists and the deal belongs to repeat sales.  Keep this after manual
+    # overrides so an explicitly classified legacy record stays editable.
+    if source_missing:
+        return "Повторные продажи по базе"
+
+    ct = norm_text(client_type)
+    src = norm_text(source)
+    existing = "действующ" in ct
+    new_client = "нов" in ct
+
+    # Always cold.
+    if "белтехэкспертиз" in src and ("партнер" in src or "партнерк" in src):
+        return "Холодные продажи"
+
+    # Conditional by client type.
+    if "холод" in src and "звон" in src:
+        return "Повторные продажи по базе" if existing else "Холодные продажи"
+
+    if "реанимац" in src:
+        return "Повторные продажи по базе" if existing else "Холодные продажи"
+
+    if "входящ" in src and "звон" in src and "прям" in src:
+        return "Повторные продажи по базе" if existing else "Входящий трафик продажи"
+
+    # "Передан экспертом/экспертам" is a handoff of an existing contact,
+    # so it belongs to repeat sales regardless of how the client type was filled.
+    if re.search(r"передан.*эксперт", src):
+        return "Повторные продажи по базе"
+
+    # Explicit incoming channels from RNP logic.
+    incoming_patterns = [
+        r"google.*реклам", r"google.*органик",
+        r"яндекс.*реклам", r"яндекс.*органик",
+        r"заявк.*сайт.*mavis", r"заявк.*сайт.*мавис",
+        r"по рекомендац",
+        r"источник.*кончил",
+        r"telegram|телеграм",
+        r"viber|вайбер",
+        r"электрон.*почт",
+        r"жив.*чат|открыт.*лини",
+    ]
+    if any(re.search(p, src) for p in incoming_patterns):
+        return "Входящий трафик продажи"
+
+    if existing:
+        return "Повторные продажи по базе"
+    return "Входящий трафик продажи"
+
+
+def source_group(name: str) -> str:
+    # Backward-compatible helper for places without client type.
+    return sales_block(None, name)
+
+
+def product_category(name: str) -> str:
+    n = norm_text(name)
+    if re.search(r"iso|исо|суот|систем.*менедж|внутрен.*аудит", n):
+        return "Системы менеджмента"
+    if re.search(r"специалист|обучен|повышен.*квалиф|удостовер|аттестац.*специал|подбор", n):
+        return "Специалисты"
+    if re.search(r"спк|свидетельств.*технич|аттестац.*организац|строител|смр|техкомпет|осп", n):
+        return "Строительство"
+    if "лиценз" in n:
+        return "Лицензирование"
+    if re.search(r"тр\s*тс|декларац|сертифик.*продук|сгр|техническ.*услов|\bту\b|белтпп|происхожд", n):
+        return "Продукция"
+    return "Не определено"
+
+
+def match_norm_name(service: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    n = norm_text(service)
+    aliases = [
+        (r"^спк$|спк смр", "СПК"),
+        (r"ик спк", "ИК СПК"),
+        (r"расшир.*спк", "Расширение СПК"),
+        (r"подтверж.*аттест", "Подтверждение Аттестация"),
+        (r"аттестац.*спец", "Аттестация специалиста"),
+        (r"аттестац", "Аттестация"),
+        (r"период.*iso|период.*исо|ик исо", "ИК ИСО 9001"),
+        (r"iso 27001|исо 27001", "ИСО 27001"),
+        (r"iso 9001|исо 9001", "ИСО 9001"),
+        (r"период.*суот|ик суот", "ИК СУОТ 45001"),
+        (r"разработ.*суот", "Разработка СУОТ 45001"),
+        (r"суот", "Сертификат СУОТ 45001"),
+        (r"лиценз.*мчс", "Лицензия МЧС"),
+        (r"лиценз.*мвд", "Лицензия МВД"),
+        (r"лиценз.*гпн", "Лицензия ГПН"),
+        (r"подбор.*подряд", "Подбор от подрядчика"),
+        (r"подбор.*совмест", "Подбор совместителя"),
+        (r"подбор", "Подбор"),
+        (r"вступ.*сро", "Вступление в СРО"),
+        (r"внес.*спец.*сро", "Внесение спецов СРО"),
+        (r"осп|свароч", "ОСП"),
+        (r"тех.*свидетель", "ТС (тех.свидетельство с последующим декларированием)"),
+        (r"\bтр\b|тех регламент", "ТР базовый"),
+        (r"\bту\b|тех.*услов", "ТУ (регистрация)"),
+        (r"сертифик.*продук", "Сертификация продукции"),
+        (r"консультац", "Консультация"),
+    ]
+    for pat, key in aliases:
+        if re.search(pat, n):
+            return key, PROD_NORMS.get(key)
+    for key, spec in PROD_NORMS.items():
+        if norm_text(key) == n:
+            return key, spec
+    return None, None
+
+
+def enum_label(meta: Dict[str, Any], field: str, raw: Any) -> Any:
+    if raw in (None, "", False):
+        return None
+    mp = (meta.get("enums") or {}).get(field, {})
+    if isinstance(raw, list):
+        return [mp.get(str(x), str(x)) for x in raw]
+    return mp.get(str(raw), str(raw))
+
+
+def source_name(meta: Dict[str, Any], entity: Dict[str, Any], reanimation=False) -> str:
+    if reanimation:
+        return "Из реанимации"
+    sid = str(entity.get("SOURCE_ID") or "")
+    return (meta.get("sources") or {}).get(sid) or entity.get("SOURCE_DESCRIPTION") or sid or "Прочее"
+
+
+def user_name(meta: Dict[str, Any], uid: Any) -> str:
+    return (meta.get("users") or {}).get(str(uid), str(uid or "Не указан"))
+
+
+def stage_name(meta: Dict[str, Any], sid: Any, entity: Optional[str] = None) -> str:
+    if entity:
+        v=((meta.get("status_by_entity") or {}).get(entity) or {}).get(str(sid))
+        if v: return v
+    return (meta.get("statuses") or {}).get(str(sid), str(sid or "Не указана"))
+
+
+def successful_sale_stage_ids(meta: Dict[str, Any]) -> set[str]:
+    """Stages included in OP sales/revenue.
+
+    Agreed logic:
+    - 14. Предоплата получена
+    - 15. Продажа успешна
+    Revenue period is determined by CLOSEDATE, not MOVED_TIME.
+    """
+    stages = ((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {})
+    result = set()
+    for sid, name in stages.items():
+        n = norm_text(name)
+        if "предоплата получена" in n or "продажа успешна" in n:
+            result.add(str(sid))
+    return result
+
+
+def preplan_stage_ids(meta: Dict[str, Any]) -> set[str]:
+    """Return the live OP stages that make up the pre-plan amount.
+
+    Bitrix stage IDs are portal-specific (and can be custom IDs), therefore
+    use the configured stage title rather than hard-coding an ID.  The agreed
+    pre-plan contains stages 10–12 only.
+    """
+    stages = ((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {})
+    return {
+        str(stage_id)
+        for stage_id, name in stages.items()
+        if re.match(r"^\s*(?:10|11|12)(?!\d)(?:\s|[.):]|$)", str(name or ""))
+    }
+
+
+def is_success_sale_record(r: Dict[str, Any]) -> bool:
+    """Hard guard for OP sales.
+    A sale is ONLY a deal currently on one of the agreed sale stages
+    (14. Предоплата получена / 15. Продажа успешна) with CLOSEDATE
+    inside the selected reporting month. Lost/refused deals are excluded.
+    """
+    return bool(
+        r.get("is_won")
+        and r.get("sale_in_report_month")
+        and not r.get("is_lost")
+    )
+
+
+def pay_amount(d: Dict[str, Any]) -> float:
+    return max(num(d.get(F_PAID)), num(d.get(F_PAID_OLD)), num(d.get(F_PAYMENTS_TOTAL)))
+
+
+def make_deal_url(portal: str, deal_id: Any) -> str:
+    return f"{portal}/crm/deal/details/{deal_id}/"
+
+
+def make_lead_url(portal: str, lead_id: Any) -> str:
+    return f"{portal}/crm/lead/details/{lead_id}/"
+
+
+def aggregate_sales(records: Dict[str, List[Dict[str, Any]]], period_type="total", manager=None, group=None,
+                    source=None, client_type=None, product_cat=None, month_start=None) -> Dict[str, Any]:
+    """Aggregate OP metrics for one selected month.
+
+    Main dashboard semantics (period_type='total'):
+    - leads / qualified leads: created in selected month;
+    - deals / deal amount / products in deals: deals created in selected month;
+    - sales / sales amount / sold products: all deals closed in selected month on
+      the sales stages, regardless of when the deal was created (tail included);
+    - deal->sale conversion: cohort conversion only for deals created in the
+      selected month, so the tail never distorts the percentage.
+
+    current/previous are retained only for backward-compatible drilldown/API use;
+    they are no longer exposed as separate dashboard modes.
+    """
+    leads = records["leads"]
+    deals = records["deals"]
+
+    def common(r):
+        if manager and r.get("manager") != manager:
+            return False
+        if group and r.get("group") != group:
+            return False
+        if source and r.get("source") != source:
+            return False
+        if client_type and r.get("client_type") != client_type:
+            return False
+        return True
+
+    # Leads always belong to the selected reporting month.
+    lead_rows = [] if period_type == "previous" else [
+        r for r in leads if common(r) and r.get("period_type") == "current"
+    ]
+    qual_rows = [r for r in lead_rows if r.get("is_qualified")]
+
+    current_deals = [r for r in deals if common(r) and r.get("period_type") == "current"]
+    previous_deals = [r for r in deals if common(r) and r.get("period_type") == "previous"]
+
+    if product_cat:
+        current_deals = [r for r in current_deals if any(p.get("category") == product_cat for p in r.get("products", []))]
+        previous_deals = [r for r in previous_deals if any(p.get("category") == product_cat for p in r.get("products", []))]
+
+    if period_type == "previous":
+        deal_rows = previous_deals
+        sales_universe = previous_deals
+    elif period_type == "current":
+        deal_rows = current_deals
+        sales_universe = current_deals
+    else:
+        # IMPORTANT: deal metrics are ALWAYS the selected month's created deals.
+        deal_rows = current_deals
+        # Sales include both current-period deals and the historical tail.
+        sales_universe = current_deals + previous_deals
+
+    sales_rows = [r for r in sales_universe if is_success_sale_record(r)]
+    cohort_sales_rows = [r for r in current_deals if is_success_sale_record(r)]
+    tail_sales_rows = [r for r in previous_deals if is_success_sale_record(r)]
+    all_deals = current_deals + previous_deals
+
+    products = []
+    for d in deal_rows:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            products.append({**pr, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("creation_week", -1)})
+
+    sold_products = []
+    for d in sales_rows:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            sold_products.append({**pr, "deal_id": d["id"], "deal_title": d["title"], "manager": d["manager"], "source": d["source"], "url": d["url"], "week": d.get("sale_week", -1)})
+
+    cohort_sold_products = []
+    for d in cohort_sales_rows:
+        for pr in d.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_products.append(pr)
+
+    sales_amount = round(sum(r["amount"] for r in sales_rows), 2)
+    product_qty = sum(pr["quantity"] for pr in products)
+    sold_product_qty = sum(pr["quantity"] for pr in sold_products)
+    cohort_sold_qty = sum(pr["quantity"] for pr in cohort_sold_products)
+    lost_rows = [r for r in deal_rows if r.get("lost_in_report_month")]
+
+    cohort_deal_to_sale_rate = pct(len(cohort_sales_rows), len(current_deals))
+    tail_deal_to_sale_rate = pct(len(tail_sales_rows), len(previous_deals))
+    total_deal_to_sale_rate = pct(len(sales_rows), len(all_deals))
+
+    m = {
+        "leads": len(lead_rows),
+        "qualified": len(qual_rows),
+        "qualified_rate": pct(len(qual_rows), len(lead_rows)),
+        "lead_to_deal_rate": pct(len(current_deals), len(qual_rows)),
+        "lead_to_sale_rate": pct(len(cohort_sales_rows), len(lead_rows)),
+        "qualified_to_sale_rate": pct(len(cohort_sales_rows), len(qual_rows)),
+        "deals": len(deal_rows),
+        "lost_deals": len(lost_rows),
+        "deal_amount": round(sum(r["amount"] for r in deal_rows), 2),
+        "sales": len(sales_rows),
+        "sales_amount": sales_amount,
+        "average_check": round(sales_amount / len(sales_rows), 2) if sales_rows else 0,
+        # Cohort conversion: sales from deals created in the month / deals created in the month.
+        # This is intentionally independent from the old-deal tail.
+        "deal_to_sale_rate": tail_deal_to_sale_rate if period_type == "previous" else cohort_deal_to_sale_rate,
+        "tail_deal_to_sale_rate": tail_deal_to_sale_rate,
+        "total_deal_to_sale_rate": total_deal_to_sale_rate,
+        "cohort_sales": len(cohort_sales_rows),
+        "cohort_sales_amount": round(sum(r["amount"] for r in cohort_sales_rows), 2),
+        "tail_sales": len(tail_sales_rows),
+        "tail_sales_amount": round(sum(r["amount"] for r in tail_sales_rows), 2),
+        "products_per_deal": round(product_qty / len(deal_rows), 2) if deal_rows else 0,
+        "products": round(product_qty, 2),
+        "product_amount": round(sum(pr["amount"] for pr in products), 2),
+        "sold_products": round(sold_product_qty, 2),
+        "sold_product_amount": round(sum(pr["amount"] for pr in sold_products), 2),
+        "average_product_check": round(sum(pr["amount"] for pr in sold_products) / sold_product_qty, 2) if sold_product_qty else 0,
+        # Product conversion is also cohort-based so tail sales do not inflate it.
+        "product_sale_rate": pct(cohort_sold_qty, product_qty),
+        "paid_amount": round(sum(r.get("paid_amount", 0) for r in sales_rows), 2),
+        "net_revenue": round(sum(r.get("net_revenue", 0) for r in sales_rows), 2),
+    }
+
+    weeks = {k: [0, 0, 0, 0, 0] for k in [
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount", "week_tail_deals", "week_tail_sales", "products", "product_amount", "sold_products", "sold_product_amount"
+    ]}
+    # Conversion is a creation-week cohort. Keep its numerator separately
+    # from weekly sales flow: a deal from the earlier tail may be sold this
+    # week, but it must never increase this week's conversion percentage.
+    cohort_sales_by_creation_week = [0, 0, 0, 0, 0]
+    cohort_sold_by_creation_week = [0, 0, 0, 0, 0]
+    for r in lead_rows:
+        w = r.get("week", -1)
+        if w >= 0:
+            weeks["leads"][w] += 1
+            if r.get("is_qualified"):
+                weeks["qualified"][w] += 1
+    for r in deal_rows:
+        w = r.get("creation_week", -1)
+        if w >= 0:
+            weeks["deals"][w] += 1
+            weeks["deal_amount"][w] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                weeks["products"][w] += pr["quantity"]
+                weeks["product_amount"][w] += pr["amount"]
+    for r in deal_rows:
+        if not r.get("lost_in_report_month"):
+            continue
+        close_dt = parse_dt(r.get("close"), month_start.tzinfo if month_start else None)
+        w = week_of_month(close_dt, month_start) if month_start else -1
+        if w >= 0:
+            weeks["lost_deals"][w] += 1
+    for r in sales_rows:
+        w = r.get("sale_week", -1)
+        if w >= 0:
+            weeks["sales"][w] += 1
+            weeks["sales_amount"][w] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                weeks["sold_products"][w] += pr["quantity"]
+                weeks["sold_product_amount"][w] += pr["amount"]
+
+    for r in tail_sales_rows:
+        w = r.get("sale_week", -1)
+        if w >= 0:
+            weeks["tail_sales"][w] += 1
+            weeks["tail_sales_amount"][w] += r["amount"]
+
+    for r in cohort_sales_rows:
+        w = r.get("creation_week", -1)
+        if w < 0:
+            continue
+        cohort_sales_by_creation_week[w] += 1
+        weeks["cohort_sales"][w] += 1
+        weeks["cohort_sales_amount"][w] += r["amount"]
+        for pr in r.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_by_creation_week[w] += pr["quantity"]
+
+    weeks["qualified_rate"] = [pct(weeks["qualified"][i], weeks["leads"][i]) for i in range(5)]
+    weeks["lead_to_deal_rate"] = [pct(weeks["deals"][i], weeks["qualified"][i]) for i in range(5)]
+    weeks["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["leads"][i]) for i in range(5)]
+    weeks["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["qualified"][i]) for i in range(5)]
+    # A weekly tail is every deal already in work at the beginning of that
+    # calendar week, including deals created earlier in the same month. It is
+    # wider than the month-level ``previous`` cohort used in the summary.
+    first_monday = month_start.date() - timedelta(days=month_start.weekday()) if month_start else None
+    for index in range(5):
+        if not first_monday:
+            continue
+        week_start = datetime.combine(first_monday + timedelta(days=index * 7), datetime.min.time(), tzinfo=month_start.tzinfo)
+        tail_rows = []
+        for row in all_deals:
+            created = parse_dt(row.get("created"), month_start.tzinfo)
+            closed = parse_dt(row.get("close"), month_start.tzinfo)
+            if created and created < week_start and (not closed or closed >= week_start):
+                tail_rows.append(row)
+        tail_ids = {row.get("id") for row in tail_rows}
+        weeks["week_tail_deals"][index] = len(tail_rows)
+        weeks["week_tail_sales"][index] = sum(
+            1 for row in sales_rows
+            if row.get("sale_week") == index and row.get("id") in tail_ids
+        )
+
+    # Keep both agreed interpretations visible in the weekly breakdown:
+    # - cohort: only deals created in this same week and later won;
+    # - total with tail: all closures in the week ÷ new deals plus every deal
+    #   that was already in work at the start of the week.
+    weeks["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_week[i], weeks["deals"][i]) for i in range(5)]
+    weeks["total_deal_to_sale_rate"] = [
+        pct(weeks["sales"][i], weeks["deals"][i] + weeks["week_tail_deals"][i])
+        for i in range(5)
+    ]
+    # Retained for old API consumers; the UI no longer presents this as a
+    # conversion because it ignores the weekly tail denominator.
+    weeks["closing_flow_deal_to_sale_rate"] = [pct(weeks["sales"][i], weeks["deals"][i]) for i in range(5)]
+    weeks["products_per_deal"] = [round(weeks["products"][i] / weeks["deals"][i], 2) if weeks["deals"][i] else 0 for i in range(5)]
+    weeks["average_check"] = [round(weeks["sales_amount"][i] / weeks["sales"][i], 2) if weeks["sales"][i] else 0 for i in range(5)]
+    weeks["average_product_check"] = [round(weeks["sold_product_amount"][i] / weeks["sold_products"][i], 2) if weeks["sold_products"][i] else 0 for i in range(5)]
+    weeks["product_sale_rate"] = [pct(cohort_sold_by_creation_week[i], weeks["products"][i]) for i in range(5)]
+
+    # Daily dynamics for the selected month. This powers expandable
+    # report-period/source/week views in the dashboard.
+    day_count = calendar.monthrange(month_start.year, month_start.month)[1] if month_start else 31
+    days_map = {k: [0 for _ in range(day_count)] for k in [
+        "leads", "qualified", "deals", "lost_deals", "deal_amount", "sales", "sales_amount", "cohort_sales", "cohort_sales_amount", "tail_sales", "tail_sales_amount",
+        "products", "product_amount", "sold_products", "sold_product_amount"
+    ]}
+    cohort_sales_by_creation_day = [0 for _ in range(day_count)]
+    cohort_sold_by_creation_day = [0 for _ in range(day_count)]
+
+    def _day_idx(v):
+        d = parse_dt(v, month_start.tzinfo if month_start else None)
+        if not d or not month_start or d.year != month_start.year or d.month != month_start.month:
+            return -1
+        return d.day - 1
+
+    for r in lead_rows:
+        di = _day_idx(r.get("created"))
+        if di >= 0:
+            days_map["leads"][di] += 1
+            if r.get("is_qualified"):
+                days_map["qualified"][di] += 1
+
+    for r in deal_rows:
+        di = _day_idx(r.get("created"))
+        if di >= 0:
+            days_map["deals"][di] += 1
+            days_map["deal_amount"][di] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                days_map["products"][di] += pr["quantity"]
+                days_map["product_amount"][di] += pr["amount"]
+
+    for r in deal_rows:
+        if not r.get("lost_in_report_month"):
+            continue
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["lost_deals"][di] += 1
+
+    for r in sales_rows:
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["sales"][di] += 1
+            days_map["sales_amount"][di] += r["amount"]
+            for pr in r.get("products", []):
+                if product_cat and pr.get("category") != product_cat:
+                    continue
+                days_map["sold_products"][di] += pr["quantity"]
+                days_map["sold_product_amount"][di] += pr["amount"]
+
+    for r in tail_sales_rows:
+        di = _day_idx(r.get("close"))
+        if di >= 0:
+            days_map["tail_sales"][di] += 1
+            days_map["tail_sales_amount"][di] += r["amount"]
+
+    for r in cohort_sales_rows:
+        di = _day_idx(r.get("created"))
+        if di < 0:
+            continue
+        cohort_sales_by_creation_day[di] += 1
+        days_map["cohort_sales"][di] += 1
+        days_map["cohort_sales_amount"][di] += r["amount"]
+        for pr in r.get("products", []):
+            if product_cat and pr.get("category") != product_cat:
+                continue
+            cohort_sold_by_creation_day[di] += pr["quantity"]
+
+    days_map["qualified_rate"] = [pct(days_map["qualified"][i], days_map["leads"][i]) for i in range(day_count)]
+    days_map["lead_to_deal_rate"] = [pct(days_map["deals"][i], days_map["qualified"][i]) for i in range(day_count)]
+    days_map["lead_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["leads"][i]) for i in range(day_count)]
+    days_map["qualified_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["qualified"][i]) for i in range(day_count)]
+    days_map["deal_to_sale_rate"] = [pct(cohort_sales_by_creation_day[i], days_map["deals"][i]) for i in range(day_count)]
+    days_map["closing_flow_deal_to_sale_rate"] = [pct(days_map["sales"][i], days_map["deals"][i]) for i in range(day_count)]
+    days_map["products_per_deal"] = [
+        round(days_map["products"][i] / days_map["deals"][i], 2) if days_map["deals"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["average_check"] = [
+        round(days_map["sales_amount"][i] / days_map["sales"][i], 2) if days_map["sales"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["average_product_check"] = [
+        round(days_map["sold_product_amount"][i] / days_map["sold_products"][i], 2) if days_map["sold_products"][i] else 0
+        for i in range(day_count)
+    ]
+    days_map["product_sale_rate"] = [
+        pct(cohort_sold_by_creation_day[i], days_map["products"][i]) for i in range(day_count)
+    ]
+
+    return {"metrics": m, "weeks": weeks, "days": days_map}
+
+
+async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str, source_overrides: Optional[Dict[str, str]] = None):
+    month_start, next_start, prev2_start, _ = month_bounds(month_key, tz_name)
+    tz = ZoneInfo(tz_name)
+
+    # СОГЛАСОВАННАЯ ЛОГИКА ОП ИЗ ФИНАЛЬНОГО ОТЧЁТА:
+    # - отчётный период: сделки, созданные в выбранном месяце;
+    # - хвост: сделки, созданные до начала месяца и не закрытые до начала месяца;
+    # - продажа/выручка: текущая стадия «14. Предоплата получена»
+    #   ИЛИ «15. Продажа успешна»;
+    # - дата попадания в месяц: CLOSEDATE;
+    # - сумма продажи: OPPORTUNITY.
+    success_stage_ids = successful_sale_stage_ids(meta)
+
+    deal_tasks = []
+    # Сделки отчётного периода — созданные в месяце.
+    for cid in SALES_CATEGORY_IDS:
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            ">=DATE_CREATE": iso(month_start),
+            "<DATE_CREATE": iso(next_start),
+        }, DEAL_SELECT))
+
+    # Хвост на начало месяца: старые сделки, которые всё ещё активны сейчас,
+    # плюс сделки, закрытые после начала выбранного месяца. Дедупликация ниже.
+    for cid in SALES_CATEGORY_IDS:
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            "<DATE_CREATE": iso(month_start),
+            "CLOSED": "N",
+        }, DEAL_SELECT))
+        deal_tasks.append(client.deal_list({
+            "CATEGORY_ID": cid,
+            "<DATE_CREATE": iso(month_start),
+            ">=CLOSEDATE": iso(month_start),
+        }, DEAL_SELECT))
+
+    # Все продажи месяца берём отдельно по двум стадиям:
+    # «Предоплата получена» и «Продажа успешна».
+    # Период определяется по дате завершения сделки (CLOSEDATE).
+    # Так в итог попадут и сделки хвоста любой давности.
+    if success_stage_ids:
+        for sid in success_stage_ids:
+            deal_tasks.append(client.deal_list({
+                "CATEGORY_ID": 0,
+                "STAGE_ID": sid,
+                ">=CLOSEDATE": iso(month_start),
+                "<CLOSEDATE": iso(next_start),
+            }, DEAL_SELECT))
+
+    leads_task = client.lead_list({
+        ">=DATE_CREATE": iso(month_start),
+        "<DATE_CREATE": iso(next_start),
+    }, LEAD_SELECT)
+
+    results = await asyncio.gather(*deal_tasks, leads_task)
+    leads_raw = results[-1] or []
+    deals_raw = []
+    for block in results[:-1]:
+        deals_raw.extend(block or [])
+    deals_raw = list({str(d.get("ID")): d for d in deals_raw}.values())
+
+    # Old open tail needs count/sum/source analytics but not product rows.
+    # Fetch products only for deals created in the month and actual sales of the month.
+    product_deals=[]
+    for d in deals_raw:
+        created=parse_dt(d.get("DATE_CREATE"),tz)
+        close=parse_dt(d.get("CLOSEDATE"),tz)
+        is_current=bool(created and month_start<=created<next_start)
+        is_sale=bool(int(d.get("CATEGORY_ID") or 0)==0 and str(d.get("STAGE_ID")) in success_stage_ids and close and month_start<=close<next_start)
+        if is_current or is_sale:product_deals.append(d)
+    rows_by_deal = await client.product_rows_many(product_deals)
+
+    success_stage_names = [
+        name for sid, name in (((meta.get("status_by_entity") or {}).get("DEAL_STAGE") or {}).items())
+        if str(sid) in success_stage_ids
+    ]
+
+    deals = []
+    for d in deals_raw:
+        cid = int(d.get("CATEGORY_ID") or 0)
+        created = parse_dt(d.get("DATE_CREATE"), tz)
+        close = parse_dt(d.get("CLOSEDATE"), tz)
+        moved = parse_dt(d.get("MOVED_TIME"), tz)
+        if created and month_start <= created < next_start:
+            ptype = "current"
+        elif created and created < month_start:
+            ptype = "previous"
+        else:
+            ptype = "older"
+        src = source_name(meta, d, cid == REANIMATION_CATEGORY_ID)
+        client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
+        source_missing = cid == 0 and not str(d.get("SOURCE_ID") or "").strip() and not str(d.get("SOURCE_DESCRIPTION") or "").strip()
+        block = sales_block(client_type, src, source_overrides, source_missing=source_missing)
+        deal_stage_name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}")
+        is_won = cid == 0 and str(d.get("STAGE_ID")) in success_stage_ids
+        product_rows = []
+        for p in rows_by_deal.get(str(d.get("ID")), []):
+            name = p.get("productName") or p.get("PRODUCT_NAME") or p.get("PRODUCT_ID") or "Без названия"
+            q = num(p.get("quantity", p.get("QUANTITY", 1))) or 1
+            price = num(p.get("price", p.get("PRICE", 0)))
+            product_rows.append({"name": str(name), "category": product_category(str(name)), "quantity": q, "amount": round(price * q, 2)})
+        products_amount = sum(p["amount"] for p in product_rows)
+        amount = money(d)
+        deals.append({
+            "kind": "deal", "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
+            "category_id": cid, "manager": user_name(meta, d.get("ASSIGNED_BY_ID")), "source": src,
+            "client_type": client_type, "group": block, "stage": deal_stage_name, "stage_id": d.get("STAGE_ID"),
+            "created": created.isoformat() if created else None, "close": close.isoformat() if close else None,
+            "period_type": ptype, "creation_week": week_of_month(created, month_start), "sale_week": week_of_month(close, month_start),
+            "lost_week": week_of_month(close, month_start) if close else -1,
+            "sale_in_report_month": bool(close and month_start <= close < next_start), "is_won": bool(is_won),
+            "is_lost": bool(
+                (str(d.get("CLOSED") or "").upper() == "Y" and not is_won)
+                or "отказ" in norm_text(deal_stage_name)
+            ),
+            "lost_in_report_month": bool(
+                (
+                    (str(d.get("CLOSED") or "").upper() == "Y" and not is_won)
+                    or "отказ" in norm_text(deal_stage_name)
+                )
+                and close and month_start <= close < next_start
+            ),
+            "moved_time": moved.isoformat() if moved else None,
+            "amount": round(amount, 2), "paid_amount": pay_amount(d), "net_revenue": num(d.get(F_NET_REVENUE)),
+            "products": product_rows, "url": make_deal_url(client.portal, d.get("ID")),
+        })
+
+    leads = []
+    qualified_needle = "качественный лид"
+    for l in leads_raw:
+        created = parse_dt(l.get("DATE_CREATE"), tz)
+        ptype = "current" if created and month_start <= created < next_start else "older"
+        status = stage_name(meta, l.get("STATUS_ID"), "STATUS")
+        src = source_name(meta, l)
+        client_type = enum_label(meta, F_LEAD_CLIENT_TYPE, l.get(F_LEAD_CLIENT_TYPE)) or "Не указан"
+        block = sales_block(client_type, src, source_overrides)
+        leads.append({
+            "kind": "lead", "id": str(l.get("ID")), "title": l.get("TITLE") or f"Лид {l.get('ID')}",
+            "manager": user_name(meta, l.get("ASSIGNED_BY_ID")), "source": src, "client_type": client_type, "group": block,
+            "status": status, "is_qualified": norm_text(status) == qualified_needle or str(l.get("STATUS_ID")) == "CONVERTED",
+            "created": created.isoformat() if created else None, "period_type": ptype,
+            "week": week_of_month(created, month_start), "url": make_lead_url(client.portal, l.get("ID")),
+        })
+
+    records = {"leads": leads, "deals": deals}
+    overall = {p: aggregate_sales(records, p, month_start=month_start) for p in ["total", "current", "previous"]}
+
+    groups = []
+    sales_blocks = ["Холодные продажи", "Входящий трафик продажи", "Повторные продажи по базе"]
+    if any(r.get("group") == "Прочее" for r in leads + deals):
+        sales_blocks.append("Прочее")
+    for g in sales_blocks:
+        row = {"name": g}
+        for p in ["total", "current", "previous"]:
+            row[p] = aggregate_sales(records, p, group=g, month_start=month_start)
+        groups.append(row)
+
+    exact_sources = []
+    for s in sorted({r["source"] for r in leads + deals}):
+        # A source can belong to different business blocks depending on client type.
+        # Keep a representative label here; detailed source rows by block are exposed separately below.
+        matched_blocks = sorted({r.get("group") for r in leads + deals if r.get("source") == s and r.get("group")})
+        row = {"name": s, "group": " / ".join(matched_blocks) if matched_blocks else source_group(s)}
+        for p in ["total", "current", "previous"]:
+            row[p] = aggregate_sales(records, p, source=s, month_start=month_start)
+        exact_sources.append(row)
+
+    source_blocks = []
+    for g in sales_blocks:
+        sources_in_block = sorted({r["source"] for r in leads + deals if r.get("group") == g})
+        for src_name in sources_in_block:
+            row = {"name": src_name, "group": g}
+            for p in ["total", "current", "previous"]:
+                # aggregate with both group + exact source so the same source may appear in different blocks
+                # when client type differs.
+                rec = {
+                    "leads": [r for r in leads if r.get("group") == g],
+                    "deals": [r for r in deals if r.get("group") == g],
+                }
+                row[p] = aggregate_sales(rec, p, source=src_name, month_start=month_start)
+            source_blocks.append(row)
+
+    client_type_blocks = []
+    for g in sales_blocks:
+        client_types = sorted({
+            r.get("client_type") or "Не указан"
+            for r in leads + deals
+            if r.get("group") == g
+        })
+        for client_type in client_types:
+            row = {"name": client_type, "group": g}
+            for p in ["total", "current", "previous"]:
+                row[p] = aggregate_sales(
+                    records,
+                    p,
+                    group=g,
+                    client_type=client_type,
+                    month_start=month_start,
+                )
+            client_type_blocks.append(row)
+
+    managers = []
+    for m in sorted({r["manager"] for r in leads + deals if r.get("manager")}):
+        row = {"name": m}
+        for p in ["total", "current", "previous"]:
+            row[p] = aggregate_sales(records, p, manager=m, month_start=month_start)
+        row["groups"] = []
+        row["sources"] = []
+        for g in sales_blocks:
+            grow = {"name": g}
+            for p in ["total", "current", "previous"]:
+                grow[p] = aggregate_sales(records, p, manager=m, group=g, month_start=month_start)
+            row["groups"].append(grow)
+
+            manager_sources = sorted({
+                r.get("source") for r in leads + deals
+                if r.get("manager") == m and r.get("group") == g and r.get("source")
+            })
+            for src_name in manager_sources:
+                srow = {"name": src_name, "group": g}
+                for p in ["total", "current", "previous"]:
+                    srow[p] = aggregate_sales(records, p, manager=m, group=g, source=src_name, month_start=month_start)
+                row["sources"].append(srow)
+        managers.append(row)
+
+    product_categories = []
+    for pc in ["Системы менеджмента", "Специалисты", "Строительство", "Лицензирование", "Продукция", "Не определено"]:
+        row = {"name": pc}
+        for p in ["total", "current", "previous"]:
+            row[p] = aggregate_sales(records, p, product_cat=pc, month_start=month_start)
+        if any(row[p]["metrics"]["products"] for p in ["total", "current", "previous"]):
+            product_categories.append(row)
+
+    product_managers = []
+    for m in managers:
+        cats = []
+        for pc in ["Системы менеджмента", "Специалисты", "Строительство", "Лицензирование", "Продукция", "Не определено"]:
+            row = {"name": pc}
+            for p in ["total", "current", "previous"]:
+                row[p] = aggregate_sales(records, p, manager=m["name"], product_cat=pc, month_start=month_start)
+            if any(row[p]["metrics"]["products"] for p in ["total", "current", "previous"]):
+                cats.append(row)
+        product_managers.append({"name": m["name"], "categories": cats})
+
+    active = await client.deal_list({"CATEGORY_ID": 0, "CLOSED": "N"}, DEAL_SELECT) or []
+    preplan_ids = preplan_stage_ids(meta)
+    stages = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    active_records = []
+    for d in active:
+        name = stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE")
+        stages[name]["count"] += 1
+        stages[name]["amount"] += money(d)
+        created = parse_dt(d.get("DATE_CREATE"), tz)
+        src = source_name(meta, d, False)
+        client_type = enum_label(meta, F_DEAL_CLIENT_TYPE, d.get(F_DEAL_CLIENT_TYPE)) or "Не указан"
+        active_records.append({
+            "kind":"deal", "id":str(d.get("ID")), "title":d.get("TITLE") or f"Сделка {d.get('ID')}",
+            "manager":user_name(meta,d.get("ASSIGNED_BY_ID")), "source":src, "client_type":client_type, "group":sales_block(client_type,src,source_overrides),
+            "stage":name, "stage_id":d.get("STAGE_ID"), "amount":round(money(d),2),
+            "created":created.isoformat() if created else None, "url":make_deal_url(client.portal,d.get("ID")),
+        })
+    stage_rows = [{"name": k, "count": v["count"], "amount": round(v["amount"], 2)} for k, v in stages.items()]
+    stage_rows.sort(key=lambda x: -x["amount"])
+    records["active"] = active_records
+    preplan_records = [record for record in active_records if str(record.get("stage_id") or "") in preplan_ids]
+    preplan_stage_names = sorted({str(record.get("stage") or "") for record in preplan_records if record.get("stage")})
+    records["preplan"] = preplan_records
+
+    return {
+        "overall": overall, "groups": groups, "exact_sources": exact_sources, "source_blocks": source_blocks, "client_type_blocks": client_type_blocks, "managers": managers,
+        "available_sources": sorted({r.get("source") for r in leads + deals if r.get("source")}),
+        "product_categories": product_categories, "product_managers": product_managers,
+        "stages": stage_rows, "active_deals_count": len(active),
+        "preplan": {
+            "amount": round(sum(float(record.get("amount") or 0) for record in preplan_records), 2),
+            "count": len(preplan_records),
+            "stage_ids": sorted(preplan_ids),
+            "stage_names": preplan_stage_names,
+            "rule": "Открытые сделки на стадиях 10–12 воронки продаж Bitrix24",
+            "amount_source": "Поле «Сумма» сделки Bitrix (OPPORTUNITY)",
+        },
+        "sale_filter": {
+            "stage_ids": sorted(success_stage_ids),
+            "stage_names": success_stage_names,
+            "rule": "CLOSEDATE в выбранном периоде + стадия «14. Предоплата получена» или «15. Продажа успешна»",
+            "amount_source": "Поле «Сумма» сделки Bitrix (OPPORTUNITY)",
+        },
+        "classification": {
+            "blocks": sales_blocks,
+            "rule": "РНП: Холодный звонок/Входящий прямой/Реанимация распределяются по типу клиента; Белтехэкспертиза → холодные; Передан экспертом → повторные; Google/Yandex/сайт/рекомендации → входящие",
+            "deal_client_type_field": F_DEAL_CLIENT_TYPE,
+            "lead_client_type_field": F_LEAD_CLIENT_TYPE,
+        },
+        "_records": records,
+    }
+
+
+def production_expert_id(deal: Dict[str, Any], closed_success: bool = False) -> Any:
+    """Attribute every production result to the deal's responsible expert.
+
+    ``MOVED_BY_ID`` is only the person who changed the final stage; it can be a
+    supervisor or an operator and is not the owner of the client work.  The
+    expert dashboard therefore uses Bitrix's ``ASSIGNED_BY_ID`` consistently
+    for open and closed cards.
+    """
+    return deal.get("ASSIGNED_BY_ID")
+
+
+def prod_item(client, meta, d, tz, month_start, next_start, role="production", closed_success=False):
+    created = parse_dt(d.get("DATE_CREATE"), tz)
+    modified = parse_dt(d.get("DATE_MODIFY"), tz)
+    close = parse_dt(d.get("CLOSEDATE"), tz)
+    prod_start = parse_dt(d.get(F_PROD_START), tz)
+    expected = parse_dt(d.get(F_EXPECTED_CLOSE), tz)
+    service = d.get(F_SERVICE) or "Не указано"
+    norm_name, norm_spec = match_norm_name(str(service))
+    prod_days = business_days(prod_start, close)
+    full_days = calendar_days(created, close)
+    norm_days = num((norm_spec or {}).get("norm_days")) if norm_spec else 0
+    in_norm = bool(prod_days is not None and norm_days > 0 and prod_days <= norm_days)
+    # Причина зависания: актуальное поле имеет приоритет.
+    # Старое поле используем только как fallback, чтобы одна сделка
+    # не попадала одновременно в две причины из-за исторических значений.
+    reasons = []
+    raw = enum_label(meta, F_STUCK_REASON_NEW, d.get(F_STUCK_REASON_NEW))
+    if not raw:
+        raw = enum_label(meta, F_STUCK_REASON_OLD, d.get(F_STUCK_REASON_OLD))
+    if isinstance(raw, list):
+        reasons = [str(x) for x in raw if x]
+    elif raw:
+        reasons = [str(raw)]
+    reasons = list(dict.fromkeys(reasons))
+    return {
+        "kind": role, "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
+        # Для переходов между воронками история хранит только исходную
+        # воронку. Текущая нужна, чтобы подтвердить целевую воронку сделки.
+        "funnel_id": str(d.get("CATEGORY_ID") or ""),
+        "service": str(service), "norm_name": norm_name, "complexity": (norm_spec or {}).get("complexity"),
+        "base_bonus": num((norm_spec or {}).get("base_bonus")), "norm_days": norm_days,
+        "category": product_category(str(service)), "expert": user_name(meta, production_expert_id(d, closed_success)),
+        "stage": stage_name(meta, d.get("STAGE_ID"), "DEAL_STAGE_28" if role == "production" else "DEAL_STAGE_30"), "stage_id": d.get("STAGE_ID"), "amount": round(money(d), 2),
+        "created": created.isoformat() if created else None, "modified": modified.isoformat() if modified else None,
+        "close": close.isoformat() if close else None, "close_week": week_of_month(close, month_start), "prod_start": prod_start.isoformat() if prod_start else None,
+        "expected_close": expected.isoformat() if expected else None, "prod_days": prod_days, "full_cycle_days": full_days,
+        "in_norm": in_norm, "deviation_days": round((prod_days or 0) - norm_days, 1) if prod_days is not None and norm_days else None,
+        "nps": num(d.get(F_NPS)), "act": enum_label(meta, F_ACT, d.get(F_ACT)),
+        "return_reason": enum_label(meta, F_RETURN_REASON, d.get(F_RETURN_REASON)), "stuck_reasons": reasons,
+        "inactive_days": (datetime.now(tz).date() - modified.date()).days if modified else None,
+        "url": make_deal_url(client.portal, d.get("ID")),
+    }
+
+
+CLOSURE_NORM_COHORT_START = "2026-10-01"
+
+
+def eligible_for_closure_norm(row: Dict[str, Any]) -> bool:
+    """Count the closure SLA only for deals created on/after 2026-10-01."""
+    created = str(row.get("created") or "")[:10]
+    return len(created) == 10 and created >= CLOSURE_NORM_COHORT_START
+
+
+def aggregate_prod_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    closed = [r for r in rows if r.get("is_closed_success")]
+    days = [r["prod_days"] for r in closed if r.get("prod_days") is not None]
+    normed = [r for r in closed if r.get("norm_days") and eligible_for_closure_norm(r)]
+    deviations = [r["deviation_days"] for r in closed if r.get("deviation_days") is not None]
+    acts = [r for r in closed if norm_text(r.get("act")) == "да"]
+    return {
+        "closed_count": len(closed), "closed_amount": round(sum(r["amount"] for r in closed), 2),
+        "avg_check": round(sum(r["amount"] for r in closed) / len(closed), 2) if closed else 0,
+        "avg_production_days": round(sum(days) / len(days), 1) if days else 0,
+        "avg_deviation_days": round(sum(deviations) / len(deviations), 1) if deviations else 0,
+        "within_norm_pct": pct(sum(1 for r in normed if r.get("in_norm")), len(normed)),
+        # NPS в приложении только ручной. Bitrix-поле не участвует в расчёте.
+        "nps_avg": 0,
+        "act_share_pct": pct(len(acts), len(closed)),
+    }
+
+
+def production_weekly_dynamics(closed: List[Dict[str, Any]], month_start: datetime) -> Dict[str, Dict[str, List[float]]]:
+    """Closed production results grouped into the five RNP work weeks."""
+    day_count = calendar.monthrange(month_start.year, month_start.month)[1]
+    keys = ["closed_count", "closed_amount", "avg_check", "avg_production_days", "within_norm_pct"]
+    weeks = {key: [0.0] * 5 for key in keys}
+    days_map = {key: [0.0] * day_count for key in keys}
+    week_rows = [[] for _ in range(5)]
+    day_rows = [[] for _ in range(day_count)]
+
+    for row in closed:
+        closed_at = parse_dt(row.get("close"), month_start.tzinfo)
+        if not closed_at or closed_at.year != month_start.year or closed_at.month != month_start.month:
+            continue
+        week = week_of_month(closed_at, month_start)
+        day = closed_at.day - 1
+        if week < 0 or day < 0:
+            continue
+        week_rows[week].append(row)
+        day_rows[day].append(row)
+
+    def fill(target: Dict[str, List[float]], index: int, rows: List[Dict[str, Any]]):
+        stats = aggregate_prod_rows(rows)
+        for key in keys:
+            target[key][index] = stats[key]
+
+    for index, rows in enumerate(week_rows):
+        fill(weeks, index, rows)
+    for index, rows in enumerate(day_rows):
+        fill(days_map, index, rows)
+    return {"weeks": weeks, "days": days_map}
+
+
+def split_dormant_completions(rows):
+    """Classify category-30 completions by the actual button/stage name.
+
+    Category-specific Bitrix stage IDs are portal configuration, so generic
+    WON/APOLOGY IDs cannot reliably mean "В производство" or "Возврат".
+    """
+    to_production, to_returns = [], []
+    for row in rows:
+        stage = norm_text(row.get("stage"))
+        if "в производство" in stage:
+            to_production.append(row)
+        elif "возврат" in stage and "потенциаль" not in stage:
+            to_returns.append(row)
+    return to_production, to_returns
+
+
+def split_dormant_completion_history(rows, stage_labels):
+    """Read the result selected in Bitrix's «Завершить сделку» dialog.
+
+    The dialog writes a final-stage entry to crm.stagehistory. The deal can
+    immediately move to another funnel afterwards, so its current card no
+    longer carries this result.
+    """
+    completed = []
+    for row in rows:
+        if str(row.get("TYPE_ID") or "") != "3":
+            continue
+        stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
+        label = stage_labels.get(stage_id) or stage_id
+        completed.append({**row, "completion_stage": label})
+    return split_dormant_completions(
+        [{"id": str(row.get("OWNER_ID") or ""), "stage": row["completion_stage"], "history": row} for row in completed]
+    )
+
+
+def direct_dormant_to_production_history(rows, production_stage_labels):
+    """Read direct funnel moves out of «Зависшие» into production.
+
+    Bitrix writes a TYPE_ID=5 record when a card is moved between funnels
+    without opening the «Завершить сделку» dialog.  The record remains in the
+    source funnel's history. In this portal the transfer can be indexed under
+    either the source or target funnel and its STAGE_ID remains the source
+    stage. The target funnel is confirmed after the deal card is hydrated.
+    This function deliberately returns candidates only.
+    """
+    direct = []
+    for row in rows:
+        category_id = str(row.get("CATEGORY_ID") or "")
+        stage_id = str(row.get("STAGE_ID") or row.get("STATUS_ID") or "")
+        # In this portal source-history records do not have one stable type.
+        # Their source category plus the hydrated current funnel is the
+        # reliable combination; cards that remain or go elsewhere are filtered
+        # out below.
+        is_source_event = category_id == str(DORMANT_CATEGORY)
+        # Bitrix uses a different TYPE_ID for some destination-history
+        # records. The C30 prefix is the deterministic proof of the source
+        # funnel, so no type inference is needed in this branch.
+        is_target_event = category_id == str(PROD_CATEGORY) and stage_id.startswith(f"C{DORMANT_CATEGORY}:")
+        if not (is_source_event or is_target_event):
+            continue
+        direct.append({
+            "id": str(row.get("OWNER_ID") or ""),
+            "stage": "Прямой перенос",
+            "history": row,
+        })
+    return direct
+
+
+def unique_history_rows_by_owner(rows):
+    """Keep one transition per deal when Bitrix writes companion events."""
+    unique = {}
+    for row in rows:
+        owner_id = str(row.get("id") or row.get("OWNER_ID") or "")
+        if owner_id and owner_id not in unique:
+            unique[owner_id] = row
+    return list(unique.values())
+
+
+def history_owner_ids(rows):
+    return list(dict.fromkeys(str(row.get("OWNER_ID") or row.get("id") or "") for row in rows if row.get("OWNER_ID") or row.get("id")))
+
+
+def dormant_funnel_entries(rows):
+    """History events that moved a deal into the «Зависшие» funnel."""
+    return [
+        row for row in rows
+        if str(row.get("TYPE_ID") or "") == "5" and str(row.get("CATEGORY_ID") or "") == str(DORMANT_CATEGORY)
+    ]
+
+
+async def load_production(client, month_key: str, period: str, meta: Dict[str, Any], tz_name: str, custom_start: str = "", custom_end: str = ""):
+    month_start, next_start, _, _ = month_bounds(month_key, tz_name)
+    range_start, range_end, period_label = period_bounds(month_key, period, tz_name, custom_start, custom_end)
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    arrival_end = observed_period_end(range_end, now)
+
+    # «Пришло в производство» = карточка создана в воронке производства.
+    # F_PROD_START is the planned start of work, not the transfer date; it
+    # may be changed after creation and must not move an old product into a
+    # later reporting period.
+    new_by_created_task = client.deal_list({
+        "CATEGORY_ID": PROD_CATEGORY,
+        ">=DATE_CREATE": iso(range_start),
+        "<DATE_CREATE": iso(arrival_end),
+    }, DEAL_SELECT)
+    closed_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_WON, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
+    returns_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_RETURN, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
+    active_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
+    production_at_start_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "<DATE_CREATE": iso(month_start)}, DEAL_SELECT)
+    dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
+    # «В производство» / «Возврат» are selected in the completion dialog.
+    # Bitrix records that choice in stage history, then a card can be moved to
+    # another funnel immediately, so filtering current/closed category-30
+    # cards loses the result.
+    history_select = ["ID", "TYPE_ID", "OWNER_ID", "CREATED_TIME", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID"]
+    completed_dormant_period_task = client.list_all("crm.stagehistory.list", {
+        "entityTypeId": 2,
+        "order": {"CREATED_TIME": "ASC", "ID": "ASC"},
+        "filter": {"CATEGORY_ID": DORMANT_CATEGORY, ">=CREATED_TIME": iso(range_start), "<CREATED_TIME": iso(range_end)},
+        "select": history_select,
+    })
+    # The "Зависшие" block always compares with the first day of the selected
+    # month, independently of the report-period filter.
+    dormant_flow_end = observed_period_end(next_start, now)
+    completed_dormant_flow_task = client.list_all("crm.stagehistory.list", {
+        "entityTypeId": 2,
+        "order": {"CREATED_TIME": "ASC", "ID": "ASC"},
+        "filter": {"CATEGORY_ID": DORMANT_CATEGORY, ">=CREATED_TIME": iso(month_start), "<CREATED_TIME": iso(dormant_flow_end)},
+        "select": history_select,
+    })
+    # Bitrix can file an inter-funnel transfer under the target funnel even
+    # though STAGE_ID still belongs to «Зависшие». Fetch that narrow second
+    # history stream so direct transfers such as #25238 are not lost.
+    dormant_to_production_target_history_task = client.list_all("crm.stagehistory.list", {
+        "entityTypeId": 2,
+        "order": {"CREATED_TIME": "ASC", "ID": "ASC"},
+        "filter": {"CATEGORY_ID": PROD_CATEGORY, ">=CREATED_TIME": iso(month_start), "<CREATED_TIME": iso(dormant_flow_end)},
+        "select": history_select,
+    })
+    new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = await asyncio.gather(
+        new_by_created_task, closed_task, returns_task, active_task, production_at_start_task, dormant_task, completed_dormant_period_task, completed_dormant_flow_task, dormant_to_production_target_history_task
+    )
+    new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw = [
+        x or [] for x in [new_by_created_raw, closed_raw, returns_raw, active_raw, production_at_start_raw, dormant_raw, completed_dormant_period_raw, completed_dormant_flow_raw, dormant_to_production_target_history_raw]
+    ]
+    dormant_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {})
+    production_stage_labels = (meta.get("status_by_entity") or {}).get("DEAL_STAGE_28", {})
+    period_transition_history = [
+        row for row in completed_dormant_period_raw + dormant_to_production_target_history_raw
+        if (created := parse_dt(row.get("CREATED_TIME"), tz)) and range_start <= created < arrival_end
+    ]
+    period_completed_to_production, _ = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
+    period_direct_to_production = direct_dormant_to_production_history(period_transition_history, production_stage_labels)
+    dormant_to_production_in_period_ids = set(history_owner_ids(
+        unique_history_rows_by_owner(period_completed_to_production + period_direct_to_production)
+    ))
+    # The flow KPI measures hand-offs from the Sales department only.  A
+    # production card created directly (or by a technical import) has no link
+    # to the sales deal and must not inflate «Пришло продуктов» or its amount.
+    new_raw = exclude_dormant_to_production(
+        [deal for deal in new_by_created_raw if has_sales_origin(deal)],
+        dormant_to_production_in_period_ids,
+    )
+
+    def convert(rows, role="production", closed_success=False):
+        return [prod_item(client, meta, d, tz, month_start, next_start, role=role, closed_success=closed_success) for d in rows]
+
+    new = convert(new_raw)
+    closed = convert(closed_raw, closed_success=True)
+    returns = convert(returns_raw)
+    active = convert(active_raw)
+    dormant = convert(dormant_raw, role="dormant")
+    dormant_entry_ids = set(history_owner_ids(dormant_funnel_entries(completed_dormant_flow_raw)))
+    dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
+    _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
+    completed_to_production_history, dormant_to_return_history = split_dormant_completion_history(completed_dormant_flow_raw, dormant_stage_labels)
+    direct_to_production_history = direct_dormant_to_production_history(
+        completed_dormant_flow_raw + dormant_to_production_target_history_raw,
+        production_stage_labels,
+    )
+    completed_to_production_history = unique_history_rows_by_owner(completed_to_production_history)
+    direct_to_production_history = unique_history_rows_by_owner(direct_to_production_history)
+
+    async def hydrate_completion_rows(history_rows):
+        ids = history_owner_ids(history_rows)
+        if not ids:
+            return []
+        deal_rows = await client.deal_list({"@ID": ids}, DEAL_SELECT)
+        by_id = {str(row.get("ID")): row for row in deal_rows or []}
+        out = []
+        for history_row in history_rows:
+            deal = by_id.get(str(history_row.get("id")))
+            if not deal:
+                continue
+            row = prod_item(client, meta, deal, tz, month_start, next_start)
+            row["stage"] = history_row.get("stage") or row["stage"]
+            row["stage_id"] = (history_row.get("history") or {}).get("STAGE_ID") or row["stage_id"]
+            row["completion_at"] = (history_row.get("history") or {}).get("CREATED_TIME")
+            out.append(row)
+        return out
+
+    returned, completed_to_production, direct_to_production, dormant_to_return = await asyncio.gather(
+        hydrate_completion_rows(returned_history),
+        hydrate_completion_rows(completed_to_production_history),
+        hydrate_completion_rows(direct_to_production_history),
+        hydrate_completion_rows(dormant_to_return_history),
+    )
+    # TYPE_ID=5 only says that a transfer happened out of «Зависших». Its
+    # target is verified from the hydrated current card, so moves to another
+    # funnel are not accidentally counted as production.
+    direct_to_production = [row for row in direct_to_production if row.get("funnel_id") == str(PROD_CATEGORY)]
+    dormant_to_production = unique_history_rows_by_owner(completed_to_production + direct_to_production)
+
+    closed_ids = {r["id"] for r in closed}
+    new_ids = {r["id"] for r in new}
+    for r in closed:
+        r["is_closed_success"] = True
+        r["is_new_in_period"] = r["id"] in new_ids
+    for coll in [new, active, returns, dormant, returned, dormant_to_production, dormant_to_return]:
+        for r in coll:
+            r["is_closed_success"] = r["id"] in closed_ids
+            r["is_new_in_period"] = r["id"] in new_ids
+
+    period_closed = [r for r in closed if r["id"] in new_ids]
+    capacity = [r for r in active if (x := parse_dt(r.get("expected_close"), tz)) and range_start <= x < range_end]
+    overdue = [r for r in active if (x := parse_dt(r.get("expected_close"), tz)) and x.date() < now.date()]
+    dormant_expected = [r for r in dormant if (x := parse_dt(r.get("expected_close"), tz)) and range_start <= x < range_end]
+    dormant_overdue = [r for r in dormant if (x := parse_dt(r.get("expected_close"), tz)) and x.date() < now.date()]
+    active_missing_expected = [r for r in active if not r.get("expected_close")]
+    active_missing_service = [r for r in active if norm_text(r.get("service")) in {"", "не указано"}]
+    active_missing_expert = [r for r in active if norm_text(r.get("expert")) in {"", "не указан", "не указано"}]
+    closed_without_act = [r for r in closed if norm_text(r.get("act")) != "да"]
+    # Активно зависшие — это открытые карточки именно в производстве с
+    # заполненной причиной зависания. Второй срез — карточки с
+    # предполагаемой датой закрытия в выбранном месяце.
+    active_with_reason = [r for r in active if r.get("stuck_reasons")]
+    active_expected_month = [
+        r for r in active
+        if (x := parse_dt(r.get("expected_close"), tz)) and month_start <= x < next_start
+    ]
+    active_with_reason_expected_month = [
+        r for r in active_with_reason
+        if (x := parse_dt(r.get("expected_close"), tz)) and month_start <= x < next_start
+    ]
+
+    closed_stats = aggregate_prod_rows(closed)
+    production_at_month_start = [deal for deal in production_at_start_raw if was_in_production_on(deal, month_start, tz)]
+    weekly = production_weekly_dynamics(closed, month_start)
+    kpi = {
+        **closed_stats,
+        "closed_amount": closed_stats["closed_amount"], "closed_count": closed_stats["closed_count"],
+        "new_count": len(new), "new_amount": round(sum(r["amount"] for r in new), 2),
+        "period_closed_count": len(period_closed), "period_closed_amount": round(sum(r["amount"] for r in period_closed), 2),
+        "new_to_success_pct": pct(len(period_closed), len(new)),
+        "capacity_count": len(capacity), "capacity_amount": round(sum(r["amount"] for r in capacity), 2),
+        "returns_count": len(returns), "returns_amount": round(sum(r["amount"] for r in returns), 2),
+        "dormant_count": len(dormant), "dormant_amount": round(sum(r["amount"] for r in dormant), 2),
+        "returned_to_production": len(returned), "returned_to_production_amount": round(sum(r["amount"] for r in returned), 2),
+        "dormant_expected_count": len(dormant_expected), "dormant_overdue_count": len(dormant_overdue),
+        "active_missing_expected_count": len(active_missing_expected),
+        "active_missing_service_count": len(active_missing_service),
+        "active_missing_expert_count": len(active_missing_expert),
+        "closed_without_act_count": len(closed_without_act),
+        "active_stuck_with_reason_count": len(active_with_reason),
+        "active_stuck_with_reason_amount": round(sum(r["amount"] for r in active_with_reason), 2),
+        "active_stuck_with_reason_pct": pct(len(active_with_reason), len(active)),
+        "active_stuck_with_reason_expected_month_count": len(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_amount": round(sum(r["amount"] for r in active_with_reason_expected_month), 2),
+        "active_stuck_with_reason_expected_month_pct": pct(len(active_with_reason_expected_month), len(active_expected_month)),
+    }
+    with_reason = [r for r in dormant if r.get("stuck_reasons")]
+    kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
+
+    product_names = sorted({r["service"] for r in new + closed + active + returns if r.get("service")})
+    products = []
+    for name in product_names:
+        nr = [r for r in new if r["service"] == name]
+        cr = [r for r in closed if r["service"] == name]
+        pr = [r for r in period_closed if r["service"] == name]
+        ar = [r for r in active if r["service"] == name]
+        rr = [r for r in returns if r["service"] == name]
+        cap = [r for r in capacity if r["service"] == name]
+        s = aggregate_prod_rows(cr)
+        norm_name, norm_spec = match_norm_name(name)
+        products.append({
+            "name": name, "category": product_category(name), "complexity": (norm_spec or {}).get("complexity"), "norm_days": num((norm_spec or {}).get("norm_days")),
+            "new_count": len(nr), "new_amount": round(sum(r["amount"] for r in nr),2),
+            "closed_count": len(cr), "closed_amount": round(sum(r["amount"] for r in cr),2),
+            "period_closed_count": len(pr), "conversion_pct": pct(len(pr), len(nr)),
+            "capacity_count": len(cap), "capacity_amount": round(sum(r["amount"] for r in cap),2),
+            "returns_count": len(rr), "returns_amount": round(sum(r["amount"] for r in rr),2),
+            "active_count": len(ar), **s,
+        })
+    products.sort(key=lambda x: (-x["closed_amount"], x["name"]))
+
+    experts = []
+    names = sorted({r["expert"] for r in new + closed + active + returns if r.get("expert")})
+    for name in names:
+        nr = [r for r in new if r["expert"] == name]
+        cr = [r for r in closed if r["expert"] == name]
+        ar = [r for r in active if r["expert"] == name]
+        rr = [r for r in returns if r["expert"] == name]
+        s = aggregate_prod_rows(cr)
+        pmap = defaultdict(lambda: {"closed_count":0,"closed_amount":0.0,"days":[],"normed":0,"in_norm":0})
+        for r in cr:
+            x=pmap[r["service"]]; x["closed_count"]+=1; x["closed_amount"]+=r["amount"]
+            if r.get("prod_days") is not None: x["days"].append(r["prod_days"])
+            if r.get("norm_days") and eligible_for_closure_norm(r): x["normed"]+=1; x["in_norm"] += 1 if r.get("in_norm") else 0
+        prod_breakdown=[]
+        for p,x in pmap.items():
+            prod_breakdown.append({"name":p,"closed_count":x["closed_count"],"closed_amount":round(x["closed_amount"],2),
+                "avg_days":round(sum(x["days"])/len(x["days"]),1) if x["days"] else 0,
+                "within_norm_pct":pct(x["in_norm"],x["normed"])})
+        prod_breakdown.sort(key=lambda x:-x["closed_amount"])
+        experts.append({
+            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
+            **s, "products": prod_breakdown,
+        })
+    experts.sort(key=lambda x: (-x["closed_amount"], x["name"]))
+
+    stages_acc = defaultdict(lambda:{"count":0,"amount":0.0})
+    for r in active:
+        x=stages_acc[r["stage"]]; x["count"]+=1; x["amount"]+=r["amount"]
+    stages=[{"name":k,"count":v["count"],"amount":round(v["amount"],2)} for k,v in stages_acc.items()]
+    stages.sort(key=lambda x:-x["amount"])
+
+    def reason_rows(rows, denominator):
+        reasons_acc = defaultdict(lambda: {"count": 0, "amount": 0.0})
+        for row in rows:
+            for reason in row.get("stuck_reasons", []):
+                reasons_acc[reason]["count"] += 1
+                reasons_acc[reason]["amount"] += row["amount"]
+        return [
+            {"name": key, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], denominator)}
+            for key, value in sorted(reasons_acc.items(), key=lambda item: (-item[1]["count"], item[0]))
+        ]
+
+    dormant_reasons = reason_rows(dormant, len(dormant))
+    active_reasons = reason_rows(active_with_reason, len(active))
+    active_expected_month_reasons = reason_rows(active_with_reason_expected_month, len(active_expected_month))
+
+    returns_acc=defaultdict(lambda:{"count":0,"amount":0.0})
+    for r in returns:
+        reason=r.get("return_reason") or "Не указана"
+        x=returns_acc[str(reason)]; x["count"]+=1; x["amount"]+=r["amount"]
+    return_reasons=[{"name":k,"count":v["count"],"amount":round(v["amount"],2),"pct":pct(v["count"],len(returns))} for k,v in sorted(returns_acc.items(),key=lambda kv:-kv[1]["count"])]
+
+    buckets={"1–7 дней":0,"8–14 дней":0,"15–30 дней":0,"30+ дней":0}
+    for r in overdue:
+        x=parse_dt(r.get("expected_close"),tz)
+        days=(now.date()-x.date()).days if x else 0
+        if days<=7:buckets["1–7 дней"]+=1
+        elif days<=14:buckets["8–14 дней"]+=1
+        elif days<=30:buckets["15–30 дней"]+=1
+        else:buckets["30+ дней"]+=1
+
+    return {
+        "period_label": period_label,
+        "arrival_rule": "Передача из отдела продаж: дата создания карточки в производстве. Переходы из «Зависших» исключены по истории Bitrix",
+        "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
+        "kpi": kpi, "weekly": weekly, "products": products, "experts": experts, "stages": stages,
+        "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason),len(dormant))},
+        "active_stuck": {
+            "all_reasons": active_reasons,
+            "expected_month_reasons": active_expected_month_reasons,
+            "all_count": len(active),
+            "expected_month_count": len(active_expected_month),
+            "expected_month_rule": "Предполагаемая дата закрытия попадает в выбранный месяц",
+        },
+        "return_reasons": return_reasons,
+        "overdue": {"count":len(overdue),"amount":round(sum(r["amount"] for r in overdue),2),"buckets":buckets},
+        "production_at_month_start": {
+            "count": len(production_at_month_start),
+            "as_of": month_start.isoformat(),
+            "rule": "Дата начала оказания услуг раньше первого числа; дата завершения отсутствует или не раньше первого числа",
+        },
+        "_records": {"new":new,"closed":closed,"period_closed":period_closed,"active":active,"returns":returns,
+                     "capacity":capacity,"dormant":dormant,"returned":returned,"dormant_to_production":dormant_to_production,"dormant_to_return":dormant_to_return,"overdue":overdue,
+                     "dormant_entered_since_month_start":dormant_entered_since_month_start,
+                     "dormant_expected":dormant_expected,"dormant_overdue":dormant_overdue,
+                     "active_stuck_with_reason":active_with_reason,"active_stuck_with_reason_expected_month":active_with_reason_expected_month,
+                     "active_missing_expected":active_missing_expected,"active_missing_service":active_missing_service,
+                     "active_missing_expert":active_missing_expert,"closed_without_act":closed_without_act},
+    }
+
+
+def derive_production_period(
+    month_key: str,
+    period: str,
+    tz_name: str,
+    production: Dict[str, Any],
+    details: Dict[str, Any],
+    custom_start: str = "",
+    custom_end: str = "",
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Build an in-month production view from a saved monthly detail snapshot.
+
+    The month snapshot already contains every fact used by the period view.
+    Re-aggregating those rows avoids repeating the expensive Bitrix reads for
+    each calendar selection.  Cross-month ranges deliberately return ``None``
+    so the regular full synchronisation remains the source of truth there.
+    """
+    month_start, next_start, _, _ = month_bounds(month_key, tz_name)
+    range_start, range_end, period_label = period_bounds(
+        month_key, period, tz_name, custom_start, custom_end
+    )
+    if range_start < month_start or range_end > next_start:
+        return None
+
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    arrival_end = observed_period_end(range_end, now)
+    source = details if isinstance(details, dict) else {}
+
+    def copied(name: str) -> List[Dict[str, Any]]:
+        return [copy.deepcopy(row) for row in (source.get(name) or []) if isinstance(row, dict)]
+
+    def between(rows: List[Dict[str, Any]], field: str, end: datetime) -> List[Dict[str, Any]]:
+        return [
+            row for row in rows
+            if (value := parse_dt(row.get(field), tz)) and range_start <= value < end
+        ]
+
+    all_new = copied("new")
+    new = [
+        row for row in all_new
+        if (value := parse_dt(row.get("created"), tz))
+        and range_start <= value < arrival_end
+    ]
+    closed = between(copied("closed"), "close", range_end)
+    returns = between(copied("returns"), "close", range_end)
+    active = copied("active")
+    dormant = copied("dormant")
+    returned = between(copied("returned"), "completion_at", range_end)
+
+    # These fields represent the September cohort against the first day of the
+    # month and therefore intentionally do not change with the calendar range.
+    dormant_to_production = copied("dormant_to_production")
+    dormant_to_return = copied("dormant_to_return")
+    dormant_entered_since_month_start = copied("dormant_entered_since_month_start")
+    closed_ids = {str(row.get("id") or "") for row in closed}
+    new_ids = {str(row.get("id") or "") for row in new}
+
+    for row in closed:
+        row["is_closed_success"] = True
+        row["is_new_in_period"] = str(row.get("id") or "") in new_ids
+    for collection in (new, active, returns, dormant, returned, dormant_to_production, dormant_to_return):
+        for row in collection:
+            row["is_closed_success"] = str(row.get("id") or "") in closed_ids
+            row["is_new_in_period"] = str(row.get("id") or "") in new_ids
+
+    period_closed = [row for row in closed if str(row.get("id") or "") in new_ids]
+    capacity = [
+        row for row in active
+        if (value := parse_dt(row.get("expected_close"), tz)) and range_start <= value < range_end
+    ]
+    dormant_expected = [
+        row for row in dormant
+        if (value := parse_dt(row.get("expected_close"), tz)) and range_start <= value < range_end
+    ]
+    dormant_overdue = [
+        row for row in dormant
+        if (value := parse_dt(row.get("expected_close"), tz)) and value.date() < now.date()
+    ]
+    overdue = copied("overdue")
+    active_missing_expected = copied("active_missing_expected")
+    active_missing_service = copied("active_missing_service")
+    active_missing_expert = copied("active_missing_expert")
+    closed_without_act = [row for row in closed if norm_text(row.get("act")) != "да"]
+    active_with_reason = [row for row in active if row.get("stuck_reasons")]
+    active_expected_month = [
+        row for row in active
+        if (value := parse_dt(row.get("expected_close"), tz)) and month_start <= value < next_start
+    ]
+    active_with_reason_expected_month = [
+        row for row in active_with_reason
+        if (value := parse_dt(row.get("expected_close"), tz)) and month_start <= value < next_start
+    ]
+
+    def amount(rows: List[Dict[str, Any]]) -> float:
+        return round(sum(num(row.get("amount")) for row in rows), 2)
+
+    closed_stats = aggregate_prod_rows(closed)
+    kpi = {
+        **closed_stats,
+        "new_count": len(new), "new_amount": amount(new),
+        "period_closed_count": len(period_closed), "period_closed_amount": amount(period_closed),
+        "new_to_success_pct": pct(len(period_closed), len(new)),
+        "capacity_count": len(capacity), "capacity_amount": amount(capacity),
+        "returns_count": len(returns), "returns_amount": amount(returns),
+        "dormant_count": len(dormant), "dormant_amount": amount(dormant),
+        "returned_to_production": len(returned), "returned_to_production_amount": amount(returned),
+        "dormant_expected_count": len(dormant_expected), "dormant_overdue_count": len(dormant_overdue),
+        "active_missing_expected_count": len(active_missing_expected),
+        "active_missing_service_count": len(active_missing_service),
+        "active_missing_expert_count": len(active_missing_expert),
+        "closed_without_act_count": len(closed_without_act),
+        "active_stuck_with_reason_count": len(active_with_reason),
+        "active_stuck_with_reason_amount": amount(active_with_reason),
+        "active_stuck_with_reason_pct": pct(len(active_with_reason), len(active)),
+        "active_stuck_with_reason_expected_month_count": len(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_amount": amount(active_with_reason_expected_month),
+        "active_stuck_with_reason_expected_month_pct": pct(len(active_with_reason_expected_month), len(active_expected_month)),
+    }
+    with_reason = [row for row in dormant if row.get("stuck_reasons")]
+    kpi["dormant_with_reason_pct"] = pct(len(with_reason), len(dormant))
+
+    products = []
+    product_names = sorted({str(row.get("service") or "Не указано") for row in new + closed + active + returns})
+    for name in product_names:
+        nr = [row for row in new if str(row.get("service") or "Не указано") == name]
+        cr = [row for row in closed if str(row.get("service") or "Не указано") == name]
+        pr = [row for row in period_closed if str(row.get("service") or "Не указано") == name]
+        ar = [row for row in active if str(row.get("service") or "Не указано") == name]
+        rr = [row for row in returns if str(row.get("service") or "Не указано") == name]
+        cap = [row for row in capacity if str(row.get("service") or "Не указано") == name]
+        _, norm_spec = match_norm_name(name)
+        products.append({
+            "name": name, "category": product_category(name),
+            "complexity": (norm_spec or {}).get("complexity"),
+            "norm_days": num((norm_spec or {}).get("norm_days")),
+            "new_count": len(nr), "new_amount": amount(nr),
+            "closed_count": len(cr), "closed_amount": amount(cr),
+            "period_closed_count": len(pr), "conversion_pct": pct(len(pr), len(nr)),
+            "capacity_count": len(cap), "capacity_amount": amount(cap),
+            "returns_count": len(rr), "returns_amount": amount(rr),
+            "active_count": len(ar), **aggregate_prod_rows(cr),
+        })
+    products.sort(key=lambda row: (-row["closed_amount"], row["name"]))
+
+    experts = []
+    names = sorted({str(row.get("expert") or "Не указан") for row in new + closed + active + returns})
+    for name in names:
+        nr = [row for row in new if str(row.get("expert") or "Не указан") == name]
+        cr = [row for row in closed if str(row.get("expert") or "Не указан") == name]
+        ar = [row for row in active if str(row.get("expert") or "Не указан") == name]
+        rr = [row for row in returns if str(row.get("expert") or "Не указан") == name]
+        breakdown = defaultdict(lambda: {"closed_count": 0, "closed_amount": 0.0, "days": [], "normed": 0, "in_norm": 0})
+        for row in cr:
+            item = breakdown[str(row.get("service") or "Не указано")]
+            item["closed_count"] += 1
+            item["closed_amount"] += num(row.get("amount"))
+            if row.get("prod_days") is not None:
+                item["days"].append(row["prod_days"])
+            if row.get("norm_days") and eligible_for_closure_norm(row):
+                item["normed"] += 1
+                item["in_norm"] += 1 if row.get("in_norm") else 0
+        expert_products = [
+            {"name": product, "closed_count": value["closed_count"], "closed_amount": round(value["closed_amount"], 2),
+             "avg_days": round(sum(value["days"]) / len(value["days"]), 1) if value["days"] else 0,
+             "within_norm_pct": pct(value["in_norm"], value["normed"])}
+            for product, value in breakdown.items()
+        ]
+        expert_products.sort(key=lambda row: -row["closed_amount"])
+        experts.append({
+            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
+            **aggregate_prod_rows(cr), "products": expert_products,
+        })
+    experts.sort(key=lambda row: (-row["closed_amount"], row["name"]))
+
+    stages = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for row in active:
+        item = stages[str(row.get("stage") or "Не указано")]
+        item["count"] += 1
+        item["amount"] += num(row.get("amount"))
+    stage_rows = [{"name": name, "count": value["count"], "amount": round(value["amount"], 2)} for name, value in stages.items()]
+    stage_rows.sort(key=lambda row: -row["amount"])
+
+    def reason_rows(rows, denominator):
+        reason_counts = defaultdict(lambda: {"count": 0, "amount": 0.0})
+        for row in rows:
+            for reason in row.get("stuck_reasons") or []:
+                item = reason_counts[str(reason)]
+                item["count"] += 1
+                item["amount"] += num(row.get("amount"))
+        return [
+            {"name": name, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], denominator)}
+            for name, value in sorted(reason_counts.items(), key=lambda item: (-item[1]["count"], item[0]))
+        ]
+
+    dormant_reasons = reason_rows(dormant, len(dormant))
+    active_reasons = reason_rows(active_with_reason, len(active))
+    active_expected_month_reasons = reason_rows(active_with_reason_expected_month, len(active_expected_month))
+
+    return_counts = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for row in returns:
+        item = return_counts[str(row.get("return_reason") or "Не указана")]
+        item["count"] += 1
+        item["amount"] += num(row.get("amount"))
+    return_reasons = [{"name": name, "count": value["count"], "amount": round(value["amount"], 2), "pct": pct(value["count"], len(returns))} for name, value in sorted(return_counts.items(), key=lambda item: -item[1]["count"])]
+
+    buckets = {"1–7 дней": 0, "8–14 дней": 0, "15–30 дней": 0, "30+ дней": 0}
+    for row in overdue:
+        value = parse_dt(row.get("expected_close"), tz)
+        if not value:
+            continue
+        days = (now.date() - value.date()).days
+        buckets["1–7 дней" if days <= 7 else "8–14 дней" if days <= 14 else "15–30 дней" if days <= 30 else "30+ дней"] += 1
+
+    derived_details = {
+        "new": new, "closed": closed, "period_closed": period_closed, "active": active, "returns": returns,
+        "capacity": capacity, "dormant": dormant, "returned": returned,
+        "dormant_to_production": dormant_to_production, "dormant_to_return": dormant_to_return,
+        "overdue": overdue, "dormant_entered_since_month_start": dormant_entered_since_month_start,
+        "dormant_expected": dormant_expected, "dormant_overdue": dormant_overdue,
+        "active_stuck_with_reason": active_with_reason, "active_stuck_with_reason_expected_month": active_with_reason_expected_month,
+        "active_missing_expected": active_missing_expected, "active_missing_service": active_missing_service,
+        "active_missing_expert": active_missing_expert, "closed_without_act": closed_without_act,
+    }
+    derived = {
+        "period_label": period_label,
+        "arrival_rule": "Передача из отдела продаж: дата создания карточки в производстве. Переходы из «Зависших» исключены по истории Bitrix",
+        "conversion_rule": "Закрыто из пришедших / Пришло за выбранный период",
+        "kpi": kpi, "weekly": production_weekly_dynamics(closed, month_start), "products": products,
+        "experts": experts, "stages": stage_rows,
+        "dormant": {"reasons": dormant_reasons, "with_reason_count": len(with_reason), "with_reason_pct": pct(len(with_reason), len(dormant))},
+        "active_stuck": {
+            "all_reasons": active_reasons,
+            "expected_month_reasons": active_expected_month_reasons,
+            "all_count": len(active),
+            "expected_month_count": len(active_expected_month),
+            "expected_month_rule": "Предполагаемая дата закрытия попадает в выбранный месяц",
+        },
+        "return_reasons": return_reasons,
+        "overdue": {"count": len(overdue), "amount": amount(overdue), "buckets": buckets},
+        "production_at_month_start": copy.deepcopy(production.get("production_at_month_start") or {"count": 0, "as_of": month_start.isoformat(), "rule": ""}),
+    }
+    return derived, derived_details
+
+
+def month_pace(month_key: str, tz_name: str):
+    start, end, _, _ = month_bounds(month_key,tz_name)
+    tz=ZoneInfo(tz_name); now=datetime.now(tz)
+    days=[]; d=start.date()
+    while d<end.date():
+        if d.weekday()<5:days.append(d)
+        d+=timedelta(days=1)
+    elapsed=[d for d in days if d<=min(now.date(),end.date()-timedelta(days=1))]
+    return {"business_days_total":len(days),"business_days_elapsed":len(elapsed),"share":round(len(elapsed)/len(days),4) if days else 0}
+
+
+async def build_snapshot(client, month_key: str, period: str, tz_name: str, custom_start: str = "", custom_end: str = "", source_overrides: Optional[Dict[str, str]] = None):
+    started=time.perf_counter()
+    meta=await client.meta()
+    sales_task=load_sales(client,month_key,meta,tz_name,source_overrides=source_overrides)
+    prod_task=load_production(client,month_key,period,meta,tz_name,custom_start,custom_end)
+    sales,production=await asyncio.gather(sales_task,prod_task)
+    details={"sales":sales.pop("_records"),"production":production.pop("_records")}
+    start,end,_,updated_at=month_bounds(month_key,tz_name)
+    period_start,period_end,_=period_bounds(month_key,period,tz_name,custom_start,custom_end)
+    return {
+        "ok":True,"updated_at":updated_at,"month_key":month_key,"period":period,
+        "sync_seconds":round(time.perf_counter()-started,2),
+        "month_start":start.isoformat(),"month_end":end.isoformat(),"period_start":period_start.isoformat(),"period_end":period_end.isoformat(),"pace":month_pace(month_key,tz_name),
+        "sales":sales,"production":production,"_details":details,
+        "available_users": sorted(set((meta.get("users") or {}).values())),
+        "available_user_options": list(meta.get("user_options") or []),
+        "available_dormant_stages": sorted(set((meta.get("status_by_entity") or {}).get("DEAL_STAGE_30", {}).values())),
+        "metric_status": {
+            "upsells": {"connected": False, "note":"В Bitrix не найдено отдельное надежное поле «Допродажа» — требуется mapping."},
+            "upsell_bonus": {"connected": False, "note":"Расчет премии за допродажи подключится после mapping поля допродажи."},
+            "total_bonus": {"connected": False, "note":"Итоговая премия эксперта будет считаться после подключения допродаж; базовая премия уже считается по справочнику."},
+            "expert_rework_pct": {"connected": False, "note":"В Bitrix нет отдельного признака «переделка по вине эксперта»."},
+            "manual_nps": {"connected": True, "note":"NPS не рассчитывается из Bitrix: руководитель вводит его вручную по каждому эксперту."}
+        }
+    }
+
+
+def filter_sales_details(details, metric, period_type="current", manager=None, group=None, source=None, product=None, week=None, stage=None, day=None):
+    leads=details.get("leads",[]); deals=details.get("deals",[]); active=details.get("active",[])
+    def common(r):
+        if manager and r.get("manager")!=manager:return False
+        if group and r.get("group")!=group:return False
+        if source and r.get("source")!=source:return False
+        return True
+    if stage:
+        rows=[r for r in active if common(r) and r.get("stage")==stage]
+        return rows
+    if metric == "preplan":
+        return [r for r in details.get("preplan", []) if common(r)]
+    if metric == "active_deals":
+        return [r for r in active if common(r)]
+    lead_rows=[r for r in leads if common(r) and (period_type!="previous" and r.get("period_type")=="current")]
+    current_deals=[r for r in deals if common(r) and r.get("period_type")=="current"]
+    previous_deals=[r for r in deals if common(r) and r.get("period_type")=="previous"]
+    if product:
+        current_deals=[r for r in current_deals if any(p.get("category")==product or p.get("name")==product for p in r.get("products",[]))]
+        previous_deals=[r for r in previous_deals if any(p.get("category")==product or p.get("name")==product for p in r.get("products",[]))]
+    if period_type=="previous":
+        deal_rows=previous_deals; sales_universe=previous_deals
+    elif period_type=="current":
+        deal_rows=current_deals; sales_universe=current_deals
+    else:
+        deal_rows=current_deals; sales_universe=current_deals+previous_deals
+    if metric in {"leads","qualified","qualified_rate","lead_to_deal_rate","lead_to_sale_rate","qualified_to_sale_rate"}:
+        rows=lead_rows if metric=="leads" else [r for r in lead_rows if r.get("is_qualified")]
+        if week is not None: rows=[r for r in rows if r.get("week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
+        return rows
+    if metric in {"cohort_sales", "cohort_sales_amount", "deal_to_sale_rate"}:
+        rows=[r for r in current_deals if is_success_sale_record(r)]
+        if week is not None: rows=[r for r in rows if r.get("creation_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
+        return rows
+    if metric in {"tail_sales", "tail_sales_amount", "tail_deal_to_sale_rate"}:
+        rows=[r for r in previous_deals if is_success_sale_record(r)]
+        if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
+        return rows
+    if metric in {"sales","sales_amount","average_check","sold_products","sold_product_amount","average_product_check","product_sale_rate","paid_amount","net_revenue","total_deal_to_sale_rate","closing_flow_deal_to_sale_rate"}:
+        rows=[r for r in sales_universe if is_success_sale_record(r)]
+        if week is not None: rows=[r for r in rows if r.get("sale_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
+        return rows
+    if metric=="lost_deals":
+        rows=[r for r in deal_rows if r.get("lost_in_report_month")]
+        if week is not None: rows=[r for r in rows if r.get("lost_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (parse_dt(r.get("close")) and parse_dt(r.get("close")).day==int(day))]
+        return rows
+    rows=deal_rows
+    if week is not None: rows=[r for r in rows if r.get("creation_week")==int(week)]
+    if day is not None:
+        rows=[r for r in rows if (parse_dt(r.get("created")) and parse_dt(r.get("created")).day==int(day))]
+    return rows
+
+
+def filter_prod_details(details, metric, expert=None, product=None, stage=None, reason=None, week=None, day=None):
+    metric_map={
+        "closed_count":"closed","closed_amount":"closed","avg_check":"closed","avg_production_days":"closed","avg_deviation_days":"closed","within_norm_pct":"closed","nps_avg":"closed","act_share_pct":"closed",
+        "new_count":"new","new_amount":"new","period_closed_count":"period_closed","period_closed_amount":"period_closed","new_to_success_pct":"period_closed",
+        "capacity_count":"capacity","capacity_amount":"capacity","returns_count":"returns","returns_amount":"returns",
+        "dormant_count":"dormant_expected","dormant_with_reason_pct":"dormant_expected","dormant_with_reason_count":"dormant_expected","dormant_all_with_reason_count":"dormant","active_stuck_with_reason_count":"active_stuck_with_reason","active_stuck_with_reason_expected_month_count":"active_stuck_with_reason_expected_month","returned_to_production":"returned","stuck_flow_current":"dormant","stuck_flow_growth":"dormant_entered_since_month_start","stuck_flow_returns":"dormant_to_return","stuck_flow_to_production":"dormant_to_production","overdue":"overdue",
+        "dormant_expected_count":"dormant_expected","dormant_overdue_count":"dormant_overdue",
+        "active_missing_expected_count":"active_missing_expected","active_missing_service_count":"active_missing_service",
+        "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"
+    }
+    rows=list(details.get(metric_map.get(metric,"active"),[]))
+    if metric == "within_norm_pct":
+        rows = [r for r in rows if r.get("norm_days") and eligible_for_closure_norm(r)]
+    if expert: rows=[r for r in rows if r.get("expert")==expert]
+    if product: rows=[r for r in rows if r.get("service")==product or r.get("category")==product]
+    if stage: rows=[r for r in rows if r.get("stage")==stage]
+    if reason:
+        rows=[r for r in rows if reason in (r.get("stuck_reasons") or []) or r.get("return_reason")==reason]
+    if metric in {"closed_count", "closed_amount", "avg_check", "avg_production_days", "avg_deviation_days", "within_norm_pct"}:
+        if week is not None:
+            rows=[r for r in rows if r.get("close_week")==int(week)]
+        if day is not None:
+            rows=[r for r in rows if (closed_at:=parse_dt(r.get("close"))) and closed_at.day==int(day)]
+    return rows
+
+
+async def build_trends_light(client, end_month: str, months: int, tz_name: str):
+    tz=ZoneInfo(tz_name)
+    meta = await client.meta()
+    success_stage_ids = successful_sale_stage_ids(meta)
+    y,m=map(int,end_month.split('-'))
+    keys=[]
+    for i in range(months-1,-1,-1):
+        yy=y; mm=m-i
+        while mm<=0: yy-=1; mm+=12
+        while mm>12: yy+=1; mm-=12
+        keys.append(f"{yy:04d}-{mm:02d}")
+    start=month_bounds(keys[0],tz_name)[0]
+    end=month_bounds(keys[-1],tz_name)[1]
+    sales_created_task=client.deal_list({"CATEGORY_ID":0,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
+    async def _load_success():
+        rows=[]
+        for sid in success_stage_ids:
+            rows.extend(await client.deal_list({"CATEGORY_ID":0,"STAGE_ID":sid,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT) or [])
+        return list({str(d.get("ID")):d for d in rows}.values())
+    sales_won_task=_load_success()
+    leads_task=client.lead_list({">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},LEAD_SELECT)
+    prod_new_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,">=DATE_CREATE":iso(start),"<DATE_CREATE":iso(end)},DEAL_SELECT)
+    prod_closed_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,"STAGE_ID":PROD_WON,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    prod_returns_task=client.deal_list({"CATEGORY_ID":PROD_CATEGORY,"STAGE_ID":PROD_RETURN,">=CLOSEDATE":iso(start),"<CLOSEDATE":iso(end)},DEAL_SELECT)
+    sc,sw,leads,pn,pc,pr=await asyncio.gather(sales_created_task,sales_won_task,leads_task,prod_new_task,prod_closed_task,prod_returns_task)
+    out={k:{"month":k,"deals":0,"sales":0,"sales_amount":0.0,"avg_check":0.0,"leads":0,"qualified":0,
+            "prod_new":0,"prod_new_amount":0.0,"prod_closed":0,"prod_closed_amount":0.0,"prod_conversion":0.0,
+            "avg_prod_days":0.0,"returns":0} for k in keys}
+    def key_of(v):
+        d=parse_dt(v,tz);return d.strftime('%Y-%m') if d else None
+    for d in sc or []:
+        k=key_of(d.get('DATE_CREATE')); 
+        if k in out: out[k]['deals']+=1
+    for d in sw or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out: out[k]['sales']+=1; out[k]['sales_amount']+=money(d)
+    qneedle='качественный лид'
+    for l in leads or []:
+        k=key_of(l.get('DATE_CREATE'))
+        if k in out:
+            out[k]['leads']+=1
+            if str(l.get('STATUS_ID') or '').upper()=='CONVERTED':out[k]['qualified']+=1
+    for d in pn or []:
+        k=key_of(d.get('DATE_CREATE'))
+        if k in out: out[k]['prod_new']+=1; out[k]['prod_new_amount']+=money(d)
+    days_by={k:[] for k in keys}; period_closed={k:0 for k in keys}
+    for d in pc or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out:
+            out[k]['prod_closed']+=1; out[k]['prod_closed_amount']+=money(d)
+            s=parse_dt(d.get(F_PROD_START),tz); c=parse_dt(d.get('CLOSEDATE'),tz)
+            bd=business_days(s,c)
+            if bd is not None:days_by[k].append(bd)
+            if key_of(d.get('DATE_CREATE'))==k:period_closed[k]+=1
+    for d in pr or []:
+        k=key_of(d.get('CLOSEDATE'))
+        if k in out: out[k]['returns']+=1
+    rows=[]
+    for k in keys:
+        x=out[k]
+        x['sales_amount']=round(x['sales_amount'],2);x['prod_new_amount']=round(x['prod_new_amount'],2);x['prod_closed_amount']=round(x['prod_closed_amount'],2)
+        x['avg_check']=round(x['sales_amount']/x['sales'],2) if x['sales'] else 0
+        x['prod_conversion']=pct(period_closed[k],x['prod_new'])
+        x['avg_prod_days']=round(sum(days_by[k])/len(days_by[k]),1) if days_by[k] else 0
+        rows.append(x)
+    return rows
