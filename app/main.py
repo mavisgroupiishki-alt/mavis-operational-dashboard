@@ -40,6 +40,7 @@ from .daily_sales import (
     live_snapshot,
     should_rebuild_empty_archive,
 )
+from .production_date_confirmation import register as register_production_date_confirmation
 from .personal_workspace import build_personal_workday
 from .sales_team import SALES_BI_MANAGERS
 from .cabinet_ui import cabinet_html
@@ -1434,7 +1435,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2058,6 +2059,20 @@ async def legacy_cabinet(request: Request):
 async def cabinet(request: Request):
     require_bitrix_identity(request)
     return HTMLResponse(cabinet_html())
+
+register_production_date_confirmation(app, client, storage, require_bitrix_identity, require_full_access)
+
+
+@app.get('/cabinet/production-date')
+async def production_date_form(request: Request):
+    require_bitrix_identity(request)
+    return FileResponse(STATIC / 'production-date.html', media_type='text/html')
+
+
+@app.get('/production-date-journal')
+async def production_date_journal_page(request: Request):
+    require_full_access(request)
+    return FileResponse(STATIC / 'production-date-journal.html', media_type='text/html')
 
 
 @app.get("/api/cabinet/me")
