@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, application_token_fingerprint, director_ids, issue_session, portal_host, read_session
-from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, F_SERVICE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
+from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, F_SERVICE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, money, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot

@@ -178,6 +178,33 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             calls.assert_awaited_once_with("personal-calls", {"manager_id": "2272"})
 
+    def test_call_context_returns_deal_amount_without_a_server_error(self):
+        """The call detail card must remain usable when a linked deal is present."""
+        configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
+        session = issue_session(
+            portal="mavisgroup.bitrix24.by", user_id="9", role="manager",
+            secret=configured.bitrix_local_session_secret, ttl_seconds=3600,
+        )
+        calls = AsyncMock(return_value={"ok": True, "status": "online", "data": {"calls": [
+            {"activityId": "call-1", "dealId": "19796", "client": "ООО Тест", "score": 9},
+        ]}})
+        with (
+            patch.object(main, "settings", configured),
+            patch.object(main, "load_jarvis_operations", new=calls),
+            patch.object(main.client, "call", new=AsyncMock(return_value={"result": {
+                "ID": "19796", "TITLE": "ООО Тест", "STAGE_ID": "C1:NEW", "OPPORTUNITY": "1200.50",
+                "COMPANY_TITLE": "ООО Тест", "DATE_MODIFY": "2026-11-03T10:00:00+03:00",
+            }})),
+            patch.object(main.client, "meta", new=AsyncMock(return_value={"statuses": {"C1:NEW": "Новая сделка"}})),
+            patch.object(main, "_aiai_deal_context_summary", new=AsyncMock(return_value={"status": "unavailable"})),
+            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "online"})),
+            TestClient(fixed_main.app, base_url="https://testserver") as client,
+        ):
+            client.cookies.set("mavis_bitrix_session", session)
+            response = client.get("/api/cabinet/calls/call-1/context")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deal"]["amount"], 1200.5)
+
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
         director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
