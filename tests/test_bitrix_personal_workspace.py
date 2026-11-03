@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import fixed_main, main
 from app.bitrix_identity import issue_session, portal_host, read_session
-from app.personal_workspace import build_personal_workday
+from app.personal_workspace import _stage_sla_state, build_personal_workday
 
 
 class BitrixIdentityTests(unittest.TestCase):
@@ -205,6 +205,29 @@ class BitrixIdentityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["deal"]["amount"], 1200.5)
 
+    def test_registry_hydration_never_uses_company_name_without_an_unp(self):
+        workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Похожее название", "company": "Похожее название", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
+        lookup = AsyncMock(return_value={"status": "not_provided"})
+        with (
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={})),
+            patch.object(main, "_registry_context", new=lookup),
+        ):
+            asyncio.run(main._hydrate_cabinet_registry(workday))
+        lookup.assert_awaited_once_with("")
+        self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
+        self.assertEqual(workday["iso_suot"]["candidates"][0]["registry"]["status"], "not_provided")
+
+    def test_registry_hydration_checks_exact_company_unp(self):
+        workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
+        registry = AsyncMock(return_value={"status": "not_found"})
+        with (
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
+            patch.object(main, "_registry_context", new=registry),
+        ):
+            asyncio.run(main._hydrate_cabinet_registry(workday))
+        registry.assert_awaited_once_with("123456789")
+        self.assertEqual(len(workday["iso_suot"]["confirmed_gaps"]), 1)
+
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
         director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
@@ -347,6 +370,17 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertIn("созданных", result["deals"]["conversion"]["definition"])
         self.assertEqual(result["stage_sla"]["breached_count"], 1)
         self.assertEqual(result["stage_sla"]["breached"][0]["stage_sla"]["rule"], "До конца рабочего дня")
+        self.assertGreater(result["stage_sla"]["breached"][0]["stage_sla"]["actual_days"], 1)
+
+    def test_kp_stage_sla_exposes_norm_fact_and_excess(self):
+        from datetime import datetime
+        moved = datetime.fromisoformat("2026-10-01T10:00:00+03:00")
+        now = datetime.fromisoformat("2026-10-05T10:00:00+03:00")
+        state = _stage_sla_state("КП отправлено", moved, now)
+        self.assertEqual(state["rule"], "Не более 2 дней")
+        self.assertEqual(state["limit_days"], 2)
+        self.assertEqual(state["actual_days"], 4)
+        self.assertEqual(state["overdue_hours"], 48)
 
     def test_comment_promise_without_activity_or_follow_up_call_is_prioritized(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:

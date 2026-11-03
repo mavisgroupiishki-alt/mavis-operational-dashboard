@@ -12,7 +12,7 @@ from .metrics import DEAL_SELECT, LEAD_SELECT, F_DEAL_CLIENT_TYPE, F_SERVICE, mo
 
 SUCCESSFUL_CALL_SECONDS = 60
 SUCCESSFUL_CALL_DAILY_TARGET = 50
-PERSONAL_DEAL_SELECT = [*DEAL_SELECT, "ACTIVITY_NEXT_TIME", "ACTIVITY_COUNTER", "COMMENTS", "DATE_MODIFY", "MOVED_TIME"]
+PERSONAL_DEAL_SELECT = [*DEAL_SELECT, "COMPANY_ID", "COMPANY_TITLE", "ACTIVITY_NEXT_TIME", "ACTIVITY_COUNTER", "COMMENTS", "DATE_MODIFY", "MOVED_TIME"]
 CRM_ACTIVITY_SELECT = ["ID", "OWNER_ID", "OWNER_TYPE_ID", "TYPE_ID", "COMPLETED", "DEADLINE", "SUBJECT", "DESCRIPTION", "CREATED", "LAST_UPDATED"]
 CONTACT_WORDS = ("связ", "перезвон", "позвон", "набрать", "контакт")
 SHORT_DATE = re.compile(r"(?<!\d)([0-3]?\d)[./-]([01]?\d)(?:[./-](20\d{2}|\d{2}))?(?!\d)")
@@ -23,7 +23,9 @@ def _stage_sla_rule(stage_name_value: str) -> tuple[str, int | None]:
     value = re.sub(r"\s+", " ", str(stage_name_value or "").casefold().replace("ё", "е"))
     if "новая сделка" in value:
         return "До конца рабочего дня", 0
-    if "в работе" in value or "кп отправ" in value:
+    if "кп отправ" in value:
+        return "Не более 2 дней", 2
+    if "в работе" in value:
         return "Не более 3 дней", 3
     if "возраж" in value or "договор" in value:
         return "Не более 5 дней", 5
@@ -46,9 +48,13 @@ def _stage_sla_state(stage_name_value: str, moved_at: datetime | None, now: date
         deadline = moved_at + timedelta(days=max_days)
     return {
         "rule": rule,
+        "limit_days": max_days,
         "started_at": moved_at.isoformat(),
         "deadline": deadline.isoformat(),
         "breached": now > deadline,
+        "actual_hours": max(0.0, round((now - moved_at).total_seconds() / 3600, 1)),
+        "actual_days": max(0.0, round((now - moved_at).total_seconds() / 86400, 1)),
+        "overdue_hours": max(0.0, round((now - deadline).total_seconds() / 3600, 1)),
         "remaining_hours": round((deadline - now).total_seconds() / 3600, 1),
     }
 
@@ -143,7 +149,10 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     sales_task = client.deal_list({"CATEGORY_ID": 0, "ASSIGNED_BY_ID": user_id, "CLOSED": "N"}, PERSONAL_DEAL_SELECT)
     reanimation_task = client.deal_list({"CATEGORY_ID": 20, "ASSIGNED_BY_ID": user_id, "CLOSED": "N"}, PERSONAL_DEAL_SELECT)
     meta_task = client.meta()
-    leads_task = client.lead_list({"ASSIGNED_BY_ID": user_id, ">=DATE_CREATE": month_start.isoformat(), "<DATE_CREATE": month_end.isoformat()}, LEAD_SELECT)
+    # The daily cabinet controls the manager's unprocessed inbox, not every
+    # lead that happened to be created this month. Bitrix's standard NEW
+    # status is the only source for this number.
+    leads_task = client.lead_list({"ASSIGNED_BY_ID": user_id, "STATUS_ID": "NEW"}, LEAD_SELECT)
     won_task = client.deal_list({"CATEGORY_ID": 0, "ASSIGNED_BY_ID": user_id, ">=CLOSEDATE": month_start.isoformat(), "<CLOSEDATE": month_end.isoformat()}, PERSONAL_DEAL_SELECT)
     created_task = client.deal_list({"CATEGORY_ID": 0, "ASSIGNED_BY_ID": user_id, ">=DATE_CREATE": month_start.isoformat(), "<DATE_CREATE": month_end.isoformat()}, PERSONAL_DEAL_SELECT)
     calls_result, sales_result, reanimation_result, meta_result, leads_result, won_result, created_result = await asyncio.gather(calls_task, sales_task, reanimation_task, meta_task, leads_task, won_task, created_task, return_exceptions=True)
@@ -208,7 +217,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
         stage_sla = _stage_sla_state(label, _parse_datetime(deal.get("MOVED_TIME"), zone), now)
         deal_id = str(deal.get("ID") or "")
         last_touch = last_touch_by_deal.get(deal_id)
-        return {"id": deal_id, "title": str(deal.get("TITLE") or "Без названия"), "company": str(deal.get("COMPANY_TITLE") or ""), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "comments": str(deal.get("COMMENTS") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla, "last_touch_at": last_touch.isoformat() if last_touch else ""}
+        return {"id": deal_id, "title": str(deal.get("TITLE") or "Без названия"), "company": str(deal.get("COMPANY_TITLE") or ""), "company_id": str(deal.get("COMPANY_ID") or ""), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "comments": str(deal.get("COMMENTS") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla, "last_touch_at": last_touch.isoformat() if last_touch else ""}
 
     sla_breaches = [row for deal in deals if (row := deal_row(deal)).get("stage_sla") and row["stage_sla"].get("breached")]
 
@@ -247,7 +256,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
         "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": call_target, "remaining": max(0, call_target - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
         "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales], "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals), "target_active_count": 70, "needed_to_target": max(0, 70 - len(deals)), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "week_without_touch": week_without_touch[:50], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2), "conversion": {"created_count": len(created_sales), "won_count": len(created_won), "percent": conversion_percent, "definition": "Из сделок, созданных в выбранном месяце, сколько уже находится в успешной стадии. Продажи, закрытые в этом месяце, показаны отдельно в «План / факт»."}},
-        "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else []},
+        "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else [], "definition": "Новые необработанные лиды: только лиды менеджера на стадии «Новые» прямо сейчас."},
         "stage_sla": {"status": "online", "message": "Срок считается от фактического перехода сделки на этап (MOVED_TIME). Сделки без этой даты не помечаются как нарушившие срок.", "breached_count": len(sla_breaches), "breached": sla_breaches[:50]},
         "iso_suot": {"status": "needs_connection", "message": "Реестр ИСО/СУОТ ещё не подключён к кабинету. Ниже — только сделки без заполненной услуги, а не вывод о потребности клиента.", "candidates": [deal_row(row) for row in iso_suot_candidates[:12]]}, "month": month_key,
     }

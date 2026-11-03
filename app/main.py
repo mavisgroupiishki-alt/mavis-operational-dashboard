@@ -2238,7 +2238,7 @@ async def api_cabinet_workday(request: Request, date: str = Query(default=""), p
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
     if period not in {"day", "week", "month"}:
         raise HTTPException(400, "Выберите период: день, неделя или месяц")
-    key = f"cabinet_workday_snapshot_v4:{user_id}:{selected_date}:{period}"
+    key = f"cabinet_workday_snapshot_v5:{user_id}:{selected_date}:{period}"
     cached = cabinet_workday_cache.get(key)
     if not isinstance(cached, dict):
         try:
@@ -2433,18 +2433,56 @@ async def _aiai_deal_context_summary(deal_id: str, context: dict[str, Any]) -> d
         return {"status": "unavailable", "message": "AIAI.BY временно недоступен для анализа контекста."}
 
 
-async def _registry_context(company_name: str) -> dict[str, Any]:
-    """Read the locally published registry through its serving API, never infer a registry match."""
-    query = _call_text(company_name, 240)
-    if not query:
-        return {"status": "no_company", "message": "В сделке не указана компания для проверки по реестру."}
-    cache_key = query.casefold()
+def _normalize_unp(value: Any) -> str:
+    """A Belarusian UNP is nine digits; names must never be used as a fallback."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits if len(digits) == 9 else ""
+
+
+async def _company_unps(company_ids: list[Any]) -> dict[str, str]:
+    """Read the configured Company UNP field without guessing its custom ID."""
+    ids = list(dict.fromkeys(str(value) for value in company_ids if str(value).isdigit()))
+    if not ids:
+        return {}
+    try:
+        fields_response = await client.call("crm.company.fields")
+        fields = fields_response.get("result") if isinstance(fields_response, dict) else {}
+        unp_fields = [
+            str(code) for code, meta in (fields or {}).items()
+            if "унп" in str((meta or {}).get("title") or "").casefold()
+        ]
+        if not unp_fields:
+            return {}
+        rows = await client.list_all(
+            "crm.company.list",
+            {"filter": {"@ID": ids}, "select": ["ID", *unp_fields]},
+            limit=100,
+        )
+    except Exception:
+        logger.warning("Company UNP lookup failed", exc_info=True)
+        return {}
+    values: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        unp = next((_normalize_unp(row.get(field)) for field in unp_fields if _normalize_unp(row.get(field))), "")
+        if unp:
+            values[str(row.get("ID") or "")] = unp
+    return values
+
+
+async def _registry_context(unp_value: Any) -> dict[str, Any]:
+    """Read the registry by an exact UNP only; company-name matches are unsafe."""
+    unp = _normalize_unp(unp_value)
+    if not unp:
+        return {"status": "not_provided", "message": "УНП компании не заполнен: проверка реестра не выполнялась."}
+    cache_key = unp
     cached = cabinet_registry_cache.get(cache_key)
     if isinstance(cached, tuple) and time.monotonic() - cached[0] < 15 * 60:
         return dict(cached[1])
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as session:
-            response = await session.get("https://mavis-registry.onrender.com/api/search", params={"q": query})
+            response = await session.get("https://mavis-registry.onrender.com/api/search", params={"q": unp})
         if response.status_code >= 400:
             result = {"status": "unavailable", "message": "Реестр временно не ответил."}
             cabinet_registry_cache[cache_key] = (time.monotonic(), result)
@@ -2454,8 +2492,12 @@ async def _registry_context(company_name: str) -> dict[str, Any]:
             result = {"status": "not_found", "message": "Компания не найдена в опубликованном реестре."}
             cabinet_registry_cache[cache_key] = (time.monotonic(), result)
             return result
-        first = items[0] if isinstance(items[0], dict) else {}
-        result = {"status": "online", "entity_id": _call_text(first.get("id"), 80), "name": _call_text(first.get("name"), 240), "unp": _call_text(first.get("unp"), 32)}
+        exact = next((item for item in items if isinstance(item, dict) and _normalize_unp(item.get("unp")) == unp), None)
+        if not exact:
+            result = {"status": "not_found", "message": "Компания с этим УНП не найдена в опубликованном реестре.", "unp": unp}
+            cabinet_registry_cache[cache_key] = (time.monotonic(), result)
+            return result
+        result = {"status": "online", "entity_id": _call_text(exact.get("id"), 80), "name": _call_text(exact.get("name"), 240), "unp": unp}
         cabinet_registry_cache[cache_key] = (time.monotonic(), result)
         return result
     except (httpx.HTTPError, ValueError, TypeError):
@@ -2522,7 +2564,10 @@ async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
     """Attach only confirmed daily registry facts to deals without an ISO/SUOT service."""
     iso = workday.get("iso_suot") or {}
     candidates = list(iso.get("candidates") or [])[:20]
-    checked = await asyncio.gather(*(_registry_context(str(row.get("company") or row.get("title") or "")) for row in candidates), return_exceptions=True)
+    unps = await _company_unps([row.get("company_id") for row in candidates])
+    for row in candidates:
+        row["unp"] = unps.get(str(row.get("company_id") or ""), "")
+    checked = await asyncio.gather(*(_registry_context(row.get("unp")) for row in candidates), return_exceptions=True)
     gaps = []
     available = 0
     for row, status in zip(candidates, checked):
@@ -2536,7 +2581,7 @@ async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
             gaps.append(row)
     iso.update({
         "status": "online" if candidates and available == len(candidates) else "partial" if available else "unavailable",
-        "message": "Проверка по ежедневному опубликованному реестру ИСО/СУОТ. Красный сигнал появляется только при подтверждённом отсутствии компании и пустой услуге в сделке.",
+        "message": "Проверка по ежедневному опубликованному реестру ИСО/СУОТ идёт только по точному УНП. Красный сигнал появляется только при подтверждённом отсутствии УНП и пустой услуге в сделке.",
         "candidates": candidates,
         "confirmed_gaps": gaps,
     })
@@ -2594,9 +2639,10 @@ async def api_cabinet_call_context(activity_id: str, request: Request):
         "comments": _call_text(deal.get("COMMENTS"), 1600),
         "updated": _call_text(deal.get("DATE_MODIFY"), 80),
     }
+    company_unps = await _company_unps([deal.get("COMPANY_ID")])
     ai_summary, registry = await asyncio.gather(
         _aiai_deal_context_summary(call["dealId"], context),
-        _registry_context(str(deal.get("COMPANY_TITLE") or deal.get("TITLE") or "")),
+        _registry_context(company_unps.get(str(deal.get("COMPANY_ID") or ""))),
     )
     return {
         "ok": True,
