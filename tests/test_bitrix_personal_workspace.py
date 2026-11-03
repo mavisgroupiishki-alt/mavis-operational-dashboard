@@ -276,6 +276,8 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["profile"]["name"], "Анна Жихарева")
         self.assertEqual(result["leads"]["month_count"], 1)
         self.assertEqual(result["deals"]["stages"][0]["name"], "1. Новая сделка")
+        self.assertEqual(result["deals"]["conversion"]["created_count"], 1)
+        self.assertIn("показатель периода", result["deals"]["conversion"]["definition"])
 
     def test_comment_promise_without_activity_or_follow_up_call_is_prioritized(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
@@ -286,6 +288,33 @@ class PersonalWorkspaceTests(unittest.TestCase):
             result = asyncio.run(build_personal_workday(_PromisedContactClient(), "12", "2026-11-01", "Europe/Moscow"))
         self.assertEqual(result["deals"]["priorities"][0]["id"], "10")
         self.assertIn("01.11", result["deals"]["priorities"][0]["reason"])
+
+
+class PersonalCallNormalizationTests(unittest.TestCase):
+    def test_unscored_reason_and_iso_alert_are_only_taken_from_confirmed_data(self):
+        result = main._public_personal_calls({
+            "ok": True,
+            "status": "online",
+            "data": {"calls": [
+                {
+                    "activityId": "call-1", "client": "ООО Без статуса", "status": "pending",
+                    "recommendation": "Анализ ещё не готов",
+                },
+                {
+                    "activityId": "call-2", "client": "ООО Проверка", "score": 8.5,
+                    "isoSuot": {"registryMissing": True, "offered": False},
+                },
+                {
+                    "activityId": "call-3", "client": "ООО Неизвестно", "score": 9,
+                },
+            ]},
+        })
+        pending, confirmed_gap, unknown = result["data"]["calls"]
+        self.assertEqual(pending["notScoredReason"], "Анализ ещё не готов")
+        self.assertTrue(confirmed_gap["isoSuotAlert"])
+        self.assertEqual(confirmed_gap["isoSuotStatus"], "confirmed_gap")
+        self.assertFalse(unknown["isoSuotAlert"])
+        self.assertEqual(unknown["isoSuotStatus"], "not_provided")
 
 
 if __name__ == "__main__":

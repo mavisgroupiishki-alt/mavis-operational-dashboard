@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from .bitrix import BitrixClient
 from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, application_token_fingerprint, director_ids, issue_session, portal_host, read_session
-from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
+from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, F_SERVICE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
 from .recovery import SEPTEMBER_2026_DORMANT_BASELINE, restore_confirmed_september_dormant_baseline, restore_missing_production_plan
 from .demo import demo_snapshot
@@ -2182,13 +2182,139 @@ async def api_cabinet_workday(request: Request, date: str = Query(default="")):
         "message": "Bitrix24 собирает данные. Это первый запуск; повторно открывать приложение не нужно."}, status_code=202)
 
 
+_CALL_STATUS_REASON = {
+    "pending": "Анализ Jarvis ещё не готов.",
+    "excluded": "Jarvis исключил запись из оценки качества.",
+    "needs_review": "Jarvis отметил звонок для проверки.",
+}
+
+
+def _call_text(value: Any, limit: int = 1800) -> str:
+    """Keep untrusted integration text display-safe and bounded."""
+    return re.sub(r"\s+", " ", str(value or "").strip())[:limit]
+
+
+def _call_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(score, 1) if 0 <= score <= 10 else None
+
+
+def _call_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    rows = data.get("calls") if isinstance(data, dict) else []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _public_personal_calls(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return only card data a manager may see, never upstream credentials."""
+    source = payload.get("data") if isinstance(payload, dict) else {}
+    source = source if isinstance(source, dict) else {}
+    calls = []
+    for row in _call_list(payload)[:800]:
+        activity_id = str(row.get("activityId") or row.get("activity_id") or row.get("id") or "").strip()
+        if not activity_id or len(activity_id) > 80:
+            continue
+        deal_id = str(row.get("dealId") or row.get("deal_id") or "").strip()
+        status = _call_text(row.get("status"), 40).lower() or "unknown"
+        recommendation = _call_text(row.get("recommendation"), 1200)
+        try:
+            duration = max(0, min(int(float(row.get("durationSeconds") or row.get("duration_seconds") or 0)), 24 * 60 * 60))
+        except (TypeError, ValueError):
+            duration = 0
+        iso = row.get("isoSuot") if isinstance(row.get("isoSuot"), dict) else row.get("iso_suot")
+        iso = iso if isinstance(iso, dict) else {}
+        registry_missing = iso.get("registryMissing") is True or iso.get("registry_missing") is True
+        offered = iso.get("offered")
+        iso_alert = registry_missing and offered is False
+        calls.append({
+            "activityId": activity_id,
+            "client": _call_text(row.get("client"), 240) or "Неизвестный клиент",
+            "created": _call_text(row.get("created"), 80),
+            "dealId": deal_id if deal_id.isdigit() else "",
+            "direction": "incoming" if str(row.get("direction") or "").lower() == "incoming" else "outgoing",
+            "durationSeconds": duration,
+            "score": _call_score(row.get("score")),
+            "stage": _call_text(row.get("stage"), 180),
+            "status": status,
+            "recommendation": recommendation,
+            "notScoredReason": _call_text(row.get("notScoredReason") or row.get("not_scored_reason"), 600) or (recommendation if status in {"pending", "excluded"} else _CALL_STATUS_REASON.get(status, "Причина не передана Jarvis.")),
+            "isoSuotAlert": iso_alert,
+            "isoSuotStatus": "confirmed_gap" if iso_alert else ("not_provided" if not iso else "no_confirmed_gap"),
+        })
+    upstream_summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
+    scored = [row for row in calls if row["score"] is not None]
+    average = round(sum(row["score"] for row in scored) / len(scored), 1) if scored else None
+    return {
+        "ok": True,
+        "status": str(payload.get("status") or "online"),
+        "data": {
+            "summary": {
+                "calls": len(calls),
+                "scored": len(scored),
+                "unscored": len(calls) - len(scored),
+                "averageScore": average,
+                "upstreamCalls": upstream_summary.get("calls"),
+            },
+            "calls": calls,
+            "contextAvailability": "crm_on_demand",
+            "audioAvailability": "jarvis_embedded",
+        },
+    }
+
+
 @app.get("/api/cabinet/calls")
 async def api_cabinet_calls(request: Request):
     _, user_id = await _cabinet_subject(request)
     payload = await load_jarvis_operations("personal-calls", {"manager_id": user_id})
     if not payload.get("ok"):
         raise HTTPException(503, "Звонки Jarvis временно недоступны")
-    return payload
+    return _public_personal_calls(payload)
+
+
+@app.get("/api/cabinet/calls/{activity_id}/context")
+async def api_cabinet_call_context(activity_id: str, request: Request):
+    """Return small CRM context only after the call is verified in this manager's Jarvis feed."""
+    _, user_id = await _cabinet_subject(request)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", activity_id):
+        raise HTTPException(400, "Некорректный идентификатор звонка")
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": user_id})
+    if not payload.get("ok"):
+        raise HTTPException(503, "Звонки Jarvis временно недоступны")
+    call = next((row for row in _public_personal_calls(payload)["data"]["calls"] if row["activityId"] == activity_id), None)
+    if not call:
+        raise HTTPException(404, "Звонок не найден в личном журнале")
+    if not call["dealId"]:
+        return {"ok": True, "status": "no_deal", "message": "У звонка нет связанной сделки, поэтому контекст CRM недоступен."}
+    try:
+        raw = await client.call("crm.deal.get", {"id": int(call["dealId"])})
+        deal = raw.get("result") if isinstance(raw, dict) else {}
+        if not isinstance(deal, dict):
+            raise ValueError("invalid deal")
+        meta = await client.meta()
+    except Exception:
+        logger.exception("Personal call CRM context unavailable")
+        return {"ok": True, "status": "unavailable", "message": "Bitrix24 сейчас не передал контекст этой сделки."}
+    return {
+        "ok": True,
+        "status": "online",
+        "deal": {
+            "id": call["dealId"],
+            "title": _call_text(deal.get("TITLE"), 240),
+            "stage": _call_text((meta.get("statuses") or {}).get(str(deal.get("STAGE_ID") or "")) or deal.get("STAGE_ID"), 180),
+            "amount": money(deal),
+            "source": _call_text(source_name(meta, deal) or deal.get("SOURCE_ID"), 180),
+            "service": _call_text(deal.get(F_SERVICE), 240),
+            "comments": _call_text(deal.get("COMMENTS"), 1600),
+            "updated": _call_text(deal.get("DATE_MODIFY"), 80),
+        },
+        "jarvis": {
+            "transcript": "Jarvis не передал транскрипт этой записи в интеграционный ответ.",
+            "audio": "Прослушка открывается ниже во встроенном, ограниченном менеджером интерфейсе Jarvis.",
+        },
+    }
 
 
 @app.get("/api/cabinet/listening")
