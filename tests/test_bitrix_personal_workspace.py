@@ -203,19 +203,25 @@ class BitrixIdentityTests(unittest.TestCase):
 class _Client:
     portal = "https://mavisgroup.bitrix24.by"
 
-    async def list_all(self, method, _params):
+    async def list_all(self, method, _params, limit=None):
         if method == "voximplant.statistic.get":
             return [
                 {"PORTAL_USER_ID": "12", "CALL_DURATION": "61"},
                 {"PORTAL_USER_ID": "12", "CALL_DURATION": "59"},
                 {"PORTAL_USER_ID": "99", "CALL_DURATION": "360"},
             ]
+        if method == "crm.activity.list":
+            return [{
+                "ID": "700", "OWNER_ID": "10", "OWNER_TYPE_ID": "2", "TYPE_ID": "2",
+                "COMPLETED": "N", "DEADLINE": "2026-10-20T10:00:00+03:00",
+                "SUBJECT": "Перезвонить клиенту",
+            }]
         raise AssertionError(method)
 
     async def tasks_for_responsible(self, user_id, limit):
         self.assert_user(user_id)
         return [
-            {"ID": "1", "STATUS": "2", "DEADLINE": "2026-10-28T10:00:00+03:00", "UF_CRM_TASK_DEAL": "D_10"},
+            {"ID": "1", "STATUS": "2", "DEADLINE": "2026-10-28T10:00:00+03:00", "UF_CRM_TASK_DEAL": "D_99"},
             {"ID": "2", "STATUS": "5", "DEADLINE": "2026-10-20T10:00:00+03:00", "UF_CRM_TASK_DEAL": "D_11"},
         ]
 
@@ -235,6 +241,23 @@ class _Client:
         assert str(user_id) == "12"
 
 
+class _PromisedContactClient(_Client):
+    async def list_all(self, method, params, limit=None):
+        if method == "voximplant.statistic.get":
+            return []
+        if method == "crm.activity.list":
+            return []
+        raise AssertionError(method)
+
+    async def deal_list(self, filters, _select):
+        self.assert_user(filters["ASSIGNED_BY_ID"])
+        return [{
+            "ID": "10", "TITLE": "Клиент с обещанным звонком", "STAGE_ID": "NEW",
+            "SOURCE_ID": "WEB", "UF_CRM_1756973967704": "1",
+            "COMMENTS": "Договорились связаться 01.11.2026 и уточнить оплату.",
+        }]
+
+
 class PersonalWorkspaceTests(unittest.TestCase):
     def test_workday_only_counts_authenticated_user_and_keeps_unknown_integrations_honest(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
@@ -247,11 +270,22 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["calls"]["successful_from_minute"], 1)
         self.assertEqual(result["tasks"]["overdue_count"], 1)
         self.assertEqual(result["deals"]["without_open_task_count"], 0)
+        self.assertEqual(result["deals"]["overdue_count"], 1)
         self.assertEqual(result["availability"]["stage_sla"], "not_configured")
         self.assertEqual(result["availability"]["iso_suot_registry"], "needs_connection")
         self.assertEqual(result["profile"]["name"], "Анна Жихарева")
         self.assertEqual(result["leads"]["month_count"], 1)
         self.assertEqual(result["deals"]["stages"][0]["name"], "1. Новая сделка")
+
+    def test_comment_promise_without_activity_or_follow_up_call_is_prioritized(self):
+        with patch("app.personal_workspace.datetime") as mocked_datetime:
+            from datetime import datetime
+            mocked_datetime.now.return_value = datetime.fromisoformat("2026-11-02T12:00:00+03:00")
+            mocked_datetime.combine = datetime.combine
+            mocked_datetime.fromisoformat = datetime.fromisoformat
+            result = asyncio.run(build_personal_workday(_PromisedContactClient(), "12", "2026-11-01", "Europe/Moscow"))
+        self.assertEqual(result["deals"]["priorities"][0]["id"], "10")
+        self.assertIn("01.11", result["deals"]["priorities"][0]["reason"])
 
 
 if __name__ == "__main__":
