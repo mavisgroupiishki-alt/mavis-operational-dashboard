@@ -1135,7 +1135,10 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production", c
     prod_days = business_days(prod_start, close)
     full_days = calendar_days(created, close)
     norm_days = num((norm_spec or {}).get("norm_days")) if norm_spec else 0
-    in_norm = bool(prod_days is not None and norm_days > 0 and prod_days <= norm_days)
+    # Norms introduced on 01.10.2026 apply only to newly created production deals.
+    # Older cards retain historical cycle duration but are not graded against this SLA.
+    norm_eligible = bool(created and created.date() >= date(2026, 10, 1))
+    in_norm = (prod_days <= norm_days) if norm_eligible and prod_days is not None and norm_days > 0 else None
     # Причина зависания: актуальное поле имеет приоритет.
     # Старое поле используем только как fallback, чтобы одна сделка
     # не попадала одновременно в две причины из-за исторических значений.
@@ -1160,7 +1163,7 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production", c
         "created": created.isoformat() if created else None, "modified": modified.isoformat() if modified else None,
         "close": close.isoformat() if close else None, "close_week": week_of_month(close, month_start), "prod_start": prod_start.isoformat() if prod_start else None,
         "expected_close": expected.isoformat() if expected else None, "prod_days": prod_days, "full_cycle_days": full_days,
-        "in_norm": in_norm, "deviation_days": round((prod_days or 0) - norm_days, 1) if prod_days is not None and norm_days else None,
+        "in_norm": in_norm, "norm_eligible": norm_eligible, "deviation_days": round(prod_days - norm_days, 1) if norm_eligible and prod_days is not None and norm_days else None,
         "nps": num(d.get(F_NPS)), "act": enum_label(meta, F_ACT, d.get(F_ACT)),
         "return_reason": enum_label(meta, F_RETURN_REASON, d.get(F_RETURN_REASON)), "stuck_reasons": reasons,
         "inactive_days": (datetime.now(tz).date() - modified.date()).days if modified else None,
@@ -1170,8 +1173,8 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production", c
 
 def aggregate_prod_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     closed = [r for r in rows if r.get("is_closed_success")]
-    days = [r["prod_days"] for r in closed if r.get("prod_days") is not None]
-    normed = [r for r in closed if r.get("norm_days")]
+    days = [r["prod_days"] for r in closed if r.get("norm_eligible") and r.get("prod_days") is not None]
+    normed = [r for r in closed if r.get("norm_eligible") and r.get("norm_days")]
     deviations = [r["deviation_days"] for r in closed if r.get("deviation_days") is not None]
     acts = [r for r in closed if norm_text(r.get("act")) == "да"]
     return {
@@ -1525,8 +1528,8 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         pmap = defaultdict(lambda: {"closed_count":0,"closed_amount":0.0,"days":[],"normed":0,"in_norm":0})
         for r in cr:
             x=pmap[r["service"]]; x["closed_count"]+=1; x["closed_amount"]+=r["amount"]
-            if r.get("prod_days") is not None: x["days"].append(r["prod_days"])
-            if r.get("norm_days"): x["normed"]+=1; x["in_norm"] += 1 if r.get("in_norm") else 0
+            if r.get("norm_eligible") and r.get("prod_days") is not None: x["days"].append(r["prod_days"])
+            if r.get("norm_eligible") and r.get("norm_days"): x["normed"]+=1; x["in_norm"] += 1 if r.get("in_norm") else 0
         prod_breakdown=[]
         for p,x in pmap.items():
             prod_breakdown.append({"name":p,"closed_count":x["closed_count"],"closed_amount":round(x["closed_amount"],2),
@@ -1761,9 +1764,9 @@ def derive_production_period(
             item = breakdown[str(row.get("service") or "Не указано")]
             item["closed_count"] += 1
             item["closed_amount"] += num(row.get("amount"))
-            if row.get("prod_days") is not None:
+            if row.get("norm_eligible") and row.get("prod_days") is not None:
                 item["days"].append(row["prod_days"])
-            if row.get("norm_days"):
+            if row.get("norm_eligible") and row.get("norm_days"):
                 item["normed"] += 1
                 item["in_norm"] += 1 if row.get("in_norm") else 0
         expert_products = [
@@ -1961,6 +1964,8 @@ def filter_prod_details(details, metric, expert=None, product=None, stage=None, 
         "active_missing_expert_count":"active_missing_expert","closed_without_act_count":"closed_without_act"
     }
     rows=list(details.get(metric_map.get(metric,"active"),[]))
+    if metric in {"avg_production_days", "avg_deviation_days", "within_norm_pct"}:
+        rows = [r for r in rows if r.get("norm_eligible") and (metric != "within_norm_pct" or r.get("norm_days"))]
     if expert: rows=[r for r in rows if r.get("expert")==expert]
     if product: rows=[r for r in rows if r.get("service")==product or r.get("category")==product]
     if stage: rows=[r for r in rows if r.get("stage")==stage]
