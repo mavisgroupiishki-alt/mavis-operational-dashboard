@@ -1,3 +1,4 @@
+# MAVIS_CABINET_DRILLDOWN_20261103
 """Bounded, read-only data loader for one authenticated Bitrix employee."""
 
 import asyncio
@@ -129,7 +130,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     stages: dict[str, dict[str, Any]] = {}
     for deal in deals:
         label = stage_name(meta, deal.get("STAGE_ID"), "DEAL_STAGE")
-        entry = stages.setdefault(label, {"name": label, "count": 0, "amount": 0.0})
+        entry = stages.setdefault(label, {"name": label, "stage_id": str(deal.get("STAGE_ID") or ""), "count": 0, "amount": 0.0})
         entry["count"] += 1
         entry["amount"] += money(deal)
     preplan = [deal for deal in deals if str(deal.get("STAGE_ID") or "") in preplan_stage_ids(meta)]
@@ -139,7 +140,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     iso_suot_candidates = [deal for deal in deals if not str(deal.get(F_SERVICE) or "").strip()]
 
     def deal_row(deal: dict[str, Any]) -> dict[str, str]:
-        return {"id": str(deal.get("ID") or ""), "title": str(deal.get("TITLE") or "Без названия"), "stage": str(deal.get("STAGE_ID") or ""), "url": _deal_url(portal, deal.get("ID"))}
+        return {"id": str(deal.get("ID") or ""), "title": str(deal.get("TITLE") or "Без названия"), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": stage_name(meta, deal.get("STAGE_ID"), "DEAL_STAGE"), "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "url": _deal_url(portal, deal.get("ID"))}
 
     priorities = []
     for activity in overdue_activities:
@@ -157,10 +158,10 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     return {
         "ok": True, "date": start.date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
         "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and calls_online else "unavailable", "stage_sla": "not_configured", "iso_suot_registry": "needs_connection"},
-        "calls": {"total": len(calls), "successful_from_minute": len(successful), "target": SUCCESSFUL_CALL_DAILY_TARGET, "remaining": max(0, SUCCESSFUL_CALL_DAILY_TARGET - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
+        "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": SUCCESSFUL_CALL_DAILY_TARGET, "remaining": max(0, SUCCESSFUL_CALL_DAILY_TARGET - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
-        "deals": {"active_count": len(deals), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2)},
-        "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0},
+        "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "active_count": len(deals), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2)},
+        "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else []},
         "stage_sla": {"status": "not_configured", "message": "Карта сроков этапов Bitrix ещё не подключена."},
         "iso_suot": {"status": "needs_connection", "message": "Реестр ИСО/СУОТ ещё не подключён к кабинету. Ниже — только сделки без заполненной услуги, а не вывод о потребности клиента.", "candidates": [deal_row(row) for row in iso_suot_candidates[:12]]}, "month": month_key,
     }
