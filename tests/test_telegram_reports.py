@@ -48,6 +48,15 @@ class TelegramReportsTests(unittest.TestCase):
 
         self.assertEqual(values, ("6 050 BYN", "4 450 BYN", "22 348 BYN / 135 000 BYN"))
 
+    def test_dashboard_capture_allows_a_missing_sales_plan(self):
+        values = dashboard_finance_display_values({
+            "clean_revenue": {"status": "online", "value": 4450, "incoming_amount": 6050},
+            "month_clean_revenue": {"status": "online", "value": 22348},
+            "sales_plan_amount": None,
+        })
+
+        self.assertEqual(values, ("6 050 BYN", "4 450 BYN", "22 348 BYN / —"))
+
     def test_dashboard_capture_waits_longer_than_ledger_request_timeout(self):
         self.assertGreaterEqual(DASHBOARD_FINANCE_WAIT_MS, 90_000)
 

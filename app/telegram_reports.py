@@ -186,10 +186,12 @@ def dashboard_finance_display_values(finance: dict) -> tuple[str, str, str]:
         raise ReportDeliveryError("Чистая выручка за день из «Графика платежей» недоступна")
     if month.get("status") not in {"online", "stale"}:
         raise ReportDeliveryError("Факт плана из «Графика платежей» недоступен")
+    plan = finance.get("sales_plan_amount")
+    plan_text = _format_byn(plan) if plan is not None else "—"
     return (
         _format_byn(daily.get("incoming_amount")),
         _format_byn(daily.get("value")),
-        f"{_format_byn(month.get('value'))} / {_format_byn(finance.get('sales_plan_amount'))}",
+        f"{_format_byn(month.get('value'))} / {plan_text}",
     )
 
 
@@ -354,7 +356,8 @@ def render_dashboard_daily_reports(
     card_width = (width - margin * 2 - gutter * 2) // 3
     _daily_report_card(leads_draw, x=margin, y=cards_y, width=card_width, label="Поступления за день", value=finance_values[0])
     _daily_report_card(leads_draw, x=margin + card_width + gutter, y=cards_y, width=card_width, label="Чистая выручка за день", value=finance_values[1])
-    _daily_report_card(leads_draw, x=margin + (card_width + gutter) * 2, y=cards_y, width=card_width, label="Факт плана октября", value=finance_values[2])
+    _daily_report_card(leads_draw, x=margin + (card_width + gutter) * 2, y=cards_y, width=card_width,
+                       label=f"Факт плана {RUSSIAN_MONTHS_GENITIVE[report_day.month - 1]}", value=finance_values[2])
     summary_y = cards_y + 164
     _daily_report_card(leads_draw, x=margin, y=summary_y, width=column_width, label="Лиды", value=_daily_report_row_value(lead_data.get("total", 0)))
     _daily_report_card(leads_draw, x=margin + column_width + gutter, y=summary_y, width=column_width, label="Созданные сделки", value=_daily_report_row_value(deal_data.get("total", 0)))
