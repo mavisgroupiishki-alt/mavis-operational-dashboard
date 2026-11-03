@@ -44,7 +44,7 @@ from .production_date_confirmation import register as register_production_date_c
 from .personal_workspace import build_personal_workday
 from .sales_team import SALES_BI_MANAGERS
 from .cabinet_ui import cabinet_html
-from .cabinet_payroll import register as register_cabinet_payroll
+from .cabinet_payroll import register as register_cabinet_payroll, settings_key as payroll_settings_key
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
@@ -2274,6 +2274,41 @@ async def api_cabinet_calls(request: Request):
     return _public_personal_calls(payload)
 
 
+async def _aiai_deal_context_summary(deal_id: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Summarise CRM context server-side; cache prevents charging per page open."""
+    if not settings.aiai_api_key or not settings.aiai_context_model:
+        return {"status": "not_configured", "message": "Анализ контекста AIAI.BY ещё не настроен на сервере."}
+    cache_key = f"cabinet_aiai_context_v1:{deal_id}:{hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:20]}"
+    cached = storage.get_setting(cache_key, {})
+    if isinstance(cached, dict) and cached.get("summary"):
+        return {"status": "online", "summary": str(cached["summary"]), "cached": True}
+    prompt = (
+        "Ты помощник менеджера по продажам. По фактам CRM подготовь короткую подсказку: "
+        "1) кому и зачем звонить, 2) что сказать с пользы для клиента, 3) следующий конкретный шаг. "
+        "Не выдумывай фактов и не обещай условия, которых нет в контексте. Ответ до 700 символов.\n\n"
+        + json.dumps(context, ensure_ascii=False)
+    )
+    try:
+        async with httpx.AsyncClient(timeout=18.0, follow_redirects=False) as session:
+            response = await session.post(
+                f"{settings.aiai_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.aiai_api_key}", "Content-Type": "application/json"},
+                json={"model": settings.aiai_context_model, "temperature": 0, "max_tokens": 260, "messages": [{"role": "user", "content": prompt}]},
+            )
+        if response.status_code >= 400:
+            logger.warning("AIAI context request failed: status=%s", response.status_code)
+            return {"status": "unavailable", "message": "AIAI.BY временно не вернул анализ контекста."}
+        data = response.json()
+        summary = _call_text((((data.get("choices") or [{}])[0].get("message") or {}).get("content")), 700)
+        if not summary:
+            return {"status": "unavailable", "message": "AIAI.BY вернул пустой анализ контекста."}
+        storage.set_setting(cache_key, {"summary": summary, "provider": "aiai", "model": settings.aiai_context_model})
+        return {"status": "online", "summary": summary, "cached": False}
+    except (httpx.HTTPError, ValueError, TypeError):
+        logger.warning("AIAI context request failed without a response")
+        return {"status": "unavailable", "message": "AIAI.BY временно недоступен для анализа контекста."}
+
+
 @app.get("/api/cabinet/calls/{activity_id}/context")
 async def api_cabinet_call_context(activity_id: str, request: Request):
     """Return small CRM context only after the call is verified in this manager's Jarvis feed."""
@@ -2297,19 +2332,21 @@ async def api_cabinet_call_context(activity_id: str, request: Request):
     except Exception:
         logger.exception("Personal call CRM context unavailable")
         return {"ok": True, "status": "unavailable", "message": "Bitrix24 сейчас не передал контекст этой сделки."}
+    context = {
+        "title": _call_text(deal.get("TITLE"), 240),
+        "stage": _call_text((meta.get("statuses") or {}).get(str(deal.get("STAGE_ID") or "")) or deal.get("STAGE_ID"), 180),
+        "amount": money(deal),
+        "source": _call_text(source_name(meta, deal) or deal.get("SOURCE_ID"), 180),
+        "service": _call_text(deal.get(F_SERVICE), 240),
+        "comments": _call_text(deal.get("COMMENTS"), 1600),
+        "updated": _call_text(deal.get("DATE_MODIFY"), 80),
+    }
+    ai_summary = await _aiai_deal_context_summary(call["dealId"], context)
     return {
         "ok": True,
         "status": "online",
-        "deal": {
-            "id": call["dealId"],
-            "title": _call_text(deal.get("TITLE"), 240),
-            "stage": _call_text((meta.get("statuses") or {}).get(str(deal.get("STAGE_ID") or "")) or deal.get("STAGE_ID"), 180),
-            "amount": money(deal),
-            "source": _call_text(source_name(meta, deal) or deal.get("SOURCE_ID"), 180),
-            "service": _call_text(deal.get(F_SERVICE), 240),
-            "comments": _call_text(deal.get("COMMENTS"), 1600),
-            "updated": _call_text(deal.get("DATE_MODIFY"), 80),
-        },
+        "deal": {"id": call["dealId"], **context},
+        "ai_context": ai_summary,
         "jarvis": {
             "transcript": "Jarvis не передал транскрипт этой записи в интеграционный ответ.",
             "audio": "Прослушка открывается ниже во встроенном, ограниченном менеджером интерфейсе Jarvis.",
@@ -2335,17 +2372,21 @@ def _cabinet_salary_key(user_id: str) -> str:
 
 
 def _cabinet_salary(user_id: str, report_date: str, fact_amount: float = 0.0) -> dict[str, Any]:
-    raw = storage.get_setting(_cabinet_salary_key(user_id), {})
-    raw = raw if isinstance(raw, dict) else {}
-    base = max(0.0, float(raw.get("monthly_base") or 0))
-    percent = max(0.0, min(100.0, float(raw.get("commission_percent") or 0)))
-    plan = max(0.0, float(raw.get("monthly_plan") or 0))
     current = datetime.fromisoformat(report_date).date()
+    # Payroll is the one editable monthly source of truth. The previous
+    # cabinet_salary key is retained only as a read fallback for old records.
+    payroll_raw = storage.get_setting(payroll_settings_key(str(user_id), current.strftime("%Y-%m")), {})
+    legacy_raw = storage.get_setting(_cabinet_salary_key(user_id), {})
+    payroll_raw = payroll_raw if isinstance(payroll_raw, dict) else {}
+    legacy_raw = legacy_raw if isinstance(legacy_raw, dict) else {}
+    base = max(0.0, float(payroll_raw.get("base", legacy_raw.get("monthly_base")) or 0))
+    percent = max(0.0, min(100.0, float(legacy_raw.get("commission_percent") or 0)))
+    plan = max(0.0, float(payroll_raw.get("plan", legacy_raw.get("monthly_plan")) or 0))
     days = [current.replace(day=day) for day in range(1, monthrange(current.year, current.month)[1] + 1)]
     workdays = [day for day in days if day.weekday() < 5]
     passed = [day for day in workdays if day <= current]
     daily_base = base / len(workdays) * len(passed) if workdays else 0.0
-    return {"configured": bool(base or percent or plan), "monthly_base": round(base, 2), "commission_percent": round(percent, 2), "monthly_plan": round(plan, 2), "today_amount": round(daily_base + max(0.0, float(fact_amount)) * percent / 100, 2), "formula": "База за рабочие дни месяца + процент от факта успешных сделок."}
+    return {"configured": bool(base or percent or plan), "monthly_base": round(base, 2), "commission_percent": round(percent, 2), "monthly_plan": round(plan, 2), "today_amount": round(daily_base + max(0.0, float(fact_amount)) * percent / 100, 2), "formula": "План и оклад берутся из помесячных условий вкладки «Зарплата»."}
 
 
 @app.get("/api/cabinet/salary")

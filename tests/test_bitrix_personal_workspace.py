@@ -199,6 +199,17 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             loader.assert_not_awaited()
 
+    def test_main_salary_uses_monthly_payroll_plan_before_legacy_settings(self):
+        monthly_key = main.payroll_settings_key("12", "2026-11")
+        values = {
+            monthly_key: {"base": 1800, "plan": 55000},
+            "cabinet_salary:12": {"monthly_base": 900, "monthly_plan": 10000, "commission_percent": 5},
+        }
+        with patch.object(main.storage, "get_setting", side_effect=lambda key, default={}: values.get(key, default)):
+            result = main._cabinet_salary("12", "2026-11-03", 2000)
+        self.assertEqual(result["monthly_plan"], 55000)
+        self.assertEqual(result["monthly_base"], 1800)
+
 
 class _Client:
     portal = "https://mavisgroup.bitrix24.by"
@@ -277,7 +288,7 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["leads"]["month_count"], 1)
         self.assertEqual(result["deals"]["stages"][0]["name"], "1. Новая сделка")
         self.assertEqual(result["deals"]["conversion"]["created_count"], 1)
-        self.assertIn("показатель периода", result["deals"]["conversion"]["definition"])
+        self.assertIn("созданных", result["deals"]["conversion"]["definition"])
 
     def test_comment_promise_without_activity_or_follow_up_call_is_prioritized(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
