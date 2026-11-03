@@ -44,6 +44,7 @@ from .production_date_confirmation import register as register_production_date_c
 from .personal_workspace import build_personal_workday
 from .sales_team import SALES_BI_MANAGERS
 from .cabinet_ui import cabinet_html
+from .cabinet_payroll import register as register_cabinet_payroll
 from .settings import settings
 from .storage import Storage
 from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
@@ -1439,7 +1440,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/api/cabinet/payroll") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2239,6 +2240,8 @@ async def api_cabinet_salary_save(body: CabinetSalaryBody, request: Request):
     storage.set_setting(_cabinet_salary_key(body.user_id), values)
     return {"ok": True, **values}
 
+
+register_cabinet_payroll(app, storage, require_bitrix_identity, _cabinet_subject, _cabinet_managers, settings.timezone, client)
 
 @app.middleware("http")
 async def no_cache_frontend(request: Request, call_next):
