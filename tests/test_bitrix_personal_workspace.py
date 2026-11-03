@@ -248,7 +248,7 @@ class _Client:
 
     async def deal_list(self, filters, _select):
         self.assert_user(filters["ASSIGNED_BY_ID"])
-        return [{"ID": "10", "TITLE": "Без источника", "STAGE_ID": "NEW", "CLOSEDATE": "2026-10-28T10:00:00+03:00", "SOURCE_ID": "", "UF_CRM_171455": ""}]
+        return [{"ID": "10", "TITLE": "Без источника", "STAGE_ID": "NEW", "CLOSEDATE": "2026-10-28T10:00:00+03:00", "MOVED_TIME": "2026-10-27T10:00:00+03:00", "SOURCE_ID": "", "UF_CRM_171455": ""}]
 
     async def lead_list(self, filters, _select):
         self.assert_user(filters["ASSIGNED_BY_ID"])
@@ -292,13 +292,15 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["tasks"]["overdue_count"], 1)
         self.assertEqual(result["deals"]["without_open_task_count"], 0)
         self.assertEqual(result["deals"]["overdue_count"], 1)
-        self.assertEqual(result["availability"]["stage_sla"], "not_configured")
+        self.assertEqual(result["availability"]["stage_sla"], "online")
         self.assertEqual(result["availability"]["iso_suot_registry"], "needs_connection")
         self.assertEqual(result["profile"]["name"], "Анна Жихарева")
         self.assertEqual(result["leads"]["month_count"], 1)
         self.assertEqual(result["deals"]["stages"][0]["name"], "1. Новая сделка")
         self.assertEqual(result["deals"]["conversion"]["created_count"], 1)
         self.assertIn("созданных", result["deals"]["conversion"]["definition"])
+        self.assertEqual(result["stage_sla"]["breached_count"], 1)
+        self.assertEqual(result["stage_sla"]["breached"][0]["stage_sla"]["rule"], "До конца рабочего дня")
 
     def test_comment_promise_without_activity_or_follow_up_call_is_prioritized(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:

@@ -18,6 +18,41 @@ CONTACT_WORDS = ("связ", "перезвон", "позвон", "набрать
 SHORT_DATE = re.compile(r"(?<!\d)([0-3]?\d)[./-]([01]?\d)(?:[./-](20\d{2}|\d{2}))?(?!\d)")
 
 
+def _stage_sla_rule(stage_name_value: str) -> tuple[str, int | None]:
+    """Map the supplied sales regulation to a CRM stage name, conservatively."""
+    value = re.sub(r"\s+", " ", str(stage_name_value or "").casefold().replace("ё", "е"))
+    if "новая сделка" in value:
+        return "До конца рабочего дня", 0
+    if "в работе" in value or "кп отправ" in value:
+        return "Не более 3 дней", 3
+    if "возраж" in value or "договор" in value:
+        return "Не более 5 дней", 5
+    if "ожида" in value and "оплат" in value:
+        return "Не более 7 дней", 7
+    if "предплан" in value and "недел" in value:
+        return "До конца текущей недели", None
+    return "", None
+
+
+def _stage_sla_state(stage_name_value: str, moved_at: datetime | None, now: datetime) -> dict[str, Any] | None:
+    rule, max_days = _stage_sla_rule(stage_name_value)
+    if not rule or not moved_at:
+        return None
+    if max_days == 0:
+        deadline = moved_at.replace(hour=23, minute=59, second=59, microsecond=0)
+    elif max_days is None:
+        deadline = moved_at.replace(hour=23, minute=59, second=59, microsecond=0) + timedelta(days=4 - moved_at.weekday())
+    else:
+        deadline = moved_at + timedelta(days=max_days)
+    return {
+        "rule": rule,
+        "started_at": moved_at.isoformat(),
+        "deadline": deadline.isoformat(),
+        "breached": now > deadline,
+        "remaining_hours": round((deadline - now).total_seconds() / 3600, 1),
+    }
+
+
 def _deal_url(portal: str, deal_id: Any) -> str:
     return f"{portal}/crm/deal/details/{deal_id}/" if str(deal_id or "").isdigit() else ""
 
@@ -164,8 +199,12 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     missing_client_type = [deal for deal in deals if not str(deal.get(F_DEAL_CLIENT_TYPE) or "").strip()]
     iso_suot_candidates = [deal for deal in deals if not str(deal.get(F_SERVICE) or "").strip()]
 
-    def deal_row(deal: dict[str, Any]) -> dict[str, str]:
-        return {"id": str(deal.get("ID") or ""), "title": str(deal.get("TITLE") or "Без названия"), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": stage_name(meta, deal.get("STAGE_ID"), "DEAL_STAGE"), "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "url": _deal_url(portal, deal.get("ID"))}
+    def deal_row(deal: dict[str, Any]) -> dict[str, Any]:
+        label = stage_name(meta, deal.get("STAGE_ID"), "DEAL_STAGE")
+        stage_sla = _stage_sla_state(label, _parse_datetime(deal.get("MOVED_TIME"), zone), now)
+        return {"id": str(deal.get("ID") or ""), "title": str(deal.get("TITLE") or "Без названия"), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla}
+
+    sla_breaches = [row for deal in deals if (row := deal_row(deal)).get("stage_sla") and row["stage_sla"].get("breached")]
 
     priorities = []
     for activity in overdue_activities:
@@ -182,11 +221,11 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
 
     return {
         "ok": True, "date": start.date().isoformat(), "period": period, "period_label": period_label, "period_start": start.date().isoformat(), "period_end": (end - timedelta(microseconds=1)).date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
-        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and calls_online else "unavailable", "stage_sla": "not_configured", "iso_suot_registry": "needs_connection"},
+        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and calls_online else "unavailable", "stage_sla": "online", "iso_suot_registry": "needs_connection"},
         "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": call_target, "remaining": max(0, call_target - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
         "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales], "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2), "conversion": {"created_count": len(created_sales), "won_count": len(created_won), "percent": conversion_percent, "definition": "Из сделок, созданных в выбранном месяце, сколько уже находится в успешной стадии. Продажи, закрытые в этом месяце, показаны отдельно в «План / факт»."}},
         "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else []},
-        "stage_sla": {"status": "not_configured", "message": "Карта сроков этапов Bitrix ещё не подключена."},
+        "stage_sla": {"status": "online", "message": "Срок считается от фактического перехода сделки на этап (MOVED_TIME). Сделки без этой даты не помечаются как нарушившие срок.", "breached_count": len(sla_breaches), "breached": sla_breaches[:50]},
         "iso_suot": {"status": "needs_connection", "message": "Реестр ИСО/СУОТ ещё не подключён к кабинету. Ниже — только сделки без заполненной услуги, а не вывод о потребности клиента.", "candidates": [deal_row(row) for row in iso_suot_candidates[:12]]}, "month": month_key,
     }
