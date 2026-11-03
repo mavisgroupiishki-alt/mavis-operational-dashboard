@@ -77,6 +77,11 @@ class CabinetSalaryBody(BaseModel):
     monthly_base: float = 0
     commission_percent: float = 0
     monthly_plan: float = 0
+
+
+class CabinetActivityAction(BaseModel):
+    activity_id: str
+    action: str
 CLEAN_REVENUE_REFRESH_SECONDS = 60
 CLEAN_REVENUE_FAILURE_COOLDOWN_SECONDS = 300
 # The payment-schedule ledger was introduced after these completed months.
@@ -2274,6 +2279,35 @@ async def api_cabinet_calls(request: Request):
     return _public_personal_calls(payload)
 
 
+@app.post("/api/cabinet/activity-action")
+async def api_cabinet_activity_action(body: CabinetActivityAction, request: Request):
+    """Update only an open CRM activity belonging to the current manager."""
+    _, user_id = await _cabinet_subject(request)
+    if body.action not in {"done", "in_progress", "tomorrow"} or not str(body.activity_id).isdigit():
+        raise HTTPException(400, "Некорректное действие с CRM-делом")
+    raw = await client.call("crm.activity.get", {"id": int(body.activity_id)})
+    activity = raw.get("result") if isinstance(raw, dict) else {}
+    owner_id = str((activity or {}).get("OWNER_ID") or "")
+    if str((activity or {}).get("OWNER_TYPE_ID") or "") != "2" or not owner_id.isdigit():
+        raise HTTPException(404, "CRM-дело не найдено")
+    deal_raw = await client.call("crm.deal.get", {"id": int(owner_id)})
+    deal = deal_raw.get("result") if isinstance(deal_raw, dict) else {}
+    if str((deal or {}).get("ASSIGNED_BY_ID") or "") != str(user_id):
+        raise HTTPException(403, "Можно менять только дела выбранного менеджера")
+    fields: dict[str, Any] = {}
+    if body.action == "done":
+        fields["COMPLETED"] = "Y"
+    elif body.action == "in_progress":
+        fields["SUBJECT"] = str((activity or {}).get("SUBJECT") or "Дело в работе")
+    else:
+        tomorrow = datetime.now(ZoneInfo(settings.timezone)).date() + timedelta(days=1)
+        while tomorrow.weekday() >= 5:
+            tomorrow += timedelta(days=1)
+        fields["DEADLINE"] = tomorrow.isoformat() + "T10:00:00"
+    await client.call("crm.activity.update", {"id": int(body.activity_id), "fields": fields})
+    return {"ok": True, "action": body.action}
+
+
 async def _aiai_deal_context_summary(deal_id: str, context: dict[str, Any]) -> dict[str, Any]:
     """Summarise CRM context server-side; cache prevents charging per page open."""
     if not settings.aiai_api_key or not settings.aiai_context_model:
@@ -2309,6 +2343,25 @@ async def _aiai_deal_context_summary(deal_id: str, context: dict[str, Any]) -> d
         return {"status": "unavailable", "message": "AIAI.BY временно недоступен для анализа контекста."}
 
 
+async def _registry_context(company_name: str) -> dict[str, Any]:
+    """Read the locally published registry through its serving API, never infer a registry match."""
+    query = _call_text(company_name, 240)
+    if not query:
+        return {"status": "no_company", "message": "В сделке не указана компания для проверки по реестру."}
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as session:
+            response = await session.get("https://mavis-registry.onrender.com/api/search", params={"q": query})
+        if response.status_code >= 400:
+            return {"status": "unavailable", "message": "Реестр временно не ответил."}
+        items = (response.json() or {}).get("items") or []
+        if not items:
+            return {"status": "not_found", "message": "Компания не найдена в опубликованном реестре."}
+        first = items[0] if isinstance(items[0], dict) else {}
+        return {"status": "online", "entity_id": _call_text(first.get("id"), 80), "name": _call_text(first.get("name"), 240), "unp": _call_text(first.get("unp"), 32)}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {"status": "unavailable", "message": "Реестр временно недоступен."}
+
+
 @app.get("/api/cabinet/calls/{activity_id}/context")
 async def api_cabinet_call_context(activity_id: str, request: Request):
     """Return small CRM context only after the call is verified in this manager's Jarvis feed."""
@@ -2341,12 +2394,16 @@ async def api_cabinet_call_context(activity_id: str, request: Request):
         "comments": _call_text(deal.get("COMMENTS"), 1600),
         "updated": _call_text(deal.get("DATE_MODIFY"), 80),
     }
-    ai_summary = await _aiai_deal_context_summary(call["dealId"], context)
+    ai_summary, registry = await asyncio.gather(
+        _aiai_deal_context_summary(call["dealId"], context),
+        _registry_context(str(deal.get("COMPANY_TITLE") or deal.get("TITLE") or "")),
+    )
     return {
         "ok": True,
         "status": "online",
         "deal": {"id": call["dealId"], **context},
         "ai_context": ai_summary,
+        "registry": registry,
         "jarvis": {
             "transcript": "Jarvis не передал транскрипт этой записи в интеграционный ответ.",
             "audio": "Прослушка открывается ниже во встроенном, ограниченном менеджером интерфейсе Jarvis.",
