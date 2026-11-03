@@ -279,6 +279,25 @@ class _PromisedContactClient(_Client):
         }]
 
 
+class _NoTouchClient(_Client):
+    async def list_all(self, method, params, limit=None):
+        if method == "voximplant.statistic.get":
+            return []
+        if method == "crm.activity.list":
+            if params["filter"]["COMPLETED"] == "Y":
+                return [{"ID": "701", "OWNER_ID": "10", "COMPLETED": "Y", "LAST_UPDATED": "2026-10-15T10:00:00+03:00"}]
+            return []
+        raise AssertionError(method)
+
+    async def deal_list(self, filters, _select):
+        self.assert_user(filters["ASSIGNED_BY_ID"])
+        return [{
+            "ID": "10", "TITLE": "Давняя сделка без касания", "STAGE_ID": "NEW",
+            "DATE_CREATE": "2026-10-01T10:00:00+03:00", "MOVED_TIME": "2026-10-01T10:00:00+03:00",
+            "SOURCE_ID": "WEB", "UF_CRM_171455": "",
+        }]
+
+
 class PersonalWorkspaceTests(unittest.TestCase):
     def test_workday_only_counts_authenticated_user_and_keeps_unknown_integrations_honest(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
@@ -323,6 +342,28 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["period_start"], "2026-10-26")
         self.assertEqual(result["period_end"], "2026-11-01")
         self.assertEqual(result["calls"]["target"], 250)
+
+    def test_week_without_touch_is_explicitly_warned_and_never_transfers_the_deal(self):
+        with patch("app.personal_workspace.datetime") as mocked_datetime:
+            from datetime import datetime
+            mocked_datetime.now.return_value = datetime.fromisoformat("2026-10-29T12:00:00+03:00")
+            mocked_datetime.combine = datetime.combine
+            mocked_datetime.fromisoformat = datetime.fromisoformat
+            result = asyncio.run(build_personal_workday(_NoTouchClient(), "12", "2026-10-29", "Europe/Moscow"))
+        row = result["deals"]["week_without_touch"][0]
+        self.assertEqual(row["id"], "10")
+        self.assertIn("может передать", row["reason"])
+
+    def test_evening_snapshot_contains_norm_speed_and_untouched_deals(self):
+        snapshot = main._cabinet_evening_snapshot({
+            "date": "2026-10-29", "calls": {"successful_from_minute": 17, "target": 50, "remaining": 33},
+            "tasks": {"overdue_count": 2}, "stage_sla": {"breached_count": 3},
+            "deals": {"week_without_touch": [{"id": "10"}], "capacity": {"active_count": 41, "target": 70}},
+            "iso_suot": {"confirmed_gaps": [{"id": "11"}]},
+        }, "2026-10-29T18:00:00+03:00")
+        self.assertEqual(snapshot["calls"]["target"], 50)
+        self.assertEqual(snapshot["speed"]["stage_breaches"], 3)
+        self.assertEqual(snapshot["week_without_touch"][0]["id"], "10")
 
 
 class PersonalCallNormalizationTests(unittest.TestCase):

@@ -10,7 +10,7 @@ import secrets
 import time
 from calendar import monthrange
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -96,6 +96,8 @@ derived_range_cache_time = {}
 # in background.  A slow Bitrix24 call must not block the whole browser page.
 cabinet_workday_cache = {}
 cabinet_workday_refresh_tasks = {}
+cabinet_registry_cache = {}
+cabinet_evening_report_task = None
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
 automatic_nps_cache = {}
@@ -1879,6 +1881,65 @@ async def daily_sales_archive_loop():
         await asyncio.sleep(DAILY_SALES_ARCHIVE_CHECK_SECONDS)
 
 
+def _previous_workday(value: date) -> date:
+    value -= timedelta(days=1)
+    while value.weekday() >= 5:
+        value -= timedelta(days=1)
+    return value
+
+
+def _cabinet_evening_report_due(now: datetime) -> bool:
+    return now.weekday() < 5 and now.hour == 18 and now.minute < 15
+
+
+def _cabinet_evening_snapshot(workday: dict[str, Any], captured_at: str) -> dict[str, Any]:
+    deals = workday.get("deals") or {}
+    tasks = workday.get("tasks") or {}
+    calls = workday.get("calls") or {}
+    return {
+        "date": str(workday.get("date") or ""),
+        "captured_at": captured_at,
+        "calls": {
+            "successful_from_minute": int(calls.get("successful_from_minute") or 0),
+            "target": int(calls.get("target") or 50),
+            "remaining": int(calls.get("remaining") or 0),
+        },
+        "speed": {
+            "overdue_tasks": int(tasks.get("overdue_count") or 0),
+            "stage_breaches": int((workday.get("stage_sla") or {}).get("breached_count") or 0),
+            "message": "Темп просел, если до нормы звонков остались действия или есть просроченные дела / нарушенные сроки этапов.",
+        },
+        "week_without_touch": list(deals.get("week_without_touch") or [])[:20],
+        "capacity": dict(deals.get("capacity") or {}),
+        "registry_alerts": list((workday.get("iso_suot") or {}).get("confirmed_gaps") or [])[:20],
+    }
+
+
+async def cabinet_evening_report_loop():
+    """Persist a factual 18:00 manager snapshot once per business day."""
+    while True:
+        try:
+            now = datetime.now(ZoneInfo(settings.timezone))
+            if _cabinet_evening_report_due(now):
+                managers = await _cabinet_managers()
+                report_day = now.date().isoformat()
+                for manager in managers:
+                    user_id = str(manager.get("id") or "")
+                    if not user_id.isdigit():
+                        continue
+                    key = f"cabinet_evening_report:v1:{report_day}:{user_id}"
+                    if storage.get_setting(key, None):
+                        continue
+                    try:
+                        workday = await _build_cabinet_workday(user_id, report_day, "day")
+                        storage.set_setting(key, _cabinet_evening_snapshot(workday, now.isoformat()))
+                    except Exception:
+                        logger.exception("Manager evening report capture failed for %s", user_id)
+        except Exception:
+            logger.exception("Manager evening report scheduler failed")
+        await asyncio.sleep(30)
+
+
 def schedule_snapshot(month: str, period: str, force: bool=False, custom_start: str = "", custom_end: str = ""):
     key=(month,period,custom_start or "",custom_end or "")
     t=sync_tasks.get(key)
@@ -1909,6 +1970,8 @@ async def lifespan(app: FastAPI):
     global telegram_report_scheduler_task
     telegram_report_scheduler_task = asyncio.create_task(scheduled_telegram_reports_loop())
     daily_sales_archive_task = asyncio.create_task(daily_sales_archive_loop())
+    global cabinet_evening_report_task
+    cabinet_evening_report_task = asyncio.create_task(cabinet_evening_report_loop())
     refresh_trigger.set()
     yield
     task.cancel()
@@ -1928,6 +1991,13 @@ async def lifespan(app: FastAPI):
     daily_sales_archive_task.cancel()
     try:
         await daily_sales_archive_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    cabinet_evening_report_task.cancel()
+    try:
+        await cabinet_evening_report_task
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -2136,7 +2206,7 @@ async def api_cabinet_managers(request: Request):
 async def _refresh_cabinet_workday(user_id: str, selected_date: str, period: str, key: str):
     try:
         result = await asyncio.wait_for(
-            build_personal_workday(client, user_id, selected_date, settings.timezone, period),
+            _build_cabinet_workday(user_id, selected_date, period),
             timeout=180,
         )
         if not isinstance(result, dict) or not result.get("ok"):
@@ -2187,7 +2257,22 @@ async def api_cabinet_workday(request: Request, date: str = Query(default=""), p
         )
 
     if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
-        return {**cached["data"], "snapshot_status": "fresh" if age <= 120 else "refreshing", "snapshot_saved_at": timestamp}
+        data = {**cached["data"], "snapshot_status": "fresh" if age <= 120 else "refreshing", "snapshot_saved_at": timestamp}
+        now = datetime.now(ZoneInfo(settings.timezone))
+        selected = datetime.strptime(selected_date, "%Y-%m-%d").date()
+        report_day: date | None = None
+        if selected < now.date():
+            report_day = selected
+        elif selected == now.date() and now.hour < 11:
+            report_day = _previous_workday(now.date())
+        elif selected == now.date() and now.hour >= 18:
+            report_day = selected
+        if report_day:
+            report = storage.get_setting(f"cabinet_evening_report:v1:{report_day.isoformat()}:{user_id}", None)
+            data["evening_report"] = report if isinstance(report, dict) else {"status": "pending", "date": report_day.isoformat(), "message": "Вечерний отчёт формируется после 18:00 рабочего дня."}
+        else:
+            data["evening_report"] = {"status": "hidden", "message": "Вечерний отчёт за предыдущий рабочий день виден до 11:00; старые отчёты откройте выбором даты."}
+        return data
     return JSONResponse({"ok": False, "loading": True,
         "message": "Bitrix24 собирает данные. Это первый запуск; повторно открывать приложение не нужно."}, status_code=202)
 
@@ -2353,18 +2438,124 @@ async def _registry_context(company_name: str) -> dict[str, Any]:
     query = _call_text(company_name, 240)
     if not query:
         return {"status": "no_company", "message": "В сделке не указана компания для проверки по реестру."}
+    cache_key = query.casefold()
+    cached = cabinet_registry_cache.get(cache_key)
+    if isinstance(cached, tuple) and time.monotonic() - cached[0] < 15 * 60:
+        return dict(cached[1])
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as session:
             response = await session.get("https://mavis-registry.onrender.com/api/search", params={"q": query})
         if response.status_code >= 400:
-            return {"status": "unavailable", "message": "Реестр временно не ответил."}
+            result = {"status": "unavailable", "message": "Реестр временно не ответил."}
+            cabinet_registry_cache[cache_key] = (time.monotonic(), result)
+            return result
         items = (response.json() or {}).get("items") or []
         if not items:
-            return {"status": "not_found", "message": "Компания не найдена в опубликованном реестре."}
+            result = {"status": "not_found", "message": "Компания не найдена в опубликованном реестре."}
+            cabinet_registry_cache[cache_key] = (time.monotonic(), result)
+            return result
         first = items[0] if isinstance(items[0], dict) else {}
-        return {"status": "online", "entity_id": _call_text(first.get("id"), 80), "name": _call_text(first.get("name"), 240), "unp": _call_text(first.get("unp"), 32)}
+        result = {"status": "online", "entity_id": _call_text(first.get("id"), 80), "name": _call_text(first.get("name"), 240), "unp": _call_text(first.get("unp"), 32)}
+        cabinet_registry_cache[cache_key] = (time.monotonic(), result)
+        return result
     except (httpx.HTTPError, ValueError, TypeError):
-        return {"status": "unavailable", "message": "Реестр временно недоступен."}
+        result = {"status": "unavailable", "message": "Реестр временно недоступен."}
+        cabinet_registry_cache[cache_key] = (time.monotonic(), result)
+        return result
+
+
+def _intake_owner_ids() -> list[str]:
+    configured = storage.get_setting("cabinet_intake_owner_ids", [])
+    if isinstance(configured, str):
+        configured = re.split(r"[\s,;]+", configured)
+    values = [str(item).strip() for item in configured] if isinstance(configured, list) else []
+    values = [value for value in values if value.isdigit()]
+    # The configured sales leaders are the safe default. The setting can narrow
+    # this list to a dedicated intake administrator without exposing all deals.
+    return list(dict.fromkeys(values or list(director_ids(settings.bitrix_director_user_ids))))
+
+
+def _intake_priority(row: dict[str, Any]) -> tuple[int, str]:
+    text = " ".join(str(row.get(key) or "") for key in ("TITLE", "COMMENTS", "STAGE_ID")).casefold()
+    if any(word in text for word in ("бис", "разреш", "лиценз", "аттестат", "инспекц", "ик", "спк")):
+        return 0, "Сначала: в названии или комментарии есть разрешительный документ / БИС. Проверьте срок и свяжитесь с клиентом."
+    if "холод" in text or "входящ" in text or "заявк" in text:
+        return 1, "Новый входящий или холодный контакт — свяжитесь до конца дня."
+    return 2, "Свободная активная сделка из разрешённой очереди."
+
+
+async def _cabinet_capacity_candidates(workday: dict[str, Any]) -> dict[str, Any]:
+    deals = workday.get("deals") or {}
+    active = int(deals.get("active_count") or 0)
+    target = int(deals.get("target_active_count") or 70)
+    if active >= target:
+        return {"status": "not_needed", "active_count": active, "target": target, "needed": 0, "candidates": []}
+    owners = _intake_owner_ids()
+    if not owners:
+        return {"status": "unavailable", "active_count": active, "target": target, "needed": target - active, "candidates": [], "message": "Не настроен ответственный за очередь «Новые» / «Реанимация»."}
+    fields = ["ID", "TITLE", "COMPANY_TITLE", "CATEGORY_ID", "STAGE_ID", "OPPORTUNITY", "COMMENTS", "DATE_CREATE", "MOVED_TIME", "ASSIGNED_BY_ID"]
+    jobs = [
+        client.deal_list({"CATEGORY_ID": category, "ASSIGNED_BY_ID": owner, "CLOSED": "N"}, fields)
+        for owner in owners for category in (0, 20)
+    ]
+    results = await asyncio.gather(*jobs, return_exceptions=True)
+    candidates: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, list):
+            continue
+        for raw in result:
+            if not isinstance(raw, dict) or not str(raw.get("ID") or "").isdigit():
+                continue
+            rank, reason = _intake_priority(raw)
+            candidates.append({
+                "id": str(raw.get("ID")), "title": _call_text(raw.get("TITLE"), 240),
+                "company": _call_text(raw.get("COMPANY_TITLE"), 240), "stage": _call_text(raw.get("STAGE_ID"), 120),
+                "amount": money(raw), "url": f"{client.portal.rstrip('/')}/crm/deal/details/{raw.get('ID')}/",
+                "source_queue": "Реанимация" if str(raw.get("CATEGORY_ID") or "") == "20" else "Новые",
+                "priority_rank": rank, "reason": reason,
+            })
+    candidates.sort(key=lambda row: (int(row["priority_rank"]), -float(row["amount"] or 0), row["title"]))
+    return {"status": "online", "active_count": active, "target": target, "needed": target - active, "candidates": candidates[:max(8, min(20, target - active))]}
+
+
+async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
+    """Attach only confirmed daily registry facts to deals without an ISO/SUOT service."""
+    iso = workday.get("iso_suot") or {}
+    candidates = list(iso.get("candidates") or [])[:20]
+    checked = await asyncio.gather(*(_registry_context(str(row.get("company") or row.get("title") or "")) for row in candidates), return_exceptions=True)
+    gaps = []
+    available = 0
+    for row, status in zip(candidates, checked):
+        status = status if isinstance(status, dict) else {"status": "unavailable", "message": "Реестр временно недоступен."}
+        row["registry"] = status
+        if status.get("status") != "unavailable":
+            available += 1
+        if status.get("status") == "not_found":
+            row["priority"] = "Проверить ИСО/СУОТ"
+            row["reason"] = "Компания не найдена в ежедневном опубликованном реестре, а услуга ИСО/СУОТ в сделке не указана. Перед звонком проверьте реестр и предложите услугу, если она действительно отсутствует."
+            gaps.append(row)
+    iso.update({
+        "status": "online" if candidates and available == len(candidates) else "partial" if available else "unavailable",
+        "message": "Проверка по ежедневному опубликованному реестру ИСО/СУОТ. Красный сигнал появляется только при подтверждённом отсутствии компании и пустой услуге в сделке.",
+        "candidates": candidates,
+        "confirmed_gaps": gaps,
+    })
+    workday["iso_suot"] = iso
+    workday.setdefault("availability", {})["iso_suot_registry"] = iso["status"]
+    if gaps:
+        priorities = list((workday.get("deals") or {}).get("priorities") or [])
+        workday["deals"]["priorities"] = [*gaps, *priorities][:50]
+
+
+async def _build_cabinet_workday(user_id: str, selected_date: str, period: str) -> dict[str, Any]:
+    workday = await build_personal_workday(client, user_id, selected_date, settings.timezone, period)
+    await asyncio.gather(_hydrate_cabinet_registry(workday), return_exceptions=True)
+    try:
+        workday.setdefault("deals", {})["capacity"] = await _cabinet_capacity_candidates(workday)
+    except Exception:
+        logger.exception("Manager intake candidates unavailable")
+        workday.setdefault("deals", {})["capacity"] = {"status": "unavailable", "candidates": [], "message": "Очередь «Новые» / «Реанимация» временно недоступна."}
+    return workday
 
 
 @app.get("/api/cabinet/calls/{activity_id}/context")

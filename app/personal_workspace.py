@@ -154,7 +154,12 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     deals = list({str(row.get("ID") or index): row for index, row in enumerate(deals)}.values())
     deal_by_id = {str(row.get("ID") or ""): row for row in deals}
     portal = str(getattr(client, "portal", "")).rstrip("/")
-    open_activities, activities_online = await _deal_activities(client, list(deal_by_id), "N")
+    open_result, completed_result = await asyncio.gather(
+        _deal_activities(client, list(deal_by_id), "N"),
+        _deal_activities(client, list(deal_by_id), "Y"),
+    )
+    open_activities, activities_online = open_result
+    completed_activities, completed_online = completed_result
     open_by_deal: dict[str, list[dict[str, Any]]] = {}
     for activity in open_activities:
         if (owner := _owner_id(activity)) in deal_by_id:
@@ -171,13 +176,12 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     tomorrow_activities = [row for row in open_activities if (due := deadline(row)) and due.date() == next_workday]
     without_activity = [row for row in deals if str(row.get("ID") or "") not in open_by_deal] if activities_online else []
     promise_candidates = {deal_id: promised for deal_id, deal in deal_by_id.items() if deal_id not in open_by_deal if (promised := _comment_follow_up_date(deal.get("COMMENTS"), now.date())) and promised <= now.date()}
-    completed_calls, calls_online = await _deal_activities(client, list(promise_candidates), "Y", call_only=True)
-    last_call_by_deal: dict[str, datetime] = {}
-    for activity in completed_calls:
-        created = _parse_datetime(activity.get("CREATED") or activity.get("LAST_UPDATED"), zone)
+    last_touch_by_deal: dict[str, datetime] = {}
+    for activity in completed_activities:
+        created = _parse_datetime(activity.get("LAST_UPDATED") or activity.get("CREATED"), zone)
         owner = _owner_id(activity)
-        if created and (owner not in last_call_by_deal or created > last_call_by_deal[owner]):
-            last_call_by_deal[owner] = created
+        if created and (owner not in last_touch_by_deal or created > last_touch_by_deal[owner]):
+            last_touch_by_deal[owner] = created
 
     meta = meta_result if isinstance(meta_result, dict) else {}
     stages: dict[str, dict[str, Any]] = {}
@@ -202,7 +206,9 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     def deal_row(deal: dict[str, Any]) -> dict[str, Any]:
         label = stage_name(meta, deal.get("STAGE_ID"), "DEAL_STAGE")
         stage_sla = _stage_sla_state(label, _parse_datetime(deal.get("MOVED_TIME"), zone), now)
-        return {"id": str(deal.get("ID") or ""), "title": str(deal.get("TITLE") or "Без названия"), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla}
+        deal_id = str(deal.get("ID") or "")
+        last_touch = last_touch_by_deal.get(deal_id)
+        return {"id": deal_id, "title": str(deal.get("TITLE") or "Без названия"), "company": str(deal.get("COMPANY_TITLE") or ""), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "comments": str(deal.get("COMMENTS") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla, "last_touch_at": last_touch.isoformat() if last_touch else ""}
 
     sla_breaches = [row for deal in deals if (row := deal_row(deal)).get("stage_sla") and row["stage_sla"].get("breached")]
 
@@ -212,19 +218,35 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
             continue
         due = deadline(activity)
         priorities.append({**deal_row(deal), "priority": "Просрочено CRM-дело", "due": due.date().isoformat() if due else "", "reason": f"Связаться в первую очередь: срок {due.strftime('%d.%m') if due else 'истёк'} — {str(activity.get('SUBJECT') or 'без темы')}"})
-    if activities_online and calls_online:
+    if activities_online and completed_online:
         for deal_id, promised in promise_candidates.items():
-            if (last_call := last_call_by_deal.get(deal_id)) and last_call.date() >= promised:
+            if (last_touch := last_touch_by_deal.get(deal_id)) and last_touch.date() >= promised:
                 continue
             priorities.append({**deal_row(deal_by_id[deal_id]), "priority": "Обещанный контакт не подтверждён", "due": promised.isoformat(), "reason": f"В комментарии обещано связаться {promised.strftime('%d.%m')}; открытого дела и звонка после этой даты нет."})
+    no_touch_cutoff = now - timedelta(days=7)
+    week_without_touch = []
+    if completed_online:
+        for deal in deals:
+            row = deal_row(deal)
+            created = _parse_datetime(deal.get("DATE_CREATE") or deal.get("MOVED_TIME"), zone)
+            last_touch = last_touch_by_deal.get(row["id"])
+            if created and created > no_touch_cutoff:
+                continue
+            if last_touch and last_touch >= no_touch_cutoff:
+                continue
+            row["priority"] = "7 дней без касания"
+            row["due"] = (last_touch or created or no_touch_cutoff).date().isoformat()
+            row["reason"] = "По сделке нет подтверждённого завершённого касания 7 дней. После проверки руководитель может передать её другому менеджеру."
+            week_without_touch.append(row)
+            priorities.append(row)
     priorities.sort(key=lambda row: (row["priority"] != "Обещанный контакт не подтверждён", row["due"], row["title"]))
 
     return {
         "ok": True, "date": start.date().isoformat(), "period": period, "period_label": period_label, "period_start": start.date().isoformat(), "period_end": (end - timedelta(microseconds=1)).date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
-        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and calls_online else "unavailable", "stage_sla": "online", "iso_suot_registry": "needs_connection"},
+        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and completed_online else "unavailable", "stage_sla": "online", "iso_suot_registry": "needs_connection"},
         "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": call_target, "remaining": max(0, call_target - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
-        "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales], "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2), "conversion": {"created_count": len(created_sales), "won_count": len(created_won), "percent": conversion_percent, "definition": "Из сделок, созданных в выбранном месяце, сколько уже находится в успешной стадии. Продажи, закрытые в этом месяце, показаны отдельно в «План / факт»."}},
+        "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales], "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals), "target_active_count": 70, "needed_to_target": max(0, 70 - len(deals)), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "week_without_touch": week_without_touch[:50], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2), "conversion": {"created_count": len(created_sales), "won_count": len(created_won), "percent": conversion_percent, "definition": "Из сделок, созданных в выбранном месяце, сколько уже находится в успешной стадии. Продажи, закрытые в этом месяце, показаны отдельно в «План / факт»."}},
         "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else []},
         "stage_sla": {"status": "online", "message": "Срок считается от фактического перехода сделки на этап (MOVED_TIME). Сделки без этой даты не помечаются как нарушившие срок.", "breached_count": len(sla_breaches), "breached": sla_breaches[:50]},
         "iso_suot": {"status": "needs_connection", "message": "Реестр ИСО/СУОТ ещё не подключён к кабинету. Ниже — только сделки без заполненной услуги, а не вывод о потребности клиента.", "candidates": [deal_row(row) for row in iso_suot_candidates[:12]]}, "month": month_key,
