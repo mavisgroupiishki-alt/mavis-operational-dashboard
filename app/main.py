@@ -86,6 +86,10 @@ previous_month_refresh_at = 0.0
 PREVIOUS_MONTH_REFRESH_SECONDS = 60 * 60
 DERIVED_RANGE_CACHE_LIMIT = 8
 derived_range_cache_time = {}
+# Employee workday: serve a recent authenticated snapshot immediately and refresh
+# in background.  A slow Bitrix24 call must not block the whole browser page.
+cabinet_workday_cache = {}
+cabinet_workday_refresh_tasks = {}
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
 automatic_nps_cache = {}
@@ -2123,17 +2127,58 @@ async def api_cabinet_managers(request: Request):
     return {"ok": True, "managers": await _cabinet_managers()}
 
 
+async def _refresh_cabinet_workday(user_id: str, selected_date: str, key: str):
+    try:
+        result = await asyncio.wait_for(
+            build_personal_workday(client, user_id, selected_date, settings.timezone),
+            timeout=180,
+        )
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise ValueError("Bitrix24 did not return a usable workday")
+        cached = {"saved_at": time.time(), "data": result}
+        cabinet_workday_cache[key] = cached
+        try:
+            storage.set_setting(key, cached)
+        except Exception:
+            logger.exception("Could not persist personal workday snapshot")
+    except Exception:
+        logger.exception("Personal Bitrix workday refresh failed")
+    finally:
+        cabinet_workday_refresh_tasks.pop(key, None)
+
+
 @app.get("/api/cabinet/workday")
 async def api_cabinet_workday(request: Request, date: str = Query(default="")):
+    # The manager identity is always taken from a verified session, never a
+    # browser-provided user ID. Directors may select only their sales roster.
     _, user_id = await _cabinet_subject(request)
     selected_date = date or (datetime.now(ZoneInfo(settings.timezone)) - timedelta(days=1)).date().isoformat()
     try:
-        return await build_personal_workday(client, user_id, selected_date, settings.timezone)
+        datetime.strptime(selected_date, "%Y-%m-%d")
     except ValueError as exc:
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
-    except Exception:
-        logger.exception("Personal Bitrix workspace unavailable")
-        raise HTTPException(503, "Данные личного кабинета Bitrix24 временно недоступны") from None
+    key = f"cabinet_workday_snapshot_v3:{user_id}:{selected_date}"
+    cached = cabinet_workday_cache.get(key)
+    if not isinstance(cached, dict):
+        try:
+            cached = storage.get_setting(key, {})
+        except Exception:
+            cached = {}
+        if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
+            cabinet_workday_cache[key] = cached
+
+    timestamp = float((cached or {}).get("saved_at") or 0)
+    age = time.time() - timestamp
+    task = cabinet_workday_refresh_tasks.get(key)
+    if (not task or task.done()) and (not timestamp or age > 120):
+        cabinet_workday_refresh_tasks[key] = asyncio.create_task(
+            _refresh_cabinet_workday(user_id, selected_date, key)
+        )
+
+    if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
+        return {**cached["data"], "snapshot_status": "fresh" if age <= 120 else "refreshing", "snapshot_saved_at": timestamp}
+    return JSONResponse({"ok": False, "loading": True,
+        "message": "Bitrix24 собирает данные. Это первый запуск; повторно открывать приложение не нужно."}, status_code=202)
 
 
 @app.get("/api/cabinet/calls")
