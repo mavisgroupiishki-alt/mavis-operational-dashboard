@@ -14,6 +14,16 @@ class BitrixIdentityTests(unittest.TestCase):
     def test_salary_route_is_allowed_to_use_the_signed_bitrix_cookie(self):
         self.assertTrue(main.is_public_path("/api/cabinet/salary"))
 
+    def test_call_context_and_activity_actions_reach_their_own_bitrix_session_guard(self):
+        """The password middleware must not pre-empt the signed Bitrix session.
+
+        Both endpoints call ``require_bitrix_identity`` themselves and check the
+        selected manager/deal afterwards.  If they are omitted here, the
+        middleware returns AUTH_REQUIRED before a manager can open a call.
+        """
+        self.assertTrue(main.is_public_path("/api/cabinet/calls/123/context"))
+        self.assertTrue(main.is_public_path("/api/cabinet/activity-action"))
+
     def test_portal_host_rejects_paths_credentials_and_invalid_ports(self):
         self.assertEqual(portal_host("mavisgroup.bitrix24.by"), "mavisgroup.bitrix24.by")
         self.assertEqual(portal_host("https://evil.test/mavisgroup.bitrix24.by"), "")
@@ -299,6 +309,18 @@ class PersonalWorkspaceTests(unittest.TestCase):
             result = asyncio.run(build_personal_workday(_PromisedContactClient(), "12", "2026-11-01", "Europe/Moscow"))
         self.assertEqual(result["deals"]["priorities"][0]["id"], "10")
         self.assertIn("01.11", result["deals"]["priorities"][0]["reason"])
+
+    def test_week_period_returns_a_weekly_call_norm_and_bounds(self):
+        with patch("app.personal_workspace.datetime") as mocked_datetime:
+            from datetime import datetime
+            mocked_datetime.now.return_value = datetime.fromisoformat("2026-10-29T12:00:00+03:00")
+            mocked_datetime.combine = datetime.combine
+            mocked_datetime.fromisoformat = datetime.fromisoformat
+            result = asyncio.run(build_personal_workday(_Client(), "12", "2026-10-28", "Europe/Moscow", "week"))
+        self.assertEqual(result["period"], "week")
+        self.assertEqual(result["period_start"], "2026-10-26")
+        self.assertEqual(result["period_end"], "2026-11-01")
+        self.assertEqual(result["calls"]["target"], 250)
 
 
 class PersonalCallNormalizationTests(unittest.TestCase):

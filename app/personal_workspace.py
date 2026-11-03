@@ -33,6 +33,23 @@ def _parse_datetime(value: Any, timezone: ZoneInfo) -> datetime | None:
     return parsed.replace(tzinfo=timezone) if parsed.tzinfo is None else parsed.astimezone(timezone)
 
 
+def _workspace_period(report_date: str, period: str, timezone: str) -> tuple[datetime, datetime, str, int]:
+    """Return a bounded reporting range and the matching successful-call norm."""
+    day_start, day_end = daily_bounds(report_date, timezone)
+    if period == "month":
+        start, end, _, _ = month_bounds(report_date[:7], timezone)
+        label = "месяц"
+    elif period == "week":
+        monday = day_start.date() - timedelta(days=day_start.weekday())
+        start, _ = daily_bounds(monday.isoformat(), timezone)
+        end = start + timedelta(days=7)
+        label = "неделя"
+    else:
+        start, end, label = day_start, day_end, "день"
+    workdays = sum(1 for offset in range((end.date() - start.date()).days) if (start.date() + timedelta(days=offset)).weekday() < 5)
+    return start, end, label, max(1, workdays) * SUCCESSFUL_CALL_DAILY_TARGET
+
+
 def _owner_id(activity: dict[str, Any]) -> str:
     return str(activity.get("OWNER_ID") or activity.get("ownerId") or "").strip()
 
@@ -81,9 +98,9 @@ async def _deal_activities(client: Any, deal_ids: list[str], completed: str, *, 
     return [row for group in groups for row in group if isinstance(row, dict)], True
 
 
-async def build_personal_workday(client: Any, user_id: str, report_date: str, timezone: str) -> dict[str, Any]:
+async def build_personal_workday(client: Any, user_id: str, report_date: str, timezone: str, period: str = "day") -> dict[str, Any]:
     """Return one manager's CRM facts; a CRM activity is the source of a deal's next action."""
-    start, end = daily_bounds(report_date, timezone)
+    start, end, period_label, call_target = _workspace_period(report_date, period, timezone)
     zone = ZoneInfo(timezone)
     now = datetime.now(zone)
     month_start, month_end, _, month_key = month_bounds(report_date[:7], timezone)
@@ -164,9 +181,9 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     priorities.sort(key=lambda row: (row["priority"] != "Обещанный контакт не подтверждён", row["due"], row["title"]))
 
     return {
-        "ok": True, "date": start.date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
+        "ok": True, "date": start.date().isoformat(), "period": period, "period_label": period_label, "period_start": start.date().isoformat(), "period_end": (end - timedelta(microseconds=1)).date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
         "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and calls_online else "unavailable", "stage_sla": "not_configured", "iso_suot_registry": "needs_connection"},
-        "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": SUCCESSFUL_CALL_DAILY_TARGET, "remaining": max(0, SUCCESSFUL_CALL_DAILY_TARGET - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
+        "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": call_target, "remaining": max(0, call_target - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
         "deals": {"active": [deal_row(deal) for deal in deals], "preplan": [deal_row(deal) for deal in preplan], "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales], "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals), "overdue_count": len({_owner_id(row) for row in overdue_activities}) if activities_online else None, "without_open_task_count": len(without_activity) if activities_online else None, "missing_source_count": len(missing_source), "missing_client_type_count": len(missing_client_type), "missing_source": [deal_row(deal) for deal in missing_source], "missing_client_type": [deal_row(deal) for deal in missing_client_type], "overdue": [deal_row(deal_by_id[_owner_id(row)]) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id], "without_open_task": [deal_row(row) for row in without_activity[:50]], "priorities": priorities[:50], "stages": sorted(stages.values(), key=lambda row: (-int(row["count"]), str(row["name"]))), "preplan_count": len(preplan), "preplan_amount": round(sum(money(row) for row in preplan), 2), "fact_count": len(won), "fact_amount": round(sum(money(row) for row in won), 2), "conversion": {"created_count": len(created_sales), "won_count": len(created_won), "percent": conversion_percent, "definition": "Из сделок, созданных в выбранном месяце, сколько уже находится в успешной стадии. Продажи, закрытые в этом месяце, показаны отдельно в «План / факт»."}},
         "leads": {"month_count": len(leads_result) if isinstance(leads_result, list) else 0, "month": [{"id": str(lead.get("ID") or ""), "title": str(lead.get("TITLE") or "Лид"), "created": str(lead.get("DATE_CREATE") or ""), "source": str(lead.get("SOURCE_ID") or ""), "url": f"{portal}/crm/lead/details/{lead.get('ID')}/" if str(lead.get("ID") or "").isdigit() else ""} for lead in leads_result if isinstance(lead, dict)] if isinstance(leads_result, list) else []},

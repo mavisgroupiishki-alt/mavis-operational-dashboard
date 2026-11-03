@@ -1445,7 +1445,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/reports/capture-preview/") or path.startswith("/api/cabinet/payroll") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/activity-action", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/cabinet/calls/") or path.startswith("/api/reports/capture-preview/") or path.startswith("/api/cabinet/payroll") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2133,10 +2133,10 @@ async def api_cabinet_managers(request: Request):
     return {"ok": True, "managers": await _cabinet_managers()}
 
 
-async def _refresh_cabinet_workday(user_id: str, selected_date: str, key: str):
+async def _refresh_cabinet_workday(user_id: str, selected_date: str, period: str, key: str):
     try:
         result = await asyncio.wait_for(
-            build_personal_workday(client, user_id, selected_date, settings.timezone),
+            build_personal_workday(client, user_id, selected_date, settings.timezone, period),
             timeout=180,
         )
         if not isinstance(result, dict) or not result.get("ok"):
@@ -2154,16 +2154,21 @@ async def _refresh_cabinet_workday(user_id: str, selected_date: str, key: str):
 
 
 @app.get("/api/cabinet/workday")
-async def api_cabinet_workday(request: Request, date: str = Query(default="")):
+async def api_cabinet_workday(request: Request, date: str = Query(default=""), period: str = Query(default="day")):
     # The manager identity is always taken from a verified session, never a
     # browser-provided user ID. Directors may select only their sales roster.
     _, user_id = await _cabinet_subject(request)
-    selected_date = date or (datetime.now(ZoneInfo(settings.timezone)) - timedelta(days=1)).date().isoformat()
+    # The cabinet is a live daily workspace. Historical dates remain available
+    # explicitly through the date selector, but never replace today's control
+    # screen by default.
+    selected_date = date or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
     try:
         datetime.strptime(selected_date, "%Y-%m-%d")
     except ValueError as exc:
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД") from exc
-    key = f"cabinet_workday_snapshot_v3:{user_id}:{selected_date}"
+    if period not in {"day", "week", "month"}:
+        raise HTTPException(400, "Выберите период: день, неделя или месяц")
+    key = f"cabinet_workday_snapshot_v4:{user_id}:{selected_date}:{period}"
     cached = cabinet_workday_cache.get(key)
     if not isinstance(cached, dict):
         try:
@@ -2178,7 +2183,7 @@ async def api_cabinet_workday(request: Request, date: str = Query(default="")):
     task = cabinet_workday_refresh_tasks.get(key)
     if (not task or task.done()) and (not timestamp or age > 120):
         cabinet_workday_refresh_tasks[key] = asyncio.create_task(
-            _refresh_cabinet_workday(user_id, selected_date, key)
+            _refresh_cabinet_workday(user_id, selected_date, period, key)
         )
 
     if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
@@ -2377,11 +2382,15 @@ async def api_cabinet_call_context(activity_id: str, request: Request):
     if not call["dealId"]:
         return {"ok": True, "status": "no_deal", "message": "У звонка нет связанной сделки, поэтому контекст CRM недоступен."}
     try:
-        raw = await client.call("crm.deal.get", {"id": int(call["dealId"])})
+        # Metadata is only used to make field values readable; it must not
+        # serially delay the deal card itself.
+        raw, meta = await asyncio.gather(
+            client.call("crm.deal.get", {"id": int(call["dealId"])}),
+            client.meta(),
+        )
         deal = raw.get("result") if isinstance(raw, dict) else {}
         if not isinstance(deal, dict):
             raise ValueError("invalid deal")
-        meta = await client.meta()
     except Exception:
         logger.exception("Personal call CRM context unavailable")
         return {"ok": True, "status": "unavailable", "message": "Bitrix24 сейчас не передал контекст этой сделки."}
@@ -2409,6 +2418,23 @@ async def api_cabinet_call_context(activity_id: str, request: Request):
             "audio": "Прослушка открывается ниже во встроенном, ограниченном менеджером интерфейсе Jarvis.",
         },
     }
+
+
+@app.get("/api/cabinet/calls/{activity_id}/review")
+async def api_cabinet_call_review(activity_id: str, request: Request):
+    """Open the exact Jarvis call card after proving it belongs to this manager."""
+    _, user_id = await _cabinet_subject(request)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", activity_id):
+        raise HTTPException(400, "Некорректный идентификатор звонка")
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": user_id})
+    if not payload.get("ok"):
+        raise HTTPException(503, "Звонки Jarvis временно недоступны")
+    if not any(row["activityId"] == activity_id for row in _public_personal_calls(payload)["data"]["calls"]):
+        raise HTTPException(404, "Звонок не найден в личном журнале")
+    base = urlparse(settings.jarvis_operations_url.rstrip("/"))
+    if base.scheme != "https" or not base.netloc:
+        raise HTTPException(503, "Прослушка Jarvis временно недоступна")
+    return RedirectResponse(f"{base.scheme}://{base.netloc}/calls/{activity_id}", status_code=302)
 
 
 @app.get("/api/cabinet/listening")
