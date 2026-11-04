@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import fixed_main, main
 from app.bitrix_identity import issue_session, portal_host, read_session
-from app.personal_workspace import _stage_sla_state, build_personal_workday
+from app.personal_workspace import _document_deadline, _stage_sla_state, build_personal_workday
 
 
 class BitrixIdentityTests(unittest.TestCase):
@@ -209,7 +209,10 @@ class BitrixIdentityTests(unittest.TestCase):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Похожее название", "company": "Похожее название", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
         lookup = AsyncMock(return_value={"status": "not_provided"})
         with (
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
             patch.object(main, "_company_unps", new=AsyncMock(return_value={})),
+            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={})),
+            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={})),
             patch.object(main, "_registry_context", new=lookup),
         ):
             asyncio.run(main._hydrate_cabinet_registry(workday))
@@ -217,16 +220,56 @@ class BitrixIdentityTests(unittest.TestCase):
         self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
         self.assertEqual(workday["iso_suot"]["candidates"][0]["registry"]["status"], "not_provided")
 
-    def test_registry_hydration_checks_exact_company_unp(self):
+    def test_registry_hydration_requires_history_and_explicit_unoffered_call(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
         registry = AsyncMock(return_value={"status": "not_found"})
         with (
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
             patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
+            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": False})),
+            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False, "activity_id": "call-1"}})),
             patch.object(main, "_registry_context", new=registry),
         ):
-            asyncio.run(main._hydrate_cabinet_registry(workday))
+            asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
         registry.assert_awaited_once_with("123456789")
         self.assertEqual(len(workday["iso_suot"]["confirmed_gaps"]), 1)
+
+    def test_registry_hydration_does_not_signal_when_previous_sale_already_has_iso(self):
+        workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
+        with (
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
+            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": True})),
+            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
+            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
+        ):
+            asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
+        self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
+
+    def test_registry_hydration_does_not_signal_when_sales_history_is_unavailable(self):
+        workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
+        with (
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
+            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": None})),
+            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
+            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
+        ):
+            asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
+        self.assertFalse(workday["iso_suot"]["candidates"][0]["sales_history_checked"])
+        self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
+
+    def test_registry_hydration_does_not_signal_when_current_product_is_iso(self):
+        workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
+        with (
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={"10": [{"PRODUCT_NAME": "ИСО 9001"}]})),
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
+            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": False})),
+            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
+            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
+        ):
+            asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
+        self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
 
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
@@ -371,6 +414,14 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["stage_sla"]["breached_count"], 1)
         self.assertEqual(result["stage_sla"]["breached"][0]["stage_sla"]["rule"], "До конца рабочего дня")
         self.assertGreater(result["stage_sla"]["breached"][0]["stage_sla"]["actual_days"], 1)
+        self.assertEqual(result["deals"]["next_step"]["percent"], 100.0)
+        self.assertEqual(result["deals"]["stage_averages"][0]["stage"], "1. Новая сделка")
+        self.assertEqual(result["deals"]["call_to_next_step"]["successful_linked_calls"], 0)
+
+    def test_document_deadline_requires_a_document_keyword_and_explicit_near_date(self):
+        from datetime import date
+        self.assertEqual(_document_deadline("БИС действует до 21.11.2026", date(2026, 11, 4)), date(2026, 11, 21))
+        self.assertIsNone(_document_deadline("Созвониться 21.11.2026", date(2026, 11, 4)))
 
     def test_kp_stage_sla_exposes_norm_fact_and_excess(self):
         from datetime import datetime
@@ -428,7 +479,7 @@ class PersonalWorkspaceTests(unittest.TestCase):
 
 
 class PersonalCallNormalizationTests(unittest.TestCase):
-    def test_unscored_reason_and_iso_alert_are_only_taken_from_confirmed_data(self):
+    def test_unscored_reason_and_iso_alert_are_only_taken_from_server_confirmed_data(self):
         result = main._public_personal_calls({
             "ok": True,
             "status": "online",
@@ -445,7 +496,7 @@ class PersonalCallNormalizationTests(unittest.TestCase):
                     "activityId": "call-3", "client": "ООО Неизвестно", "score": 9,
                 },
             ]},
-        })
+        }, {"call-2": {"reason": "Полная проверка подтверждена."}})
         pending, confirmed_gap, unknown = result["data"]["calls"]
         self.assertEqual(pending["notScoredReason"], "Анализ ещё не готов")
         self.assertTrue(confirmed_gap["isoSuotAlert"])

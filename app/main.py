@@ -97,6 +97,7 @@ derived_range_cache_time = {}
 cabinet_workday_cache = {}
 cabinet_workday_refresh_tasks = {}
 cabinet_registry_cache = {}
+cabinet_iso_call_alert_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 cabinet_evening_report_task = None
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
@@ -2303,7 +2304,7 @@ def _call_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def _public_personal_calls(payload: dict[str, Any]) -> dict[str, Any]:
+def _public_personal_calls(payload: dict[str, Any], iso_call_alerts: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Return only card data a manager may see, never upstream credentials."""
     source = payload.get("data") if isinstance(payload, dict) else {}
     source = source if isinstance(source, dict) else {}
@@ -2321,9 +2322,8 @@ def _public_personal_calls(payload: dict[str, Any]) -> dict[str, Any]:
             duration = 0
         iso = row.get("isoSuot") if isinstance(row.get("isoSuot"), dict) else row.get("iso_suot")
         iso = iso if isinstance(iso, dict) else {}
-        registry_missing = iso.get("registryMissing") is True or iso.get("registry_missing") is True
-        offered = iso.get("offered")
-        iso_alert = registry_missing and offered is False
+        confirmed = (iso_call_alerts or {}).get(activity_id) or {}
+        iso_alert = bool(confirmed)
         calls.append({
             "activityId": activity_id,
             "client": _call_text(row.get("client"), 240) or "Неизвестный клиент",
@@ -2338,6 +2338,7 @@ def _public_personal_calls(payload: dict[str, Any]) -> dict[str, Any]:
             "notScoredReason": _call_text(row.get("notScoredReason") or row.get("not_scored_reason"), 600) or (recommendation if status in {"pending", "excluded"} else _CALL_STATUS_REASON.get(status, "Причина не передана Jarvis.")),
             "isoSuotAlert": iso_alert,
             "isoSuotStatus": "confirmed_gap" if iso_alert else ("not_provided" if not iso else "no_confirmed_gap"),
+            "isoSuotEvidence": _call_text(confirmed.get("reason"), 700) if iso_alert else "",
         })
     upstream_summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
     scored = [row for row in calls if row["score"] is not None]
@@ -2366,7 +2367,9 @@ async def api_cabinet_calls(request: Request):
     payload = await load_jarvis_operations("personal-calls", {"manager_id": user_id})
     if not payload.get("ok"):
         raise HTTPException(503, "Звонки Jarvis временно недоступны")
-    return _public_personal_calls(payload)
+    cached = cabinet_iso_call_alert_cache.get(str(user_id))
+    alerts = cached[1] if isinstance(cached, tuple) and time.monotonic() - cached[0] < 15 * 60 else {}
+    return _public_personal_calls(payload, alerts)
 
 
 @app.post("/api/cabinet/activity-action")
@@ -2560,11 +2563,85 @@ async def _cabinet_capacity_candidates(workday: dict[str, Any]) -> dict[str, Any
     return {"status": "online", "active_count": active, "target": target, "needed": target - active, "candidates": candidates[:max(8, min(20, target - active))]}
 
 
-async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
-    """Attach only confirmed daily registry facts to deals without an ISO/SUOT service."""
+def _is_iso_suot_service(value: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "").casefold().replace("ё", "е"))
+    return bool(re.search(r"(?:\biso\b|исо|суот)", text))
+
+
+async def _company_prior_iso_sales(company_ids: list[Any]) -> dict[str, bool | None]:
+    """Use company IDs, never names, to find an existing ISO/SUOT sale."""
+    ids = list(dict.fromkeys(str(value) for value in company_ids if str(value).isdigit()))
+    if not ids:
+        return {}
+    try:
+        meta, rows = await asyncio.gather(
+            client.meta(),
+            client.deal_list({"@COMPANY_ID": ids, "CLOSED": "Y"}, ["ID", "COMPANY_ID", "STAGE_ID", F_SERVICE]),
+        )
+        successful = set()
+        from .metrics import successful_sale_stage_ids
+        won_stages = successful_sale_stage_ids(meta if isinstance(meta, dict) else {})
+        candidates = [row for row in rows if isinstance(row, dict) and str(row.get("STAGE_ID") or "") in won_stages]
+        try:
+            products = await client.product_rows_many(candidates)
+        except Exception:
+            products = {}
+        for row in candidates:
+            values = [row.get(F_SERVICE)]
+            values.extend(item.get("PRODUCT_NAME") or item.get("NAME") or "" for item in products.get(str(row.get("ID") or ""), []) if isinstance(item, dict))
+            if any(_is_iso_suot_service(value) for value in values):
+                successful.add(str(row.get("COMPANY_ID") or ""))
+        # False means the full company history was checked and contains no ISO/SUOT sale.
+        return {company_id: company_id in successful for company_id in ids}
+    except Exception:
+        logger.warning("Company sales history lookup failed", exc_info=True)
+        # An unavailable history is not evidence that the company never bought ISO/SUOT.
+        # Keep it distinct from a confirmed False so a red signal is never speculative.
+        return {company_id: None for company_id in ids}
+
+
+async def _manager_iso_suot_offers(user_id: str, deal_ids: list[Any]) -> dict[str, dict[str, Any]]:
+    """Return the latest explicit Jarvis offer result for each linked deal."""
+    wanted = {str(value) for value in deal_ids if str(value).isdigit()}
+    if not wanted:
+        return {}
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": str(user_id)})
+    if not payload.get("ok"):
+        return {}
+    latest: dict[str, tuple[str, dict[str, Any]]] = {}
+    for row in _call_list(payload):
+        deal_id = str(row.get("dealId") or row.get("deal_id") or "")
+        if deal_id not in wanted:
+            continue
+        iso = row.get("isoSuot") if isinstance(row.get("isoSuot"), dict) else row.get("iso_suot")
+        if not isinstance(iso, dict) or not isinstance(iso.get("offered"), bool):
+            continue
+        created = str(row.get("created") or row.get("CALL_START_DATE") or "")
+        current = latest.get(deal_id)
+        if current is None or created >= current[0]:
+            latest[deal_id] = (created, {"offered": iso.get("offered"), "activity_id": str(row.get("activityId") or row.get("activity_id") or row.get("id") or ""), "created": created})
+    return {deal_id: data for deal_id, (_, data) in latest.items()}
+
+
+async def _hydrate_cabinet_registry(workday: dict[str, Any], user_id: str = "") -> None:
+    """Attach red ISO/SUOT signals only when the full client-and-call evidence agrees."""
     iso = workday.get("iso_suot") or {}
     candidates = list(iso.get("candidates") or [])[:20]
-    unps = await _company_unps([row.get("company_id") for row in candidates])
+    try:
+        current_products = await client.product_rows_many([{"ID": row.get("id")} for row in candidates])
+    except Exception:
+        current_products = {}
+    for row in candidates:
+        product_names = [
+            item.get("PRODUCT_NAME") or item.get("NAME") or ""
+            for item in current_products.get(str(row.get("id") or ""), [])
+            if isinstance(item, dict)
+        ]
+        row["current_iso_suot"] = any(_is_iso_suot_service(value) for value in [row.get("service"), *product_names])
+    unps_task = _company_unps([row.get("company_id") for row in candidates])
+    history_task = _company_prior_iso_sales([row.get("company_id") for row in candidates])
+    offers_task = _manager_iso_suot_offers(user_id, [row.get("id") for row in candidates])
+    unps, prior_iso_sales, offers = await asyncio.gather(unps_task, history_task, offers_task)
     for row in candidates:
         row["unp"] = unps.get(str(row.get("company_id") or ""), "")
     checked = await asyncio.gather(*(_registry_context(row.get("unp")) for row in candidates), return_exceptions=True)
@@ -2573,15 +2650,25 @@ async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
     for row, status in zip(candidates, checked):
         status = status if isinstance(status, dict) else {"status": "unavailable", "message": "Реестр временно недоступен."}
         row["registry"] = status
+        history_value = prior_iso_sales.get(str(row.get("company_id") or ""))
+        row["prior_iso_suot_sale"] = history_value is True
+        row["sales_history_checked"] = history_value is not None
+        row["call_offer"] = offers.get(str(row.get("id") or ""), {})
         if status.get("status") != "unavailable":
             available += 1
-        if status.get("status") == "not_found":
+        if (
+            status.get("status") == "not_found"
+            and row["sales_history_checked"]
+            and not row["current_iso_suot"]
+            and not row["prior_iso_suot_sale"]
+            and row["call_offer"].get("offered") is False
+        ):
             row["priority"] = "Проверить ИСО/СУОТ"
-            row["reason"] = "Компания не найдена в ежедневном опубликованном реестре, а услуга ИСО/СУОТ в сделке не указана. Перед звонком проверьте реестр и предложите услугу, если она действительно отсутствует."
+            row["reason"] = "По точному УНП компания не найдена в ежедневном реестре, в текущей и предыдущих успешных продажах нет ИСО/СУОТ, а в связанном разобранном звонке предложение услуги не зафиксировано. Перед следующим контактом предложите ИСО/СУОТ."
             gaps.append(row)
     iso.update({
         "status": "online" if candidates and available == len(candidates) else "partial" if available else "unavailable",
-        "message": "Проверка по ежедневному опубликованному реестру ИСО/СУОТ идёт только по точному УНП. Красный сигнал появляется только при подтверждённом отсутствии УНП и пустой услуге в сделке.",
+        "message": "Проверка идёт только по точному УНП. Красный сигнал появляется только если в реестре и истории продаж нет ИСО/СУОТ, а Jarvis явно зафиксировал, что менеджер не предложил услугу.",
         "candidates": candidates,
         "confirmed_gaps": gaps,
     })
@@ -2590,11 +2677,36 @@ async def _hydrate_cabinet_registry(workday: dict[str, Any]) -> None:
     if gaps:
         priorities = list((workday.get("deals") or {}).get("priorities") or [])
         workday["deals"]["priorities"] = [*gaps, *priorities][:50]
+    cabinet_iso_call_alert_cache[str(user_id)] = (
+        time.monotonic(),
+        {str(row.get("call_offer", {}).get("activity_id") or ""): row for row in gaps if str(row.get("call_offer", {}).get("activity_id") or "")},
+    )
 
 
 async def _build_cabinet_workday(user_id: str, selected_date: str, period: str) -> dict[str, Any]:
     workday = await build_personal_workday(client, user_id, selected_date, settings.timezone, period)
-    await asyncio.gather(_hydrate_cabinet_registry(workday), return_exceptions=True)
+    await asyncio.gather(_hydrate_cabinet_registry(workday, user_id), return_exceptions=True)
+    selected = datetime.strptime(selected_date, "%Y-%m-%d").date()
+    month_key = selected.strftime("%Y-%m")
+    payroll = storage.get_setting(payroll_settings_key(str(user_id), month_key), {})
+    payroll = payroll if isinstance(payroll, dict) else {}
+    plan = max(0.0, float(payroll.get("plan") or 0))
+    month_days = monthrange(selected.year, selected.month)[1]
+    elapsed_until = min(selected.day, month_days)
+    elapsed_workdays = sum(date(selected.year, selected.month, day).weekday() < 5 for day in range(1, elapsed_until + 1))
+    total_workdays = sum(date(selected.year, selected.month, day).weekday() < 5 for day in range(1, month_days + 1))
+    fact = float((workday.get("deals") or {}).get("fact_amount") or 0)
+    remaining_workdays = max(0, total_workdays - elapsed_workdays)
+    actual_daily = round(fact / elapsed_workdays, 2) if elapsed_workdays else None
+    needed_daily = round(max(0.0, plan - fact) / remaining_workdays, 2) if plan and remaining_workdays else None
+    projected = round((actual_daily or 0.0) * total_workdays, 2) if actual_daily is not None else None
+    workday.setdefault("deals", {})["plan_forecast"] = {
+        "plan": round(plan, 2), "fact": round(fact, 2), "elapsed_workdays": elapsed_workdays,
+        "total_workdays": total_workdays, "remaining_workdays": remaining_workdays,
+        "actual_daily": actual_daily, "needed_daily": needed_daily, "projected": projected,
+        "status": "not_configured" if not plan else "online",
+        "definition": "Факт — успешные сделки менеджера за месяц; темп и прогноз считаются только по рабочим дням выбранного месяца.",
+    }
     try:
         workday.setdefault("deals", {})["capacity"] = await _cabinet_capacity_candidates(workday)
     except Exception:
