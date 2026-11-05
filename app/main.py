@@ -98,6 +98,8 @@ cabinet_workday_cache = {}
 cabinet_workday_refresh_tasks = {}
 cabinet_registry_cache = {}
 cabinet_iso_call_alert_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+cabinet_deal_analysis_tasks: dict[str, asyncio.Task] = {}
+cabinet_deal_analysis_semaphore = asyncio.Semaphore(3)
 cabinet_evening_report_task = None
 jarvis_operations_cache = {}
 jarvis_operations_cache_time = {}
@@ -2252,7 +2254,8 @@ async def api_cabinet_workday(request: Request, date: str = Query(default=""), p
     timestamp = float((cached or {}).get("saved_at") or 0)
     age = time.time() - timestamp
     task = cabinet_workday_refresh_tasks.get(key)
-    if (not task or task.done()) and (not timestamp or age > 120):
+    pending_ai_analysis = int((((cached or {}).get("data") or {}).get("deals") or {}).get("context_analysis_summary", {}).get("analyzing") or 0) > 0
+    if (not task or task.done()) and (not timestamp or age > 120 or pending_ai_analysis):
         cabinet_workday_refresh_tasks[key] = asyncio.create_task(
             _refresh_cabinet_workday(user_id, selected_date, period, key)
         )
@@ -2434,6 +2437,157 @@ async def _aiai_deal_context_summary(deal_id: str, context: dict[str, Any]) -> d
     except (httpx.HTTPError, ValueError, TypeError):
         logger.warning("AIAI context request failed without a response")
         return {"status": "unavailable", "message": "AIAI.BY временно недоступен для анализа контекста."}
+
+
+def _aiai_json(value: Any) -> dict[str, Any]:
+    """Accept a small JSON object even if the model wrapped it in a code fence."""
+    raw = str(value or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else ""
+        raw = raw.rsplit("```", 1)[0].strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        decoded = json.loads(raw[start:end + 1])
+    except (ValueError, TypeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+async def _aiai_deal_action_analysis(deal_id: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Analyse one deal from CRM facts and call text; never invent an agreement."""
+    if not settings.aiai_api_key or not settings.aiai_context_model:
+        return {"status": "not_configured", "message": "AIAI.BY не настроен на сервере."}
+    prompt = (
+        "Ты анализируешь одну сделку отдела продаж. Используй ТОЛЬКО переданные факты CRM, "
+        "комментарии и текст разбора/транскрипта звонков. Ничего не додумывай. Верни строго JSON без Markdown: "
+        '{"summary":"до 450 символов", "priority":"high|normal|low", "needs_action":true|false, '
+        '"explicit_next_contact":true|false, "next_contact_date":"YYYY-MM-DD или пусто", '
+        '"agreement_evidence":"короткая точная опора из фактов или пусто"}. '
+        "explicit_next_contact=true только если в фактах прямо указаны действие связи и конкретная дата. "
+        "Если у звонка нет текста/разбора, не делай выводов о содержании звонка и укажи это в summary.\n\n"
+        + json.dumps(context, ensure_ascii=False)
+    )
+    try:
+        async with cabinet_deal_analysis_semaphore:
+            async with httpx.AsyncClient(timeout=24.0, follow_redirects=False) as session:
+                response = await session.post(
+                    f"{settings.aiai_base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.aiai_api_key}", "Content-Type": "application/json"},
+                    json={"model": settings.aiai_context_model, "temperature": 0, "max_tokens": 380, "messages": [{"role": "user", "content": prompt}]},
+                )
+        if response.status_code >= 400:
+            logger.warning("AIAI deal analysis failed: status=%s", response.status_code)
+            return {"status": "unavailable", "message": "AIAI.BY временно не вернул анализ сделки."}
+        raw = (((response.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
+        parsed = _aiai_json(raw)
+        summary = _call_text(parsed.get("summary"), 500)
+        if not summary:
+            return {"status": "unavailable", "message": "AIAI.BY вернул анализ в неподдерживаемом формате."}
+        priority = str(parsed.get("priority") or "normal").lower()
+        priority = priority if priority in {"high", "normal", "low"} else "normal"
+        result: dict[str, Any] = {
+            "status": "online", "provider": "aiai", "model": settings.aiai_context_model,
+            "summary": summary, "priority": priority, "needs_action": bool(parsed.get("needs_action")),
+        }
+        if parsed.get("explicit_next_contact") is True:
+            try:
+                next_date = date.fromisoformat(str(parsed.get("next_contact_date") or ""))
+            except ValueError:
+                next_date = None
+            evidence = _call_text(parsed.get("agreement_evidence"), 500)
+            if next_date and evidence:
+                result["agreement"] = {
+                    "date": next_date.isoformat(), "source": "анализ AIAI.BY", "evidence": evidence,
+                }
+        return result
+    except (httpx.HTTPError, ValueError, TypeError):
+        logger.warning("AIAI deal analysis failed without a response")
+        return {"status": "unavailable", "message": "AIAI.BY временно недоступен для анализа сделки."}
+
+
+def _deal_analysis_context(row: dict[str, Any], jarvis_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Bound the context so every active deal can be analysed independently."""
+    call_facts = []
+    for call in jarvis_calls[-5:]:
+        text = "\n".join(
+            _call_text(call.get(field), 1400)
+            for field in ("transcript", "analysis", "summary", "recommendation", "agreement", "nextStep", "next_step")
+            if call.get(field)
+        )
+        call_facts.append({
+            "created": _call_text(call.get("created") or call.get("CALL_START_DATE"), 80),
+            "status": _call_text(call.get("status"), 60), "text": text[:1800],
+        })
+    return {
+        "deal": {key: row.get(key) for key in ("id", "title", "company", "stage_name", "amount", "service", "source", "created", "last_touch_at")},
+        "crm_comment": _call_text(row.get("comments"), 1800),
+        "recent_completed_crm_activities": list(row.get("recent_touches") or [])[:3],
+        "related_jarvis_calls": call_facts,
+    }
+
+
+async def _hydrate_portfolio_context_analysis(workday: dict[str, Any], user_id: str) -> dict[str, dict[str, Any]]:
+    """Attach cached AIAI results and queue analysis for every changed active deal."""
+    deals = workday.setdefault("deals", {})
+    active = list(deals.get("active") or [])[:100]
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": str(user_id)})
+    calls_by_deal: dict[str, list[dict[str, Any]]] = {}
+    if payload.get("ok"):
+        for call in _call_list(payload):
+            deal_id = str(call.get("dealId") or call.get("deal_id") or "")
+            if deal_id:
+                calls_by_deal.setdefault(deal_id, []).append(call)
+    analyses: list[dict[str, Any]] = []
+    agreements: dict[str, dict[str, Any]] = {}
+
+    async def run_analysis(cache_key: str, deal_id: str, context: dict[str, Any]) -> None:
+        try:
+            result = await _aiai_deal_action_analysis(deal_id, context)
+            if result.get("status") == "online":
+                storage.set_setting(cache_key, result)
+                # The background result belongs in the next cabinet snapshot,
+                # not after the normal two-minute CRM freshness window.
+                for snapshot_key, snapshot in list(cabinet_workday_cache.items()):
+                    if f":{user_id}:" in snapshot_key and isinstance(snapshot, dict):
+                        snapshot["saved_at"] = 0
+                await broadcast({"type": "cabinet_deal_analysis", "deal_id": deal_id})
+        except Exception:
+            logger.exception("Background AIAI deal analysis failed for %s", deal_id)
+        finally:
+            cabinet_deal_analysis_tasks.pop(cache_key, None)
+
+    for row in active:
+        deal_id = str(row.get("id") or "")
+        if not deal_id.isdigit():
+            continue
+        context = _deal_analysis_context(row, calls_by_deal.get(deal_id, []))
+        fingerprint = hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:20]
+        cache_key = f"cabinet_deal_analysis:v1:{deal_id}:{fingerprint}"
+        cached = storage.get_setting(cache_key, {})
+        if isinstance(cached, dict) and cached.get("status") == "online":
+            analysis = dict(cached)
+        elif not settings.aiai_api_key or not settings.aiai_context_model:
+            analysis = {"status": "not_configured", "message": "AIAI.BY не настроен на сервере."}
+        else:
+            analysis = {"status": "analyzing", "message": "Собираю анализ комментариев, CRM-дел и связанных звонков."}
+            task = cabinet_deal_analysis_tasks.get(cache_key)
+            if not task or task.done():
+                cabinet_deal_analysis_tasks[cache_key] = asyncio.create_task(run_analysis(cache_key, deal_id, context))
+        item = {**row, "analysis": analysis}
+        analyses.append(item)
+        if isinstance(analysis.get("agreement"), dict):
+            agreements[deal_id] = {"status": "online", "agreement": analysis["agreement"]}
+    deals["context_analysis"] = analyses
+    deals["context_analysis_summary"] = {
+        "total": len(analyses), "ready": sum(row["analysis"].get("status") == "online" for row in analyses),
+        "analyzing": sum(row["analysis"].get("status") == "analyzing" for row in analyses),
+        "jarvis_status": "online" if payload.get("ok") else "unavailable",
+        "definition": "Для каждой активной сделки AIAI.BY анализирует комментарии CRM, последние завершённые дела и текст связанных звонков Jarvis. Результат обновляется только при изменении контекста.",
+    }
+    workday.setdefault("availability", {})["deal_context_analysis"] = "online" if payload.get("ok") else "partial"
+    return agreements
 
 
 def _normalize_unp(value: Any) -> str:
@@ -2787,12 +2941,16 @@ async def _build_cabinet_workday(user_id: str, selected_date: str, period: str) 
     deferred_rows = list((workday.get("deals") or {}).get("deferred_demand") or [])
     deferred_task = _manager_deferred_demand_call_agreements(user_id, [row.get("id") for row in deferred_rows], selected)
     registry_task = _hydrate_cabinet_registry(workday, user_id)
-    deferred_result, _ = await asyncio.gather(deferred_task, registry_task, return_exceptions=True)
+    portfolio_task = _hydrate_portfolio_context_analysis(workday, user_id)
+    deferred_result, _, portfolio_result = await asyncio.gather(deferred_task, registry_task, portfolio_task, return_exceptions=True)
+    ai_agreements = portfolio_result if isinstance(portfolio_result, dict) else {}
     if isinstance(deferred_result, tuple):
         agreements, call_status = deferred_result
-        _hydrate_deferred_demand_agreements(workday, agreements, selected, call_status)
+        # An explicit Jarvis agreement is primary; AIAI fills the gap only
+        # when Jarvis has no usable analysis for that related call.
+        _hydrate_deferred_demand_agreements(workday, {**ai_agreements, **agreements}, selected, call_status)
     else:
-        _hydrate_deferred_demand_agreements(workday, {}, selected, "unavailable")
+        _hydrate_deferred_demand_agreements(workday, ai_agreements, selected, "unavailable")
     month_key = selected.strftime("%Y-%m")
     payroll = storage.get_setting(payroll_settings_key(str(user_id), month_key), {})
     payroll = payroll if isinstance(payroll, dict) else {}

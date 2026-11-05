@@ -488,6 +488,39 @@ class PersonalWorkspaceTests(unittest.TestCase):
         self.assertEqual(agreement["source"], "разбор Jarvis")
         self.assertIsNone(main._deferred_call_agreement({"recommendation": "Клиент обсуждал бюджет 12.11.2026."}, date(2026, 11, 5)))
 
+    def test_each_active_deal_gets_cached_aiai_context_when_jarvis_has_no_breakdown(self):
+        async def run():
+            saved = {}
+            configured = replace(main.settings, aiai_api_key="test-key", aiai_context_model="test-model")
+            payload = {"ok": True, "status": "online", "data": {"calls": [{"dealId": "10", "status": "pending"}]}}
+            workday = {"deals": {"active": [{
+                "id": "10", "title": "Сделка", "stage_name": "Отложенный спрос", "amount": 3000,
+                "comments": "Клиент просил связаться позже.", "recent_touches": [],
+            }]}, "availability": {}}
+            analysis = AsyncMock(return_value={
+                "status": "online", "summary": "В Jarvis нет разбора; уточнить дату следующего контакта.",
+                "priority": "high", "needs_action": True,
+                "agreement": {"date": "2026-11-12", "source": "анализ AIAI.BY", "evidence": "связаться позже"},
+            })
+            with (
+                patch.object(main, "settings", configured),
+                patch.object(main, "load_jarvis_operations", new=AsyncMock(return_value=payload)),
+                patch.object(main.storage, "get_setting", side_effect=lambda key, default={}: saved.get(key, default)),
+                patch.object(main.storage, "set_setting", side_effect=lambda key, value: saved.__setitem__(key, value)),
+                patch.object(main, "_aiai_deal_action_analysis", new=analysis),
+            ):
+                first = await main._hydrate_portfolio_context_analysis(workday, "12")
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                second = await main._hydrate_portfolio_context_analysis(workday, "12")
+            return first, second, workday, analysis
+
+        first, second, workday, analysis = asyncio.run(run())
+        self.assertEqual(first, {})
+        self.assertEqual(second["10"]["agreement"]["source"], "анализ AIAI.BY")
+        self.assertEqual(workday["deals"]["context_analysis"][0]["analysis"]["status"], "online")
+        analysis.assert_awaited_once()
+
     def test_week_period_returns_a_weekly_call_norm_and_bounds(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
             from datetime import datetime

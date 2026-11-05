@@ -234,11 +234,22 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
         if (promised := _comment_follow_up_date(deal.get("COMMENTS"), now.date())) and promised <= now.date()
     }
     last_touch_by_deal: dict[str, datetime] = {}
+    recent_touches_by_deal: dict[str, list[dict[str, str]]] = {}
     for activity in completed_activities:
         created = _parse_datetime(activity.get("LAST_UPDATED") or activity.get("CREATED"), zone)
         owner = _owner_id(activity)
         if created and (owner not in last_touch_by_deal or created > last_touch_by_deal[owner]):
             last_touch_by_deal[owner] = created
+        if owner not in deal_by_id or not created:
+            continue
+        note = re.sub(r"\s+", " ", str(activity.get("DESCRIPTION") or activity.get("SUBJECT") or "").strip())[:900]
+        if not note:
+            continue
+        recent_touches_by_deal.setdefault(owner, []).append({
+            "at": created.isoformat(), "kind": str(activity.get("TYPE_ID") or "activity"), "note": note,
+        })
+    for touches in recent_touches_by_deal.values():
+        touches.sort(key=lambda row: row["at"], reverse=True)
 
     meta = meta_result if isinstance(meta_result, dict) else {}
     stages: dict[str, dict[str, Any]] = {}
@@ -265,7 +276,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
         stage_sla = _stage_sla_state(label, _parse_datetime(deal.get("MOVED_TIME"), zone), now)
         deal_id = str(deal.get("ID") or "")
         last_touch = last_touch_by_deal.get(deal_id)
-        return {"id": deal_id, "title": str(deal.get("TITLE") or "Без названия"), "company": str(deal.get("COMPANY_TITLE") or ""), "company_id": str(deal.get("COMPANY_ID") or ""), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "service": str(deal.get(F_SERVICE) or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "comments": str(deal.get("COMMENTS") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla, "last_touch_at": last_touch.isoformat() if last_touch else ""}
+        return {"id": deal_id, "title": str(deal.get("TITLE") or "Без названия"), "company": str(deal.get("COMPANY_TITLE") or ""), "company_id": str(deal.get("COMPANY_ID") or ""), "stage": str(deal.get("STAGE_ID") or ""), "stage_name": label, "amount": round(money(deal), 2), "source": str(deal.get("SOURCE_ID") or ""), "service": str(deal.get(F_SERVICE) or ""), "created": str(deal.get("DATE_CREATE") or ""), "close_date": str(deal.get("CLOSEDATE") or ""), "comments": str(deal.get("COMMENTS") or ""), "url": _deal_url(portal, deal.get("ID")), "stage_sla": stage_sla, "last_touch_at": last_touch.isoformat() if last_touch else "", "recent_touches": recent_touches_by_deal.get(deal_id, [])[:3]}
 
     sla_breaches = [row for deal in deals if (row := deal_row(deal)).get("stage_sla") and row["stage_sla"].get("breached")]
 
