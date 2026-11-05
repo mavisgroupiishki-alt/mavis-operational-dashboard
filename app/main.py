@@ -41,7 +41,7 @@ from .daily_sales import (
     should_rebuild_empty_archive,
 )
 from .production_date_confirmation import register as register_production_date_confirmation
-from .personal_workspace import build_personal_workday
+from .personal_workspace import _comment_follow_up_date, build_personal_workday
 from .sales_team import SALES_BI_MANAGERS
 from .cabinet_ui import cabinet_html
 from .cabinet_payroll import register as register_cabinet_payroll, settings_key as payroll_settings_key
@@ -2623,6 +2623,104 @@ async def _manager_iso_suot_offers(user_id: str, deal_ids: list[Any]) -> dict[st
     return {deal_id: data for deal_id, (_, data) in latest.items()}
 
 
+def _deferred_call_agreement(row: dict[str, Any], reference: date) -> dict[str, str] | None:
+    """Accept only an explicit callback date from Jarvis, never a generic score."""
+    direct_fields = ("nextContactDate", "next_contact_date", "followUpDate", "follow_up_date")
+    for field in direct_fields:
+        raw = str(row.get(field) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+        except ValueError:
+            continue
+        return {"date": parsed.isoformat(), "source": "разбор Jarvis", "evidence": _call_text(row.get("agreement") or row.get("nextStep") or row.get("next_step") or raw, 500)}
+    # Jarvis may return the conclusion in one of several text fields. The
+    # parser still requires an actual date and a contact action before using it.
+    text = "\n".join(
+        _call_text(row.get(field), 1200)
+        for field in ("agreement", "nextStep", "next_step", "followUp", "follow_up", "summary", "recommendation", "transcript", "analysis")
+        if row.get(field)
+    )
+    promised = _comment_follow_up_date(text, reference)
+    if not promised:
+        return None
+    return {"date": promised.isoformat(), "source": "разбор Jarvis", "evidence": _call_text(text, 500)}
+
+
+async def _manager_deferred_demand_call_agreements(user_id: str, deal_ids: list[Any], reference: date) -> tuple[dict[str, dict[str, Any]], str]:
+    """Read the latest explicit callback agreement from the manager's own calls."""
+    wanted = {str(value) for value in deal_ids if str(value).isdigit()}
+    if not wanted:
+        return {}, "online"
+    payload = await load_jarvis_operations("personal-calls", {"manager_id": str(user_id)})
+    if not payload.get("ok"):
+        return {}, "unavailable"
+    latest: dict[str, tuple[str, dict[str, str]]] = {}
+    for row in _call_list(payload):
+        deal_id = str(row.get("dealId") or row.get("deal_id") or "")
+        if deal_id not in wanted:
+            continue
+        agreement = _deferred_call_agreement(row, reference)
+        if not agreement:
+            continue
+        created = str(row.get("created") or row.get("CALL_START_DATE") or "")
+        current = latest.get(deal_id)
+        if current is None or created >= current[0]:
+            latest[deal_id] = (created, agreement)
+    return {deal_id: {"status": "online", "agreement": agreement} for deal_id, (_, agreement) in latest.items()}, "online"
+
+
+def _hydrate_deferred_demand_agreements(workday: dict[str, Any], call_agreements: dict[str, dict[str, Any]], reference: date, call_status: str = "online") -> None:
+    """Make deferred demand actionable from an explicit agreement, not last touch."""
+    deals = workday.setdefault("deals", {})
+    deferred = list(deals.get("deferred_demand") or [])
+    priorities = list(deals.get("priorities") or [])
+    for row in deferred:
+        deal_id = str(row.get("id") or "")
+        comment_date = _comment_follow_up_date(row.get("comments"), reference)
+        comment_agreement = (
+            {"date": comment_date.isoformat(), "source": "комментарий CRM", "evidence": _call_text(row.get("comments"), 500)}
+            if comment_date else None
+        )
+        call_info = call_agreements.get(deal_id) or {}
+        call_agreement = call_info.get("agreement") if isinstance(call_info.get("agreement"), dict) else None
+        # The latest analyzed call is the most direct confirmation. If it does
+        # not contain a date, it cannot erase an explicit CRM agreement.
+        agreement = call_agreement or comment_agreement
+        row["agreement"] = agreement or {}
+        if not agreement:
+            row["agreement_status"] = "requires_review" if call_status == "online" else "call_analysis_unavailable"
+            row["priority"] = "Отложенный спрос: договорённость не подтверждена"
+            row["reason"] = (
+                "Договорённость о следующей связи не подтверждена: комментарий и связанные разборы звонков не содержат конкретной даты. "
+                "Последнее касание не заменяет договорённость: уточните срок с клиентом и создайте CRM-дело."
+                if call_status == "online" else
+                "Разбор связанных звонков Jarvis временно недоступен. Не считайте последнее касание договорённостью: проверьте комментарий и зафиксируйте дату связи."
+            )
+            priorities.append(row)
+            continue
+        try:
+            promised = date.fromisoformat(str(agreement.get("date") or ""))
+        except ValueError:
+            row["agreement_status"] = "requires_review"
+            row["priority"] = "Отложенный спрос: проверьте договорённость"
+            row["reason"] = "В разборе есть упоминание следующего контакта, но дата не распознана. Зафиксируйте её отдельным CRM-делом."
+            priorities.append(row)
+            continue
+        row["due"] = promised.isoformat()
+        row["reason"] = f"Договорённость о связи: {promised.strftime('%d.%m.%Y')} · источник: {agreement.get('source') or 'CRM'}. Последнее касание не заменяет новую договорённость."
+        if promised <= reference:
+            row["agreement_status"] = "contact_due"
+            row["priority"] = "Отложенный спрос: срок связи наступил"
+            priorities.append(row)
+        else:
+            row["agreement_status"] = "scheduled"
+    priorities.sort(key=lambda item: (item.get("priority") != "Отложенный спрос: срок связи наступил", item.get("due") or "9999-12-31", item.get("title") or ""))
+    deals["priorities"] = priorities[:50]
+    workday.setdefault("availability", {})["deferred_demand"] = call_status
+
+
 async def _hydrate_cabinet_registry(workday: dict[str, Any], user_id: str = "") -> None:
     """Attach red ISO/SUOT signals only when the full client-and-call evidence agrees."""
     iso = workday.get("iso_suot") or {}
@@ -2685,8 +2783,16 @@ async def _hydrate_cabinet_registry(workday: dict[str, Any], user_id: str = "") 
 
 async def _build_cabinet_workday(user_id: str, selected_date: str, period: str) -> dict[str, Any]:
     workday = await build_personal_workday(client, user_id, selected_date, settings.timezone, period)
-    await asyncio.gather(_hydrate_cabinet_registry(workday, user_id), return_exceptions=True)
     selected = datetime.strptime(selected_date, "%Y-%m-%d").date()
+    deferred_rows = list((workday.get("deals") or {}).get("deferred_demand") or [])
+    deferred_task = _manager_deferred_demand_call_agreements(user_id, [row.get("id") for row in deferred_rows], selected)
+    registry_task = _hydrate_cabinet_registry(workday, user_id)
+    deferred_result, _ = await asyncio.gather(deferred_task, registry_task, return_exceptions=True)
+    if isinstance(deferred_result, tuple):
+        agreements, call_status = deferred_result
+        _hydrate_deferred_demand_agreements(workday, agreements, selected, call_status)
+    else:
+        _hydrate_deferred_demand_agreements(workday, {}, selected, "unavailable")
     month_key = selected.strftime("%Y-%m")
     payroll = storage.get_setting(payroll_settings_key(str(user_id), month_key), {})
     payroll = payroll if isinstance(payroll, dict) else {}

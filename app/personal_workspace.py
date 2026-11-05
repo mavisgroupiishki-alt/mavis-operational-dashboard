@@ -155,6 +155,11 @@ def _call_deal_id(call: dict[str, Any]) -> str:
     return ""
 
 
+def _is_deferred_demand_stage(stage_name_value: Any) -> bool:
+    value = re.sub(r"\s+", " ", str(stage_name_value or "").casefold().replace("ё", "е"))
+    return "отлож" in value and "спрос" in value
+
+
 async def _deal_activities(client: Any, deal_ids: list[str], completed: str, *, call_only: bool = False) -> tuple[list[dict[str, Any]], bool]:
     unique_ids = list(dict.fromkeys(str(value) for value in deal_ids if str(value).isdigit()))
     if not unique_ids:
@@ -217,7 +222,17 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
         next_workday += timedelta(days=1)
     tomorrow_activities = [row for row in open_activities if (due := deadline(row)) and due.date() == next_workday]
     without_activity = [row for row in deals if str(row.get("ID") or "") not in open_by_deal] if activities_online else []
-    promise_candidates = {deal_id: promised for deal_id, deal in deal_by_id.items() if deal_id not in open_by_deal if (promised := _comment_follow_up_date(deal.get("COMMENTS"), now.date())) and promised <= now.date()}
+    deferred_demand_ids = {
+        deal_id for deal_id, deal in deal_by_id.items()
+        if _is_deferred_demand_stage(stage_name(meta_result if isinstance(meta_result, dict) else {}, deal.get("STAGE_ID"), "DEAL_STAGE"))
+    }
+    # Deferred demand has a stricter workflow. It is evaluated later with the
+    # Jarvis call agreement, rather than treating any old CRM comment as proof.
+    promise_candidates = {
+        deal_id: promised for deal_id, deal in deal_by_id.items()
+        if deal_id not in deferred_demand_ids and deal_id not in open_by_deal
+        if (promised := _comment_follow_up_date(deal.get("COMMENTS"), now.date())) and promised <= now.date()
+    }
     last_touch_by_deal: dict[str, datetime] = {}
     for activity in completed_activities:
         created = _parse_datetime(activity.get("LAST_UPDATED") or activity.get("CREATED"), zone)
@@ -284,6 +299,7 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
     priorities.sort(key=lambda row: (row["priority"] != "Обещанный контакт не подтверждён", row["due"], row["title"]))
 
     active_rows = [deal_row(deal) for deal in deals]
+    deferred_demand = [row for row in active_rows if row["id"] in deferred_demand_ids]
     scheduled_deal_ids = {
         deal_id for deal_id, items in open_by_deal.items()
         if any(deadline(item) is not None for item in items)
@@ -339,11 +355,11 @@ async def build_personal_workday(client: Any, user_id: str, report_date: str, ti
 
     return {
         "ok": True, "date": start.date().isoformat(), "period": period, "period_label": period_label, "period_start": start.date().isoformat(), "period_end": (end - timedelta(microseconds=1)).date().isoformat(), "user_id": str(user_id), "profile": {"name": str((meta.get("users") or {}).get(str(user_id)) or f"Сотрудник {user_id}")}, "generated_at": now.isoformat(),
-        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and completed_online else "unavailable", "stage_sla": "online", "iso_suot_registry": "needs_connection"},
+        "availability": {"calls": "online" if isinstance(calls_result, list) else "unavailable", "tasks": "online" if activities_online else "unavailable", "comment_follow_up": "online" if activities_online and completed_online else "unavailable", "deferred_demand": "pending_call_analysis", "stage_sla": "online", "iso_suot_registry": "needs_connection"},
         "calls": {"successful_records": [{"id": str(call.get("ID") or ""), "title": "Звонок " + str(call.get("PHONE_NUMBER") or call.get("CALL_START_DATE") or ""), "created": str(call.get("CALL_START_DATE") or ""), "duration_seconds": int(float(call.get("CALL_DURATION") or 0))} for call in successful[:150]], "total": len(calls), "successful_from_minute": len(successful), "target": call_target, "remaining": max(0, call_target - len(successful)), "rule": "Успешный звонок — запись Bitrix с длительностью не менее 60 секунд."},
         "tasks": {"open_count": len(open_activities) if activities_online else None, "overdue_count": len(overdue_activities) if activities_online else None, "today_count": len(today_activities) if activities_online else None, "tomorrow_count": len(tomorrow_activities) if activities_online else None, "tomorrow_date": next_workday.isoformat(), "today": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in today_activities[:12] if _owner_id(row) in deal_by_id], "tomorrow": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in tomorrow_activities[:12] if _owner_id(row) in deal_by_id], "overdue": [_activity_row(row, deal_by_id[_owner_id(row)], portal) for row in overdue_activities[:50] if _owner_id(row) in deal_by_id]},
         "deals": {
-            "active": active_rows, "preplan": [deal_row(deal) for deal in preplan],
+            "active": active_rows, "deferred_demand": deferred_demand, "preplan": [deal_row(deal) for deal in preplan],
             "won": [deal_row(deal) for deal in won], "created": [deal_row(deal) for deal in created_sales],
             "created_won": [deal_row(deal) for deal in created_won], "active_count": len(deals),
             "target_active_count": 70, "needed_to_target": max(0, 70 - len(deals)),

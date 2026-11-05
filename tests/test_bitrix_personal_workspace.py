@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from dataclasses import replace
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -442,6 +443,50 @@ class PersonalWorkspaceTests(unittest.TestCase):
             result = asyncio.run(build_personal_workday(_PromisedContactClient(), "12", "2026-11-01", "Europe/Moscow"))
         self.assertEqual(result["deals"]["priorities"][0]["id"], "10")
         self.assertIn("01.11", result["deals"]["priorities"][0]["reason"])
+
+    def test_deferred_demand_uses_the_explicit_call_agreement_not_last_touch(self):
+        workday = {
+            "deals": {
+                "priorities": [],
+                "deferred_demand": [{
+                    "id": "10", "title": "Отложенный спрос", "comments": "Клиент просил перезвонить позже.",
+                    "last_touch_at": "2026-11-04T15:00:00+03:00", "url": "https://portal/crm/deal/details/10/",
+                }],
+            },
+            "availability": {},
+        }
+        main._hydrate_deferred_demand_agreements(workday, {
+            "10": {"status": "online", "agreement": {
+                "date": "2026-11-03", "source": "разбор Jarvis", "evidence": "Договорились перезвонить 03.11.2026.",
+            }},
+        }, date(2026, 11, 5))
+        row = workday["deals"]["deferred_demand"][0]
+        self.assertEqual(row["agreement"]["source"], "разбор Jarvis")
+        self.assertEqual(row["agreement_status"], "contact_due")
+        self.assertIn("10", {item["id"] for item in workday["deals"]["priorities"]})
+        self.assertIn("не заменяет", row["reason"])
+
+    def test_deferred_demand_without_explicit_agreement_requires_review(self):
+        workday = {
+            "deals": {"priorities": [], "deferred_demand": [{
+                "id": "10", "title": "Отложенный спрос", "comments": "Клиент подумает.",
+                "last_touch_at": "2026-11-04T15:00:00+03:00", "url": "https://portal/crm/deal/details/10/",
+            }]},
+            "availability": {},
+        }
+        main._hydrate_deferred_demand_agreements(workday, {"10": {"status": "online"}}, date(2026, 11, 5))
+        row = workday["deals"]["deferred_demand"][0]
+        self.assertEqual(row["agreement_status"], "requires_review")
+        self.assertIn("не подтверждена", row["reason"])
+        self.assertIn("10", {item["id"] for item in workday["deals"]["priorities"]})
+
+    def test_jarvis_deferred_agreement_requires_contact_and_an_explicit_date(self):
+        agreement = main._deferred_call_agreement({
+            "recommendation": "Договорились перезвонить клиенту 12.11.2026 и уточнить решение.",
+        }, date(2026, 11, 5))
+        self.assertEqual(agreement["date"], "2026-11-12")
+        self.assertEqual(agreement["source"], "разбор Jarvis")
+        self.assertIsNone(main._deferred_call_agreement({"recommendation": "Клиент обсуждал бюджет 12.11.2026."}, date(2026, 11, 5)))
 
     def test_week_period_returns_a_weekly_call_norm_and_bounds(self):
         with patch("app.personal_workspace.datetime") as mocked_datetime:
