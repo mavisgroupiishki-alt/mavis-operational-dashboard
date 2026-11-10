@@ -86,6 +86,32 @@ class FastStartupTests(unittest.TestCase):
         self.assertEqual(derived["kpi"]["active_stuck_with_reason_expected_month_count"], 1)
         self.assertEqual([row["id"] for row in derived_details["active_stuck_with_reason_expected_month"]], ["inside"])
 
+    def test_expert_active_company_count_deduplicates_open_deals(self):
+        production = {"production_at_month_start": {"count": 0}}
+        details = {
+            "new": [], "closed": [], "returns": [], "dormant": [], "returned": [],
+            "dormant_to_production": [], "dormant_to_return": [], "dormant_entered_since_month_start": [],
+            "overdue": [], "active_missing_expected": [], "active_missing_service": [],
+            "active_missing_expert": [], "closed_without_act": [],
+            "active": [
+                {"id": "1", "expert": "Екатерина", "company_id": "101", "amount": 100},
+                {"id": "2", "expert": "Екатерина", "company_id": "101", "amount": 200},
+                {"id": "3", "expert": "Екатерина", "company_id": "202", "amount": 300},
+                {"id": "4", "expert": "Екатерина", "company_id": "", "amount": 400},
+            ],
+        }
+
+        result = derive_production_period(
+            "2026-09", "custom", "Europe/Minsk", production, details,
+            "2026-09-02", "2026-09-03",
+        )
+
+        self.assertIsNotNone(result)
+        derived, _ = result
+        expert = next(row for row in derived["experts"] if row["name"] == "Екатерина")
+        self.assertEqual(expert["active_count"], 4)
+        self.assertEqual(expert["active_companies_count"], 2)
+
     def test_compact_snapshot_keeps_hub_metrics_and_removes_sales_trees(self):
         source = {
             "ok": True,

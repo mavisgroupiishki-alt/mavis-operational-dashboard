@@ -47,7 +47,7 @@ F_DEAL_CLIENT_TYPE = "UF_CRM_1756973967704"
 F_LEAD_CLIENT_TYPE = "UF_CRM_1756973545759"
 
 DEAL_SELECT = [
-    "ID", "TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
+    "ID", "TITLE", "COMPANY_ID", "COMPANY_TITLE", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "OPPORTUNITY", "CURRENCY_ID",
     "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "PREVIOUS_STAGE_ID", "ASSIGNED_BY_ID", "SOURCE_ID", "SOURCE_DESCRIPTION", "CLOSED",
     F_SERVICE, F_EXPECTED_CLOSE, F_PROD_START, F_RETURN_REASON, F_STUCK_REASON_OLD, F_STUCK_REASON_NEW,
     F_SALES_MANAGER, F_SALES_LINK, F_PAID_OLD, F_PAID, F_NET_REVENUE, F_OUR_AMOUNT,
@@ -1153,6 +1153,7 @@ def prod_item(client, meta, d, tz, month_start, next_start, role="production", c
     reasons = list(dict.fromkeys(reasons))
     return {
         "kind": role, "id": str(d.get("ID")), "title": d.get("TITLE") or f"Сделка {d.get('ID')}",
+        "company_id": str(d.get("COMPANY_ID") or ""), "company": str(d.get("COMPANY_TITLE") or ""),
         # Для переходов между воронками история хранит только исходную
         # воронку. Текущая нужна, чтобы подтвердить целевую воронку сделки.
         "funnel_id": str(d.get("CATEGORY_ID") or ""),
@@ -1187,6 +1188,11 @@ def aggregate_prod_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "nps_avg": 0,
         "act_share_pct": pct(len(acts), len(closed)),
     }
+
+
+def unique_active_company_count(rows: List[Dict[str, Any]]) -> int:
+    """Count linked CRM companies once, even when they have several open deals."""
+    return len({str(row.get("company_id") or "").strip() for row in rows if str(row.get("company_id") or "").strip()})
 
 
 def production_weekly_dynamics(closed: List[Dict[str, Any]], month_start: datetime) -> Dict[str, Dict[str, List[float]]]:
@@ -1537,7 +1543,8 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
                 "within_norm_pct":pct(x["in_norm"],x["normed"])})
         prod_breakdown.sort(key=lambda x:-x["closed_amount"])
         experts.append({
-            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
+            "name": name, "new_count": len(nr), "active_count": len(ar),
+            "active_companies_count": unique_active_company_count(ar), "returns_count": len(rr),
             **s, "products": prod_breakdown,
         })
     experts.sort(key=lambda x: (-x["closed_amount"], x["name"]))
@@ -1777,7 +1784,8 @@ def derive_production_period(
         ]
         expert_products.sort(key=lambda row: -row["closed_amount"])
         experts.append({
-            "name": name, "new_count": len(nr), "active_count": len(ar), "returns_count": len(rr),
+            "name": name, "new_count": len(nr), "active_count": len(ar),
+            "active_companies_count": unique_active_company_count(ar), "returns_count": len(rr),
             **aggregate_prod_rows(cr), "products": expert_products,
         })
     experts.sort(key=lambda row: (-row["closed_amount"], row["name"]))

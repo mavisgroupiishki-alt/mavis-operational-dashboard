@@ -186,7 +186,7 @@ tr:hover td{background:#f5f9fc}
 .expert-name{font-size:12px;font-weight:700;letter-spacing:.06em;color:#6b7d8d;text-transform:uppercase}
 .expert-result{font-size:31px;font-weight:650;letter-spacing:-.04em;margin-top:7px}
 .nps-button{background:#f1edff;border:1px solid #ddd4fb;color:#634fc2;font-size:11px;white-space:nowrap}.nps-details-trigger{display:inline-flex;align-items:center;gap:7px;text-align:left}.nps-details-trigger:not(:disabled):hover{border-color:#a798e9;background:#e9e3ff}.nps-details-trigger:disabled{cursor:default;opacity:.72}.nps-details-trigger span{font-size:17px;line-height:.7}
-.expert-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:16px 0}
+.expert-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin:16px 0}
 .expert-stats>div{padding:9px 8px;background:#f5f8fb;border:1px solid #e3eaf0;border-radius:10px;text-align:center}
 .expert-stats span{display:block;color:#7b8a98;font-size:9px;margin-bottom:3px}
 .expert-stats strong{font-size:13px}
