@@ -158,11 +158,62 @@ class BitrixClient:
         cache_now=time.monotonic()
         for block in results:
             out.update(block)
-            for did,rows in block.items():self._product_cache[did]=(cache_now,rows)
+        # In some Bitrix installations product rows contain only PRODUCT_ID.
+        # Resolve those IDs before the dashboard classifies sales: a numeric ID
+        # must never become an artificial «Не определено» product category.
+        await self._fill_missing_product_names(out)
+        for did, rows in out.items():
+            self._product_cache[did]=(cache_now,rows)
         if len(self._product_cache)>6000:
             cutoff=cache_now-self._product_cache_ttl
             self._product_cache={k:v for k,v in self._product_cache.items() if v[0]>=cutoff}
         return out
+
+    @staticmethod
+    def _product_name(row):
+        if not isinstance(row,dict): return ""
+        product=row.get("PRODUCT")
+        nested=product.get("NAME") if isinstance(product,dict) else ""
+        return str(row.get("productName") or row.get("PRODUCT_NAME") or row.get("NAME") or nested or "").strip()
+
+    async def _fill_missing_product_names(self, rows_by_deal):
+        """Hydrate catalogue titles when a product-row response has only an ID."""
+        missing_ids=[]
+        for rows in rows_by_deal.values():
+            for row in rows if isinstance(rows,list) else []:
+                if not isinstance(row,dict) or self._product_name(row): continue
+                product_id=str(row.get("PRODUCT_ID") or row.get("productId") or "").strip()
+                if product_id.isdigit() and product_id not in missing_ids: missing_ids.append(product_id)
+        if not missing_ids:return
+
+        names={}
+        for offset in range(0,len(missing_ids),50):
+            chunk=missing_ids[offset:offset+50]
+            commands={f"p{i}":f"crm.product.get?id={product_id}" for i,product_id in enumerate(chunk)}
+            try:
+                payload=await self.call("batch",{"halt":0,"cmd":commands})
+                result=(payload.get("result") or {}).get("result") or {}
+                for i,product_id in enumerate(chunk):
+                    product=result.get(f"p{i}")
+                    if isinstance(product,dict):
+                        name=str(product.get("NAME") or product.get("name") or "").strip()
+                        if name:names[product_id]=name
+            except Exception:
+                # Product rows are still useful without catalogue hydration;
+                # do not make the whole dashboard fail due to one lookup.
+                continue
+
+        if not names:return
+        for deal_id, rows in list(rows_by_deal.items()):
+            hydrated=[]
+            for row in rows if isinstance(rows,list) else []:
+                if not isinstance(row,dict):
+                    hydrated.append(row)
+                    continue
+                product_id=str(row.get("PRODUCT_ID") or row.get("productId") or "").strip()
+                name=names.get(product_id)
+                hydrated.append({**row,"PRODUCT_NAME":name} if name and not self._product_name(row) else row)
+            rows_by_deal[deal_id]=hydrated
     async def meta(self,force=False):
         if self._meta and not force and time.monotonic()-self._meta_at<600:return self._meta
         active_users,inactive_users,statuses,df,lf=await asyncio.gather(

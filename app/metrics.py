@@ -67,6 +67,14 @@ SALES_METRICS = [
     "product_sale_rate", "paid_amount", "net_revenue"
 ]
 
+SALES_PRODUCT_CATEGORY_ORDER = (
+    "Системы менеджмента",
+    "Специалисты",
+    "Строительство",
+    "Лицензирование",
+    "Продукция",
+)
+
 PROD_METRICS = [
     "closed_amount", "closed_count", "new_count", "new_amount", "period_closed_count", "period_closed_amount",
     "new_to_success_pct", "avg_check", "capacity_count", "capacity_amount", "returns_count", "returns_amount",
@@ -358,7 +366,8 @@ def source_group(name: str) -> str:
 
 
 def product_category(name: str) -> str:
-    n = norm_text(name)
+    label = str(name or "").strip()
+    n = norm_text(label)
     if re.search(r"iso|исо|суот|систем.*менедж|внутрен.*аудит", n):
         return "Системы менеджмента"
     if re.search(r"специалист|обучен|повышен.*квалиф|удостовер|аттестац.*специал|подбор", n):
@@ -369,7 +378,22 @@ def product_category(name: str) -> str:
         return "Лицензирование"
     if re.search(r"тр\s*тс|декларац|сертифик.*продук|сгр|техническ.*услов|\bту\b|белтпп|происхожд", n):
         return "Продукция"
-    return "Не определено"
+    # Keep every uncommon service visible by its actual product title.  This
+    # is more truthful and actionable than grouping a real Bitrix товар under
+    # a catch-all «Не определено» bucket.
+    return label or "Товар без названия"
+
+
+def sales_product_categories(deals: Iterable[Dict[str, Any]]) -> list[str]:
+    """Return stable main groups followed by exact uncommon Bitrix products."""
+    present = {
+        str(product.get("category") or "").strip()
+        for deal in deals
+        for product in deal.get("products") or []
+        if isinstance(product,dict) and str(product.get("category") or "").strip()
+    }
+    standard = [name for name in SALES_PRODUCT_CATEGORY_ORDER if name in present]
+    return [*standard, *sorted(present.difference(SALES_PRODUCT_CATEGORY_ORDER), key=norm_text)]
 
 
 def match_norm_name(service: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
@@ -1042,7 +1066,8 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
         managers.append(row)
 
     product_categories = []
-    for pc in ["Системы менеджмента", "Специалисты", "Строительство", "Лицензирование", "Продукция", "Не определено"]:
+    category_names = sales_product_categories(deals)
+    for pc in category_names:
         row = {"name": pc}
         for p in ["total", "current", "previous"]:
             row[p] = aggregate_sales(records, p, product_cat=pc, month_start=month_start)
@@ -1052,7 +1077,7 @@ async def load_sales(client, month_key: str, meta: Dict[str, Any], tz_name: str,
     product_managers = []
     for m in managers:
         cats = []
-        for pc in ["Системы менеджмента", "Специалисты", "Строительство", "Лицензирование", "Продукция", "Не определено"]:
+        for pc in category_names:
             row = {"name": pc}
             for p in ["total", "current", "previous"]:
                 row[p] = aggregate_sales(records, p, manager=m["name"], product_cat=pc, month_start=month_start)
