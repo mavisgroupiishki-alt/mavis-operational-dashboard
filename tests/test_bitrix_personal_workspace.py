@@ -179,6 +179,29 @@ class BitrixIdentityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             calls.assert_awaited_once_with("personal-calls", {"manager_id": "2272"})
 
+    def test_iso_suot_gap_report_is_director_only_and_uses_verified_bitrix_session(self):
+        configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
+        director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        manager = issue_session(portal="mavisgroup.bitrix24.by", user_id="9", role="manager", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
+        report = AsyncMock(return_value={"ok": True, "summary": {"companies_without_registry": 1}, "companies": [{"company_id": "55"}]})
+        previous = main.cabinet_iso_global_gap_cache
+        try:
+            main.cabinet_iso_global_gap_cache = None
+            with (
+                patch.object(main, "settings", configured),
+                patch.object(main, "_cached_active_iso_suot_gap_report", new=report),
+                TestClient(fixed_main.app, base_url="https://testserver") as client,
+            ):
+                client.cookies.set("mavis_bitrix_session", manager)
+                self.assertEqual(client.get("/api/cabinet/iso-suot/gaps").status_code, 403)
+                client.cookies.set("mavis_bitrix_session", director)
+                response = client.get("/api/cabinet/iso-suot/gaps")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["summary"]["companies_without_registry"], 1)
+                report.assert_awaited_once_with("https://mavisgroup.bitrix24.by")
+        finally:
+            main.cabinet_iso_global_gap_cache = previous
+
     def test_call_context_returns_deal_amount_without_a_server_error(self):
         """The call detail card must remain usable when a linked deal is present."""
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
@@ -208,69 +231,68 @@ class BitrixIdentityTests(unittest.TestCase):
 
     def test_registry_hydration_never_uses_company_name_without_an_unp(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Похожее название", "company": "Похожее название", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
-        lookup = AsyncMock(return_value={"status": "not_provided"})
-        with (
-            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
-            patch.object(main, "_company_unps", new=AsyncMock(return_value={})),
-            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={})),
-            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={})),
-            patch.object(main, "_registry_context", new=lookup),
-        ):
+        report = AsyncMock(return_value={"ok": True, "summary": {"companies_with_exact_unp": 0}, "companies": []})
+        with patch.object(main, "_cached_active_iso_suot_gap_report", new=report):
             asyncio.run(main._hydrate_cabinet_registry(workday))
-        lookup.assert_awaited_once_with("")
+        report.assert_awaited_once_with(main.client.portal)
         self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
-        self.assertEqual(workday["iso_suot"]["candidates"][0]["registry"]["status"], "not_provided")
+        self.assertNotIn("registry", workday["iso_suot"]["candidates"][0])
 
-    def test_registry_hydration_requires_history_and_explicit_unoffered_call(self):
+    def test_registry_hydration_uses_cross_funnel_gap_without_jarvis_gate(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
-        registry = AsyncMock(return_value={"status": "not_found"})
-        with (
-            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
-            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
-            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": False})),
-            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False, "activity_id": "call-1"}})),
-            patch.object(main, "_registry_context", new=registry),
-        ):
+        report = AsyncMock(return_value={"ok": True, "summary": {"companies_without_registry": 1}, "companies": [{
+            "company_id": "55", "unp": "123456789", "registry": {"status": "not_found"}, "reason": "Нет записи и активной услуги.",
+        }]})
+        with patch.object(main, "_cached_active_iso_suot_gap_report", new=report):
             asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
-        registry.assert_awaited_once_with("123456789")
         self.assertEqual(len(workday["iso_suot"]["confirmed_gaps"]), 1)
+        self.assertEqual(workday["iso_suot"]["confirmed_gaps"][0]["unp"], "123456789")
+        self.assertEqual(workday["iso_suot"]["status"], "online")
 
-    def test_registry_hydration_does_not_signal_when_previous_sale_already_has_iso(self):
+    def test_registry_hydration_does_not_signal_when_cross_funnel_scan_has_active_iso(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
-        with (
-            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
-            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
-            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": True})),
-            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
-            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
-        ):
+        report = AsyncMock(return_value={"ok": True, "summary": {"excluded_with_active_iso_suot": 1}, "companies": []})
+        with patch.object(main, "_cached_active_iso_suot_gap_report", new=report):
             asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
         self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
 
-    def test_registry_hydration_does_not_signal_when_sales_history_is_unavailable(self):
+    def test_registry_hydration_marks_unavailable_when_cross_funnel_scan_fails(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
-        with (
-            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={})),
-            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
-            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": None})),
-            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
-            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
-        ):
+        with patch.object(main, "_cached_active_iso_suot_gap_report", new=AsyncMock(side_effect=RuntimeError("Bitrix unavailable"))):
             asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
-        self.assertFalse(workday["iso_suot"]["candidates"][0]["sales_history_checked"])
         self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
+        self.assertEqual(workday["iso_suot"]["status"], "unavailable")
 
     def test_registry_hydration_does_not_signal_when_current_product_is_iso(self):
         workday = {"iso_suot": {"candidates": [{"id": "10", "title": "Компания", "company_id": "55"}]}, "deals": {"priorities": []}, "availability": {}}
-        with (
-            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={"10": [{"PRODUCT_NAME": "ИСО 9001"}]})),
-            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789"})),
-            patch.object(main, "_company_prior_iso_sales", new=AsyncMock(return_value={"55": False})),
-            patch.object(main, "_manager_iso_suot_offers", new=AsyncMock(return_value={"10": {"offered": False}})),
-            patch.object(main, "_registry_context", new=AsyncMock(return_value={"status": "not_found"})),
-        ):
+        report = AsyncMock(return_value={"ok": True, "summary": {"excluded_with_active_iso_suot": 1}, "companies": []})
+        with patch.object(main, "_cached_active_iso_suot_gap_report", new=report):
             asyncio.run(main._hydrate_cabinet_registry(workday, "12"))
         self.assertEqual(workday["iso_suot"]["confirmed_gaps"], [])
+
+    def test_active_iso_suot_gap_report_checks_sales_and_production_before_listing_company(self):
+        """A registry gap remains actionable only when no active ISO/SUOT deal exists in either funnel."""
+        sales = [
+            {"ID": "10", "TITLE": "ООО Стройпроект", "COMPANY_ID": "55", "COMPANY_TITLE": "ООО Стройпроект", "CATEGORY_ID": "0", main.F_SERVICE: "СПК"},
+            {"ID": "11", "TITLE": "ООО ИСО уже продаётся", "COMPANY_ID": "56", "COMPANY_TITLE": "ООО ИСО уже продаётся", "CATEGORY_ID": "0", main.F_SERVICE: ""},
+        ]
+        experts = [
+            {"ID": "20", "TITLE": "Экспертная работа", "COMPANY_ID": "55", "COMPANY_TITLE": "ООО Стройпроект", "CATEGORY_ID": "28", main.F_SERVICE: ""},
+            {"ID": "21", "TITLE": "Внедрение ISO 9001", "COMPANY_ID": "56", "COMPANY_TITLE": "ООО ИСО уже продаётся", "CATEGORY_ID": "28", main.F_SERVICE: ""},
+        ]
+        registry = AsyncMock(side_effect=lambda unp: {"status": "not_found", "unp": unp})
+        with (
+            patch.object(main.client, "deal_list", new=AsyncMock(side_effect=[sales, experts])),
+            patch.object(main.client, "product_rows_many", new=AsyncMock(return_value={"10": [], "11": [], "20": [], "21": []})),
+            patch.object(main, "_company_unps", new=AsyncMock(return_value={"55": "123456789", "56": "987654321"})),
+            patch.object(main, "_registry_context", new=registry),
+        ):
+            report = asyncio.run(main._active_iso_suot_gap_report("https://mavisgroup.bitrix24.by"))
+
+        self.assertEqual(report["summary"]["companies_without_registry"], 1)
+        self.assertEqual([row["company_id"] for row in report["companies"]], ["55"])
+        self.assertEqual(report["companies"][0]["sales_deals"][0]["id"], "10")
+        self.assertEqual(report["companies"][0]["expert_deals"][0]["id"], "20")
 
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)

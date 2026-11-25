@@ -115,6 +115,7 @@ cabinet_workday_cache = {}
 cabinet_workday_refresh_tasks = {}
 cabinet_registry_cache = {}
 cabinet_iso_call_alert_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+cabinet_iso_global_gap_cache: tuple[float, dict[str, Any]] | None = None
 cabinet_deal_analysis_tasks: dict[str, asyncio.Task] = {}
 cabinet_deal_analysis_semaphore = asyncio.Semaphore(3)
 cabinet_evening_report_task = None
@@ -1555,7 +1556,7 @@ def marketer_snapshot(snapshot):
 
 
 def is_public_path(path: str):
-    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/activity-action", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/cabinet/calls/") or path.startswith("/api/reports/capture-preview/") or path.startswith("/api/cabinet/payroll") or path.startswith("/static/")
+    return path in {"/login", "/logout", "/health", "/manifest.webmanifest", "/service-worker.js", "/bitrix/install", "/bitrix/launch", "/cabinet", "/cabinet-legacy", "/cabinet/production-date", "/api/cabinet/me", "/api/cabinet/managers", "/api/cabinet/workday", "/api/cabinet/calls", "/api/cabinet/listening", "/api/cabinet/salary", "/api/cabinet/activity-action", "/api/cabinet/iso-suot/gaps", "/api/cabinet/production-date/deal", "/api/cabinet/production-date/confirm", "/api/bitrix/event", "/api/reports/test-send", "/api/reports/capture-preview", "/api/reports/schedule"} or path.startswith("/api/cabinet/calls/") or path.startswith("/api/reports/capture-preview/") or path.startswith("/api/cabinet/payroll") or path.startswith("/static/")
 
 
 def marketer_allowed_path(path: str):
@@ -2304,6 +2305,17 @@ async def _cabinet_managers() -> list[dict[str, str]]:
     return sorted({row["id"]: row for row in managers}.values(), key=lambda row: row["name"].casefold())
 
 
+@app.get("/api/cabinet/iso-suot/gaps")
+async def api_cabinet_iso_suot_gaps(request: Request):
+    """Director-only, current registry opportunity list across Sales and Experts."""
+    identity = require_bitrix_identity(request)
+    if identity.role != "director":
+        raise HTTPException(403, "Сводка ИСО/СУОТ доступна только руководителю")
+    cached = bool(cabinet_iso_global_gap_cache and time.monotonic() - cabinet_iso_global_gap_cache[0] < 5 * 60)
+    report = await _cached_active_iso_suot_gap_report(f"https://{identity.portal}")
+    return {**report, "cached": cached}
+
+
 async def _cabinet_subject(request: Request) -> tuple[BitrixIdentity, str]:
     """Select a manager only for a verified director; managers always remain self-scoped."""
     identity = require_bitrix_identity(request)
@@ -2844,6 +2856,111 @@ def _is_iso_suot_service(value: Any) -> bool:
     return bool(re.search(r"(?:\biso\b|исо|суот)", text))
 
 
+def _active_iso_suot_deal(row: dict[str, Any], products: dict[str, list[Any]], portal: str) -> dict[str, Any]:
+    """Normalise one active deal and determine ISO/SUOT from CRM service or products."""
+    deal_id = str(row.get("ID") or "")
+    product_names = [
+        item.get("PRODUCT_NAME") or item.get("NAME") or item.get("productName") or ""
+        for item in products.get(deal_id, [])
+        if isinstance(item, dict)
+    ]
+    values = [row.get(F_SERVICE), row.get("TITLE"), *product_names]
+    return {
+        "id": deal_id,
+        "title": _call_text(row.get("TITLE"), 240) or "Без названия",
+        "service": _call_text(row.get(F_SERVICE), 240),
+        "has_iso_suot": any(_is_iso_suot_service(value) for value in values),
+        "url": f"{portal.rstrip('/')}/crm/deal/details/{deal_id}/" if deal_id.isdigit() and portal else "",
+    }
+
+
+async def _active_iso_suot_gap_report(portal: str = "") -> dict[str, Any]:
+    """Find registry gaps only after checking active Sales and Expert deals.
+
+    This report is intentionally independent of Jarvis.  A missed call analysis
+    must never hide a company with no published ISO/SUOT registry record.
+    """
+    fields = ["ID", "TITLE", "COMPANY_ID", "COMPANY_TITLE", "CATEGORY_ID", F_SERVICE]
+    sales, experts = await asyncio.gather(
+        client.deal_list({"CATEGORY_ID": 0, "CLOSED": "N"}, fields),
+        client.deal_list({"CATEGORY_ID": 28, "CLOSED": "N"}, fields),
+    )
+    sales = [row for row in sales if isinstance(row, dict)] if isinstance(sales, list) else []
+    experts = [row for row in experts if isinstance(row, dict)] if isinstance(experts, list) else []
+    all_deals = list({str(row.get("ID") or ""): row for row in [*sales, *experts] if str(row.get("ID") or "").isdigit()}.values())
+    products = await client.product_rows_many(all_deals) if all_deals else {}
+
+    companies: dict[str, dict[str, Any]] = {}
+    for funnel, rows in (("sales", sales), ("expert", experts)):
+        for raw in rows:
+            company_id = str(raw.get("COMPANY_ID") or "")
+            if not company_id.isdigit():
+                continue
+            company = companies.setdefault(company_id, {
+                "company_id": company_id,
+                "company": _call_text(raw.get("COMPANY_TITLE"), 240) or "Компания без названия",
+                "sales_deals": [], "expert_deals": [], "has_active_iso_suot": False,
+            })
+            deal = _active_iso_suot_deal(raw, products, portal)
+            company[f"{funnel}_deals"].append(deal)
+            company["has_active_iso_suot"] = bool(company["has_active_iso_suot"] or deal["has_iso_suot"])
+
+    unps = await _company_unps(list(companies))
+    registry_candidates = [company for company in companies.values() if not company["has_active_iso_suot"] and unps.get(company["company_id"])]
+    semaphore = asyncio.Semaphore(8)
+
+    async def lookup(company: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        async with semaphore:
+            return company["company_id"], await _registry_context(unps[company["company_id"]])
+
+    registry_pairs = await asyncio.gather(*(lookup(company) for company in registry_candidates), return_exceptions=True)
+    registry = {
+        company_id: result
+        for pair in registry_pairs
+        if isinstance(pair, tuple)
+        for company_id, result in [pair]
+        if isinstance(result, dict)
+    }
+    gaps = []
+    unavailable = 0
+    for company in registry_candidates:
+        status = registry.get(company["company_id"], {"status": "unavailable", "message": "Реестр временно недоступен."})
+        if status.get("status") == "unavailable":
+            unavailable += 1
+        if status.get("status") != "not_found":
+            continue
+        gaps.append({
+            **company,
+            "unp": unps[company["company_id"]],
+            "registry": status,
+            "reason": "По точному УНП компания не найдена в опубликованном реестре, а в открытых сделках продаж и экспертов нет ИСО/СУОТ.",
+        })
+    gaps.sort(key=lambda row: (row["company"].casefold(), row["company_id"]))
+    return {
+        "ok": True,
+        "summary": {
+            "active_deals_scanned": len(all_deals),
+            "companies_scanned": len(companies),
+            "companies_with_exact_unp": sum(1 for company_id in companies if unps.get(company_id)),
+            "excluded_with_active_iso_suot": sum(1 for company in companies.values() if company["has_active_iso_suot"]),
+            "companies_without_registry": len(gaps),
+            "registry_unavailable": unavailable,
+        },
+        "companies": gaps,
+    }
+
+
+async def _cached_active_iso_suot_gap_report(portal: str = "") -> dict[str, Any]:
+    """Keep the full cross-funnel registry scan bounded for cabinet refreshes."""
+    global cabinet_iso_global_gap_cache
+    cached = cabinet_iso_global_gap_cache
+    if cached and time.monotonic() - cached[0] < 5 * 60:
+        return cached[1]
+    report = await _active_iso_suot_gap_report(portal)
+    cabinet_iso_global_gap_cache = (time.monotonic(), report)
+    return report
+
+
 async def _company_prior_iso_sales(company_ids: list[Any]) -> dict[str, bool | None]:
     """Use company IDs, never names, to find an existing ISO/SUOT sale."""
     ids = list(dict.fromkeys(str(value) for value in company_ids if str(value).isdigit()))
@@ -2998,63 +3115,46 @@ def _hydrate_deferred_demand_agreements(workday: dict[str, Any], call_agreements
 
 
 async def _hydrate_cabinet_registry(workday: dict[str, Any], user_id: str = "") -> None:
-    """Attach red ISO/SUOT signals only when the full client-and-call evidence agrees."""
+    """Attach manager-relevant ISO/SUOT gaps from the cross-funnel registry scan."""
     iso = workday.get("iso_suot") or {}
     candidates = list(iso.get("candidates") or [])[:20]
     try:
-        current_products = await client.product_rows_many([{"ID": row.get("id")} for row in candidates])
+        report = await _cached_active_iso_suot_gap_report(client.portal)
     except Exception:
-        current_products = {}
-    for row in candidates:
-        product_names = [
-            item.get("PRODUCT_NAME") or item.get("NAME") or ""
-            for item in current_products.get(str(row.get("id") or ""), [])
-            if isinstance(item, dict)
-        ]
-        row["current_iso_suot"] = any(_is_iso_suot_service(value) for value in [row.get("service"), *product_names])
-    unps_task = _company_unps([row.get("company_id") for row in candidates])
-    history_task = _company_prior_iso_sales([row.get("company_id") for row in candidates])
-    offers_task = _manager_iso_suot_offers(user_id, [row.get("id") for row in candidates])
-    unps, prior_iso_sales, offers = await asyncio.gather(unps_task, history_task, offers_task)
-    for row in candidates:
-        row["unp"] = unps.get(str(row.get("company_id") or ""), "")
-    checked = await asyncio.gather(*(_registry_context(row.get("unp")) for row in candidates), return_exceptions=True)
+        logger.warning("Cross-funnel ISO/SUOT registry scan failed", exc_info=True)
+        report = {"ok": False, "summary": {}, "companies": []}
+    gaps_by_company = {
+        str(row.get("company_id") or ""): row
+        for row in report.get("companies", [])
+        if isinstance(row, dict)
+    }
     gaps = []
-    available = 0
-    for row, status in zip(candidates, checked):
-        status = status if isinstance(status, dict) else {"status": "unavailable", "message": "Реестр временно недоступен."}
-        row["registry"] = status
-        history_value = prior_iso_sales.get(str(row.get("company_id") or ""))
-        row["prior_iso_suot_sale"] = history_value is True
-        row["sales_history_checked"] = history_value is not None
-        row["call_offer"] = offers.get(str(row.get("id") or ""), {})
-        if status.get("status") != "unavailable":
-            available += 1
-        if (
-            status.get("status") == "not_found"
-            and row["sales_history_checked"]
-            and not row["current_iso_suot"]
-            and not row["prior_iso_suot_sale"]
-            and row["call_offer"].get("offered") is False
-        ):
-            row["priority"] = "Проверить ИСО/СУОТ"
-            row["reason"] = "По точному УНП компания не найдена в ежедневном реестре, в текущей и предыдущих успешных продажах нет ИСО/СУОТ, а в связанном разобранном звонке предложение услуги не зафиксировано. Перед следующим контактом предложите ИСО/СУОТ."
-            gaps.append(row)
+    for row in candidates:
+        gap = gaps_by_company.get(str(row.get("company_id") or ""))
+        if not gap:
+            continue
+        row.update({
+            "unp": gap.get("unp", ""),
+            "registry": gap.get("registry", {}),
+            "priority": "Проверить ИСО/СУОТ",
+            "reason": gap.get("reason") or "В открытых сделках продаж и экспертов нет ИСО/СУОТ, а по точному УНП компания не найдена в опубликованном реестре.",
+        })
+        gaps.append(row)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    registry_unavailable = int(summary.get("registry_unavailable") or 0)
     iso.update({
-        "status": "online" if candidates and available == len(candidates) else "partial" if available else "unavailable",
-        "message": "Проверка идёт только по точному УНП. Красный сигнал появляется только если в реестре и истории продаж нет ИСО/СУОТ, а Jarvis явно зафиксировал, что менеджер не предложил услугу.",
+        "status": "unavailable" if not report.get("ok") else ("partial" if registry_unavailable else "online"),
+        "message": "Проверка идёт по точному УНП и всем открытым сделкам продаж и экспертов. Анализ звонков Jarvis на этот список не влияет.",
         "candidates": candidates,
         "confirmed_gaps": gaps,
+        "global_summary": summary,
     })
     workday["iso_suot"] = iso
     workday.setdefault("availability", {})["iso_suot_registry"] = iso["status"]
     if gaps:
         priorities = list((workday.get("deals") or {}).get("priorities") or [])
         workday["deals"]["priorities"] = [*gaps, *priorities][:50]
-    cabinet_iso_call_alert_cache[str(user_id)] = (
-        time.monotonic(),
-        {str(row.get("call_offer", {}).get("activity_id") or ""): row for row in gaps if str(row.get("call_offer", {}).get("activity_id") or "")},
-    )
+    cabinet_iso_call_alert_cache[str(user_id)] = (time.monotonic(), {})
 
 
 async def _build_cabinet_workday(user_id: str, selected_date: str, period: str) -> dict[str, Any]:
