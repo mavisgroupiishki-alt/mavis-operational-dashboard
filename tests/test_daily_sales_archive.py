@@ -1,5 +1,6 @@
 import tempfile
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14,6 +15,41 @@ def test_telegram_schedule_uses_the_enabled_channel_on_weekdays_at_18():
     assert main._scheduled_report_due(datetime(2026, 10, 8, 18, 0, tzinfo=timezone))
     assert not main._scheduled_report_due(datetime(2026, 10, 8, 18, 15, tzinfo=timezone))
     assert not main._scheduled_report_due(datetime(2026, 10, 10, 18, 0, tzinfo=timezone))
+
+
+def test_weekly_telegram_schedule_uses_friday_at_17():
+    timezone = ZoneInfo("Europe/Minsk")
+    assert main._scheduled_weekly_report_due(datetime(2026, 10, 9, 17, 0, tzinfo=timezone))
+    assert not main._scheduled_weekly_report_due(datetime(2026, 10, 9, 17, 15, tzinfo=timezone))
+    assert not main._scheduled_weekly_report_due(datetime(2026, 10, 8, 17, 0, tzinfo=timezone))
+
+
+def test_ekaterina_is_added_to_bitrix_sales_department_without_removing_existing_departments(monkeypatch):
+    class BitrixStub:
+        def __init__(self):
+            self.updated = []
+
+        async def list_all(self, method, _params):
+            if method == "user.get":
+                return [{"ID": "41", "NAME": "Екатерина", "UF_DEPARTMENT": ["8"]}]
+            if method == "department.get":
+                return [{"ID": "12", "NAME": "Продажи"}]
+            raise AssertionError(method)
+
+        async def call(self, method, params):
+            self.updated.append((method, params))
+            return {"result": True}
+
+    with tempfile.TemporaryDirectory() as directory:
+        storage = Storage(Path(directory) / "dashboard.sqlite3")
+        bitrix = BitrixStub()
+        monkeypatch.setattr(main, "storage", storage)
+        monkeypatch.setattr(main, "client", bitrix)
+        monkeypatch.setattr(main, "settings", replace(main.settings, bitrix_webhook="https://example.bitrix24.ru/rest/"))
+
+        asyncio.run(main.ensure_ekaterina_in_sales_department())
+
+    assert bitrix.updated == [("user.update", {"ID": "41", "UF_DEPARTMENT": ["8", "12"]})]
 
 
 def test_weekly_dashboard_metrics_use_only_monday_to_friday_and_prorate_plan(monkeypatch):
