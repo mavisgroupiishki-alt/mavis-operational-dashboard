@@ -1951,6 +1951,63 @@ def _scheduled_report_due(now: datetime) -> bool:
     return now.hour == 18 and now.minute < 15
 
 
+def _scheduled_weekly_report_due(now: datetime) -> bool:
+    """Return whether the Friday weekly-report delivery window is open."""
+    return now.weekday() == 4 and now.hour == 17 and now.minute < 15
+
+
+def _single_named_record(records: list[dict[str, Any]], field: str, value: str, label: str) -> dict[str, Any]:
+    matches = [record for record in records if str(record.get(field) or "").strip() == value]
+    if len(matches) != 1:
+        raise ValueError(f"{label}: найдено {len(matches)} совпадений вместо одного")
+    return matches[0]
+
+
+async def ensure_ekaterina_in_sales_department() -> None:
+    """Add the exact Bitrix employee Екатерина to Продажи once, preserving departments."""
+    migration_key = "2026-11-add-ekaterina-to-bitrix-sales-department"
+    applied = storage.get_setting("bitrix_department_migrations", [])
+    if not isinstance(applied, list):
+        applied = []
+    if migration_key in applied:
+        return
+    if not settings.bitrix_webhook.startswith("http"):
+        logger.warning("Bitrix department migration skipped: BITRIX_WEBHOOK is not configured")
+        return
+
+    try:
+        users, departments = await asyncio.gather(
+            client.list_all("user.get", {
+                "FILTER": {"ACTIVE": True, "NAME": "Екатерина"},
+                "SELECT": ["ID", "NAME", "LAST_NAME", "UF_DEPARTMENT"],
+            }),
+            client.list_all("department.get", {"NAME": "Продажи"}),
+        )
+        employee = _single_named_record(users or [], "NAME", "Екатерина", "Сотрудник Екатерина")
+        sales_department = _single_named_record(departments or [], "NAME", "Продажи", "Отдел Продажи")
+        department_id = str(sales_department.get("ID") or "").strip()
+        employee_id = str(employee.get("ID") or "").strip()
+        if not department_id or not employee_id:
+            raise ValueError("В Bitrix не получен ID сотрудника или отдела")
+
+        department_ids = [str(item) for item in employee.get("UF_DEPARTMENT") or [] if str(item).strip()]
+        if department_id not in department_ids:
+            await client.call("user.update", {
+                "ID": employee_id,
+                "UF_DEPARTMENT": [*department_ids, department_id],
+            })
+            logger.info("Added Bitrix employee %s to Sales department %s", employee_id, department_id)
+        else:
+            logger.info("Bitrix employee %s is already in Sales department %s", employee_id, department_id)
+
+        storage.set_setting("bitrix_department_migrations", [*applied, migration_key])
+    except Exception as exc:
+        # Keep the migration pending so a later service restart can retry after
+        # a temporary Bitrix failure. No employee profile is changed on an
+        # ambiguous employee or department match.
+        logger.error("Could not add Екатерина to Bitrix Sales department: %s", exc)
+
+
 async def scheduled_telegram_reports_loop():
     """Deliver the configured daily and, when enabled, weekly reports."""
     while True:
@@ -1978,8 +2035,7 @@ async def scheduled_telegram_reports_loop():
                 isinstance(config, dict)
                 and config.get("weekly_enabled")
                 and config.get("chat_id")
-                and now.weekday() == 4
-                and _scheduled_report_due(now)
+                and _scheduled_weekly_report_due(now)
             ):
                 week_start = (now.date() - timedelta(days=4)).isoformat()
                 if config.get("last_weekly_sent_week") != week_start:
@@ -2093,6 +2149,7 @@ async def lifespan(app: FastAPI):
     # replacing a plan subsequently entered through the dashboard.
     restore_missing_production_plan(storage)
     restore_confirmed_september_dormant_baseline(storage)
+    await ensure_ekaterina_in_sales_department()
     # Не блокируем запуск сервера тяжелой первой синхронизацией.
     task = asyncio.create_task(refresh_loop())
     global telegram_report_scheduler_task
@@ -2316,9 +2373,16 @@ async def api_cabinet_iso_suot_gaps(request: Request):
     cached = bool(cabinet_iso_global_gap_cache and time.monotonic() - cabinet_iso_global_gap_cache[0] < 5 * 60)
     report = await _cached_active_iso_suot_gap_report(f"https://{identity.portal}")
     if request.query_params.get("compact") == "1" and report.get("ok"):
+        try:
+            offset = max(0, int(request.query_params.get("offset") or 0))
+            limit = min(50, max(1, int(request.query_params.get("limit") or 50)))
+        except ValueError:
+            raise HTTPException(400, "Параметры offset и limit должны быть числами")
+        companies = report.get("companies") or []
         report = {
             "ok": True,
             "summary": report.get("summary") or {},
+            "total": len(companies),
             "companies": [
                 {
                     "company": row.get("company"),
@@ -2326,7 +2390,7 @@ async def api_cabinet_iso_suot_gaps(request: Request):
                     "sales_deals": [{"title": deal.get("title"), "url": deal.get("url")} for deal in row.get("sales_deals") or []],
                     "expert_deals": [{"title": deal.get("title"), "url": deal.get("url")} for deal in row.get("expert_deals") or []],
                 }
-                for row in report.get("companies") or []
+                for row in companies[offset:offset + limit]
             ],
         }
     return {**report, "cached": cached}
@@ -4550,7 +4614,7 @@ async def telegram_report_schedule():
         # an enabled channel report.
         "paused": False,
         "timezone": settings.timezone,
-        "schedule": "Пн–Пт 18:00; еженедельный отчёт в пятницу в 18:00 при включённой настройке",
+        "schedule": "Пн–Пт 18:00; еженедельный отчёт в пятницу в 17:00 при включённой настройке",
     }
 
 

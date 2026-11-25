@@ -198,6 +198,7 @@ class BitrixIdentityTests(unittest.TestCase):
                 response = client.get("/api/cabinet/iso-suot/gaps?compact=1")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["summary"]["companies_without_registry"], 1)
+                self.assertEqual(response.json()["total"], 1)
                 self.assertEqual(response.json()["companies"], [{"company": "ООО Тест", "unp": "123456789", "sales_deals": [{"title": "СПК", "url": "https://example.test/deal/1"}], "expert_deals": []}])
                 report.assert_awaited_once_with("https://mavisgroup.bitrix24.by")
         finally:
