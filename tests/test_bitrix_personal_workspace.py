@@ -202,6 +202,32 @@ class BitrixIdentityTests(unittest.TestCase):
         finally:
             main.cabinet_iso_global_gap_cache = previous
 
+    def test_iso_suot_gap_report_refreshes_in_background_without_blocking_the_request(self):
+        previous_cache = main.cabinet_iso_global_gap_cache
+        previous_task = main.cabinet_iso_global_gap_task
+        previous_error = main.cabinet_iso_global_gap_error
+
+        async def exercise():
+            main.cabinet_iso_global_gap_cache = None
+            main.cabinet_iso_global_gap_task = None
+            main.cabinet_iso_global_gap_error = None
+            source = AsyncMock(return_value={"ok": True, "summary": {"companies_without_registry": 1}, "companies": [{"company_id": "55"}]})
+            with patch.object(main, "_active_iso_suot_gap_report", new=source):
+                pending = await main._cached_active_iso_suot_gap_report("https://mavisgroup.bitrix24.by")
+                self.assertEqual(pending["status"], "building")
+                await main.cabinet_iso_global_gap_task
+                ready = await main._cached_active_iso_suot_gap_report("https://mavisgroup.bitrix24.by")
+            self.assertTrue(ready["ok"])
+            self.assertEqual(ready["companies"][0]["company_id"], "55")
+            source.assert_awaited_once_with("https://mavisgroup.bitrix24.by")
+
+        try:
+            asyncio.run(exercise())
+        finally:
+            main.cabinet_iso_global_gap_cache = previous_cache
+            main.cabinet_iso_global_gap_task = previous_task
+            main.cabinet_iso_global_gap_error = previous_error
+
     def test_call_context_returns_deal_amount_without_a_server_error(self):
         """The call detail card must remain usable when a linked deal is present."""
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)

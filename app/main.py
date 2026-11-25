@@ -116,6 +116,8 @@ cabinet_workday_refresh_tasks = {}
 cabinet_registry_cache = {}
 cabinet_iso_call_alert_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 cabinet_iso_global_gap_cache: tuple[float, dict[str, Any]] | None = None
+cabinet_iso_global_gap_task: asyncio.Task | None = None
+cabinet_iso_global_gap_error: tuple[float, str] | None = None
 cabinet_deal_analysis_tasks: dict[str, asyncio.Task] = {}
 cabinet_deal_analysis_semaphore = asyncio.Semaphore(3)
 cabinet_evening_report_task = None
@@ -2747,7 +2749,6 @@ async def _company_unps(company_ids: list[Any]) -> dict[str, str]:
         rows = await client.list_all(
             "crm.company.list",
             {"filter": {"@ID": ids}, "select": ["ID", *unp_fields]},
-            limit=100,
         )
     except Exception:
         logger.warning("Company UNP lookup failed", exc_info=True)
@@ -2950,15 +2951,31 @@ async def _active_iso_suot_gap_report(portal: str = "") -> dict[str, Any]:
     }
 
 
+async def _refresh_active_iso_suot_gap_report(portal: str = "") -> None:
+    """Refresh the expensive cross-funnel scan without holding a browser request open."""
+    global cabinet_iso_global_gap_cache, cabinet_iso_global_gap_error
+    try:
+        report = await _active_iso_suot_gap_report(portal)
+    except Exception as exc:
+        cabinet_iso_global_gap_error = (time.monotonic(), str(exc) or "Не удалось обновить список.")
+        logger.warning("Cross-funnel ISO/SUOT registry refresh failed", exc_info=True)
+        return
+    cabinet_iso_global_gap_cache = (time.monotonic(), report)
+    cabinet_iso_global_gap_error = None
+
+
 async def _cached_active_iso_suot_gap_report(portal: str = "") -> dict[str, Any]:
-    """Keep the full cross-funnel registry scan bounded for cabinet refreshes."""
-    global cabinet_iso_global_gap_cache
+    """Return a bounded cached report and refresh it in the background when stale."""
+    global cabinet_iso_global_gap_cache, cabinet_iso_global_gap_task, cabinet_iso_global_gap_error
     cached = cabinet_iso_global_gap_cache
     if cached and time.monotonic() - cached[0] < 5 * 60:
         return cached[1]
-    report = await _active_iso_suot_gap_report(portal)
-    cabinet_iso_global_gap_cache = (time.monotonic(), report)
-    return report
+    if not cabinet_iso_global_gap_task or cabinet_iso_global_gap_task.done():
+        cabinet_iso_global_gap_task = asyncio.create_task(_refresh_active_iso_suot_gap_report(portal))
+    error = cabinet_iso_global_gap_error
+    if error and time.monotonic() - error[0] < 5 * 60:
+        return {"ok": False, "status": "unavailable", "summary": {}, "companies": [], "message": f"Сверка ИСО/СУОТ временно недоступна: {error[1]}"}
+    return {"ok": False, "status": "building", "summary": {}, "companies": [], "message": "Собираю список по открытым сделкам продаж, экспертов и реестрам. Обновите страницу через минуту."}
 
 
 async def _company_prior_iso_sales(company_ids: list[Any]) -> dict[str, bool | None]:
