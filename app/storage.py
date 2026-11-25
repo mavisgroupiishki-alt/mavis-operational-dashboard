@@ -1283,3 +1283,18 @@ class Storage:
         data = self._settings()
         data[key] = value
         self._set("settings", data)
+
+    def enable_weekly_reports_once(self, migration_key: str) -> bool:
+        """Enable the approved Friday report once without overriding future choices."""
+        applied = self._get("telegram_report_schedule_migrations", [])
+        if not isinstance(applied, list):
+            applied = []
+        if migration_key in applied:
+            return False
+        schedule = self.get_setting("telegram_report_schedule", {})
+        if isinstance(schedule, dict) and schedule.get("chat_id"):
+            schedule = dict(schedule)
+            schedule["weekly_enabled"] = True
+            self.set_setting("telegram_report_schedule", schedule)
+        self._set("telegram_report_schedule_migrations", [*applied, migration_key])
+        return True

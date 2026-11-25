@@ -48,6 +48,18 @@ class MonthlyTeamVisibilityTests(unittest.TestCase):
         ))
         self.assertNotIn("Екатерина", self.storage.team()["managers"])
 
+    def test_weekly_schedule_is_enabled_once_without_overriding_a_later_disable(self):
+        self.storage.set_setting("telegram_report_schedule", {"chat_id": "-1001", "enabled": True})
+
+        self.assertTrue(self.storage.enable_weekly_reports_once("enable-weekly"))
+        self.assertTrue(self.storage.get_setting("telegram_report_schedule")["weekly_enabled"])
+        self.storage.set_setting("telegram_report_schedule", {
+            "chat_id": "-1001", "enabled": True, "weekly_enabled": False,
+        })
+
+        self.assertFalse(self.storage.enable_weekly_reports_once("enable-weekly"))
+        self.assertFalse(self.storage.get_setting("telegram_report_schedule")["weekly_enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

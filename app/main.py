@@ -65,6 +65,9 @@ storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.sup
 # Екатерина уже заведена в Bitrix24 под этим именем.  Миграция выполняется
 # один раз, поэтому последующее ручное удаление в интерфейсе сохраняется.
 storage.add_team_member_once("2026-11-add-ekaterina-sales", "manager", "Екатерина")
+# Пользователь подтвердил тест еженедельного отчёта.  Не перезаписываем
+# последующее ручное отключение рассылки.
+storage.enable_weekly_reports_once("2026-11-enable-friday-sales-report")
 client = BitrixClient(settings.bitrix_webhook)
 
 cache = {}
