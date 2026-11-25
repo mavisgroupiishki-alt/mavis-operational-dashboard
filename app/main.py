@@ -2728,8 +2728,39 @@ async def _hydrate_portfolio_context_analysis(workday: dict[str, Any], user_id: 
 
 def _normalize_unp(value: Any) -> str:
     """A Belarusian UNP is nine digits; names must never be used as a fallback."""
+    if isinstance(value, (list, tuple, set)):
+        return next((unp for item in value if (unp := _normalize_unp(item))), "")
+    if isinstance(value, dict):
+        return next((
+            unp for key in ("VALUE", "value", "VALUE_TEXT", "valueText")
+            if (unp := _normalize_unp(value.get(key)))
+        ), "")
     digits = re.sub(r"\D", "", str(value or ""))
     return digits if len(digits) == 9 else ""
+
+
+def _company_unp_field_codes(fields: Any) -> list[str]:
+    """Find the UNP field across Bitrix field metadata variants.
+
+    Bitrix portals return localized custom-field labels under different keys
+    (``title``, ``formLabel``, etc.).  Looking only at ``title`` silently
+    produced an empty result on this portal, which in turn looked like there
+    were no registry gaps.
+    """
+    if isinstance(fields, dict):
+        pairs = fields.items()
+    elif isinstance(fields, list):
+        pairs = ((item.get("name") or item.get("id") or item.get("code"), item) for item in fields if isinstance(item, dict))
+    else:
+        return []
+    result: list[str] = []
+    for code, meta in pairs:
+        if not code:
+            continue
+        text = json.dumps(meta or {}, ensure_ascii=False, sort_keys=True).casefold().replace("ё", "е")
+        if "унп" in text or "учетн" in text and "плательщ" in text:
+            result.append(str(code))
+    return list(dict.fromkeys(result))
 
 
 async def _company_unps(company_ids: list[Any]) -> dict[str, str]:
@@ -2740,10 +2771,7 @@ async def _company_unps(company_ids: list[Any]) -> dict[str, str]:
     try:
         fields_response = await client.call("crm.company.fields")
         fields = fields_response.get("result") if isinstance(fields_response, dict) else {}
-        unp_fields = [
-            str(code) for code, meta in (fields or {}).items()
-            if "унп" in str((meta or {}).get("title") or "").casefold()
-        ]
+        unp_fields = _company_unp_field_codes(fields)
         if not unp_fields:
             return {}
         rows = await client.list_all(

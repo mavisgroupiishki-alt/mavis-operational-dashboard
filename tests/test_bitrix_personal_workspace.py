@@ -320,6 +320,20 @@ class BitrixIdentityTests(unittest.TestCase):
         self.assertEqual(report["companies"][0]["sales_deals"][0]["id"], "10")
         self.assertEqual(report["companies"][0]["expert_deals"][0]["id"], "20")
 
+    def test_company_unp_field_codes_supports_bitrix_localized_label_variants(self):
+        fields = {
+            "UF_CRM_100": {"title": "Номер договора"},
+            "UF_CRM_101": {"formLabel": "УНП организации"},
+            "UF_CRM_102": {"listLabel": "Учётный номер плательщика"},
+        }
+        self.assertEqual(
+            main._company_unp_field_codes(fields),
+            ["UF_CRM_101", "UF_CRM_102"],
+        )
+
+    def test_normalize_unp_accepts_bitrix_multi_value_custom_field(self):
+        self.assertEqual(main._normalize_unp(["", {"VALUE": "123456789"}]), "123456789")
+
     def test_director_can_configure_salary_but_manager_cannot(self):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
         director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
