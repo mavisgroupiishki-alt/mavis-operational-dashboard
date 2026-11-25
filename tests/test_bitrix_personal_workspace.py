@@ -183,7 +183,7 @@ class BitrixIdentityTests(unittest.TestCase):
         configured = replace(main.settings, bitrix_portal_domain="mavisgroup.bitrix24.by", bitrix_local_session_secret="x" * 32)
         director = issue_session(portal="mavisgroup.bitrix24.by", user_id="14", role="director", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
         manager = issue_session(portal="mavisgroup.bitrix24.by", user_id="9", role="manager", secret=configured.bitrix_local_session_secret, ttl_seconds=3600)
-        report = AsyncMock(return_value={"ok": True, "summary": {"companies_without_registry": 1}, "companies": [{"company_id": "55"}]})
+        report = AsyncMock(return_value={"ok": True, "summary": {"companies_without_registry": 1}, "companies": [{"company_id": "55", "company": "ООО Тест", "unp": "123456789", "sales_deals": [{"title": "СПК", "url": "https://example.test/deal/1"}], "expert_deals": []}]})
         previous = main.cabinet_iso_global_gap_cache
         try:
             main.cabinet_iso_global_gap_cache = None
@@ -195,9 +195,10 @@ class BitrixIdentityTests(unittest.TestCase):
                 client.cookies.set("mavis_bitrix_session", manager)
                 self.assertEqual(client.get("/api/cabinet/iso-suot/gaps").status_code, 403)
                 client.cookies.set("mavis_bitrix_session", director)
-                response = client.get("/api/cabinet/iso-suot/gaps")
+                response = client.get("/api/cabinet/iso-suot/gaps?compact=1")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["summary"]["companies_without_registry"], 1)
+                self.assertEqual(response.json()["companies"], [{"company": "ООО Тест", "unp": "123456789", "sales_deals": [{"title": "СПК", "url": "https://example.test/deal/1"}], "expert_deals": []}])
                 report.assert_awaited_once_with("https://mavisgroup.bitrix24.by")
         finally:
             main.cabinet_iso_global_gap_cache = previous

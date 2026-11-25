@@ -2315,6 +2315,20 @@ async def api_cabinet_iso_suot_gaps(request: Request):
         raise HTTPException(403, "Сводка ИСО/СУОТ доступна только руководителю")
     cached = bool(cabinet_iso_global_gap_cache and time.monotonic() - cabinet_iso_global_gap_cache[0] < 5 * 60)
     report = await _cached_active_iso_suot_gap_report(f"https://{identity.portal}")
+    if request.query_params.get("compact") == "1" and report.get("ok"):
+        report = {
+            "ok": True,
+            "summary": report.get("summary") or {},
+            "companies": [
+                {
+                    "company": row.get("company"),
+                    "unp": row.get("unp"),
+                    "sales_deals": [{"title": deal.get("title"), "url": deal.get("url")} for deal in row.get("sales_deals") or []],
+                    "expert_deals": [{"title": deal.get("title"), "url": deal.get("url")} for deal in row.get("expert_deals") or []],
+                }
+                for row in report.get("companies") or []
+            ],
+        }
     return {**report, "cached": cached}
 
 
