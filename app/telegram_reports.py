@@ -6,7 +6,7 @@ import math
 import re
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -30,6 +30,11 @@ class ReportDeliveryError(RuntimeError):
 class DailyReportTexts:
     sales: str
     experts: str
+
+
+@dataclass(frozen=True)
+class WeeklyReportText:
+    sales: str
 
 
 def _finite_number(value: object, field: str) -> float:
@@ -140,6 +145,44 @@ def build_daily_report_texts(snapshot: dict, generated_at: datetime) -> DailyRep
             f"💰 Сумма закрытых актов - {closed_amount}\n\n"
             f"✔ Факт отдела {month_name} - {month_closed_amount}"
         ),
+    )
+
+
+def _week_period_label(week_start: date) -> str:
+    friday = week_start + timedelta(days=4)
+    if week_start.month == friday.month:
+        return f"{week_start.day} - {friday.day} {RUSSIAN_MONTHS_GENITIVE[friday.month - 1]} {friday.year}"
+    return (
+        f"{week_start.day} {RUSSIAN_MONTHS_GENITIVE[week_start.month - 1]} - "
+        f"{friday.day} {RUSSIAN_MONTHS_GENITIVE[friday.month - 1]} {friday.year}"
+    )
+
+
+def build_weekly_report_text(
+    *, week_start: str, sales_amount: object, weekly_plan: object,
+    sales_count: object, month_clean_revenue: object, monthly_sales_plan: object,
+) -> WeeklyReportText:
+    """Build the agreed Monday–Friday sales report without mixing source periods."""
+    try:
+        monday = date.fromisoformat(str(week_start)[:10])
+    except ValueError as exc:
+        raise ReportDeliveryError("Некорректная дата начала еженедельного отчёта") from exc
+    if monday.weekday() != 0:
+        raise ReportDeliveryError("Еженедельный отчёт должен начинаться в понедельник")
+    count = _finite_number(sales_count, "количество продаж за неделю")
+    average_check = _finite_number(sales_amount, "сумма продаж за неделю") / count if count else 0
+    month_name = RUSSIAN_MONTHS_GENITIVE[monday.month - 1]
+    friday = monday + timedelta(days=4)
+    return WeeklyReportText(
+        sales=(
+            f"Еженедельный {_week_period_label(monday)}\n\n"
+            f"💰 Сумма продаж - {_format_byn(sales_amount)}\n\n"
+            f"📈 План продаж на неделю - {_format_byn(weekly_plan)}\n\n"
+            f"Средний чек - {_format_byn(average_check)}\n\n"
+            f"📈 Факт плана продаж {month_name} - {_format_byn(month_clean_revenue)} / "
+            f"{_format_byn(monthly_sales_plan)}\n\n"
+            f"Звонки {monday.strftime('%d.%m')}-{friday.strftime('%d.%m.%Y')}"
+        )
     )
 
 
@@ -274,11 +317,12 @@ def _daily_report_card(draw, *, x: int, y: int, width: int, label: str, value: s
     draw.text((x + 24, y + 62), value, font=_daily_report_font(29, bold=True), fill="#17435f")
 
 
-def render_dashboard_daily_reports(
-    *, report_date: str, report: dict, finance: dict,
+def _render_dashboard_reports(
+    *, report: dict, financial_cards: tuple[tuple[str, str], tuple[str, str], tuple[str, str]],
+    heading: str, calls_heading: str, period_caption: str,
     leads_output_path: Path, calls_output_path: Path,
 ) -> tuple[Path, Path]:
-    """Create the two daily report images without launching Chromium on Render.
+    """Create two compact report images without launching Chromium on Render.
 
     The payload is the same direct Bitrix24 and payment-ledger data used by the
     dashboard. Rendering it locally avoids a browser process being killed by
@@ -286,11 +330,6 @@ def render_dashboard_daily_reports(
     """
     from PIL import Image, ImageDraw
 
-    try:
-        report_day = datetime.fromisoformat(report_date)
-    except ValueError as exc:
-        raise ReportDeliveryError("Дата снимка дашборда задана неверно") from exc
-    finance_values = dashboard_finance_display_values(finance)
     leads_output_path.parent.mkdir(parents=True, exist_ok=True)
     calls_output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -350,14 +389,13 @@ def render_dashboard_daily_reports(
     leads_draw = ImageDraw.Draw(leads_image)
     leads_draw.rounded_rectangle((margin, 28, width - margin, 188), radius=28, fill="#ffffff", outline="#c9e0ee", width=2)
     leads_draw.text((margin + 28, 54), "Отдел продаж · Bitrix24", font=_daily_report_font(16, bold=True), fill="#68869b")
-    leads_draw.text((margin + 28, 87), "Ежедневный отчёт", font=_daily_report_font(38, bold=True), fill="#163c59")
-    leads_draw.text((margin + 28, 142), russian_date(report_day), font=_daily_report_font(19), fill="#668298")
+    leads_draw.text((margin + 28, 87), heading, font=_daily_report_font(38, bold=True), fill="#163c59")
+    leads_draw.text((margin + 28, 142), period_caption, font=_daily_report_font(19), fill="#668298")
     cards_y = 222
     card_width = (width - margin * 2 - gutter * 2) // 3
-    _daily_report_card(leads_draw, x=margin, y=cards_y, width=card_width, label="Поступления за день", value=finance_values[0])
-    _daily_report_card(leads_draw, x=margin + card_width + gutter, y=cards_y, width=card_width, label="Чистая выручка за день", value=finance_values[1])
-    _daily_report_card(leads_draw, x=margin + (card_width + gutter) * 2, y=cards_y, width=card_width,
-                       label=f"Факт плана {RUSSIAN_MONTHS_GENITIVE[report_day.month - 1]}", value=finance_values[2])
+    for index, (label, value) in enumerate(financial_cards):
+        _daily_report_card(leads_draw, x=margin + (card_width + gutter) * index, y=cards_y,
+                           width=card_width, label=label, value=value)
     summary_y = cards_y + 164
     _daily_report_card(leads_draw, x=margin, y=summary_y, width=column_width, label="Лиды", value=_daily_report_row_value(lead_data.get("total", 0)))
     _daily_report_card(leads_draw, x=margin + column_width + gutter, y=summary_y, width=column_width, label="Созданные сделки", value=_daily_report_row_value(deal_data.get("total", 0)))
@@ -394,8 +432,8 @@ def render_dashboard_daily_reports(
     calls_draw = ImageDraw.Draw(calls_image)
     calls_draw.rounded_rectangle((margin, 28, width - margin, 188), radius=28, fill="#ffffff", outline="#c9e0ee", width=2)
     calls_draw.text((margin + 28, 54), "Отдел продаж · Bitrix24", font=_daily_report_font(16, bold=True), fill="#68869b")
-    calls_draw.text((margin + 28, 87), "Ежедневный отчёт по звонкам", font=_daily_report_font(38, bold=True), fill="#163c59")
-    calls_draw.text((margin + 28, 142), russian_date(report_day), font=_daily_report_font(19), fill="#668298")
+    calls_draw.text((margin + 28, 87), calls_heading, font=_daily_report_font(38, bold=True), fill="#163c59")
+    calls_draw.text((margin + 28, 142), period_caption, font=_daily_report_font(19), fill="#668298")
     calls_card_y = 222
     _daily_report_card(calls_draw, x=margin, y=calls_card_y, width=card_width, label="Звонки", value=_daily_report_row_value(call_data.get("total", 0)))
     _daily_report_card(calls_draw, x=margin + card_width + gutter, y=calls_card_y, width=card_width,
@@ -409,6 +447,64 @@ def render_dashboard_daily_reports(
                         title="Длительность звонков по менеджерам", headers=("Менеджер", "Входящие, мин", "Исходящие, мин"), rows=call_duration_rows)
     calls_image.save(calls_output_path, format="PNG", optimize=True)
     return leads_output_path, calls_output_path
+
+
+def render_dashboard_daily_reports(
+    *, report_date: str, report: dict, finance: dict,
+    leads_output_path: Path, calls_output_path: Path,
+) -> tuple[Path, Path]:
+    """Create the two daily report images from the verified dashboard payload."""
+    try:
+        report_day = datetime.fromisoformat(report_date)
+    except ValueError as exc:
+        raise ReportDeliveryError("Дата снимка дашборда задана неверно") from exc
+    finance_values = dashboard_finance_display_values(finance)
+    return _render_dashboard_reports(
+        report=report,
+        financial_cards=(
+            ("Поступления за день", finance_values[0]),
+            ("Чистая выручка за день", finance_values[1]),
+            (f"Факт плана {RUSSIAN_MONTHS_GENITIVE[report_day.month - 1]}", finance_values[2]),
+        ),
+        heading="Ежедневный отчёт",
+        calls_heading="Ежедневный отчёт по звонкам",
+        period_caption=russian_date(report_day),
+        leads_output_path=leads_output_path,
+        calls_output_path=calls_output_path,
+    )
+
+
+def render_dashboard_weekly_reports(
+    *, week_start: str, report: dict, sales_amount: object, weekly_plan: object,
+    sales_count: object, month_clean_revenue: object, monthly_sales_plan: object,
+    leads_output_path: Path, calls_output_path: Path,
+) -> tuple[Path, Path]:
+    """Render the Monday–Friday report from the same verified source payloads."""
+    try:
+        monday = date.fromisoformat(week_start)
+    except ValueError as exc:
+        raise ReportDeliveryError("Некорректная дата начала еженедельного отчёта") from exc
+    if monday.weekday() != 0:
+        raise ReportDeliveryError("Еженедельный отчёт должен начинаться в понедельник")
+    count = _finite_number(sales_count, "количество продаж за неделю")
+    average_check = _finite_number(sales_amount, "сумма продаж за неделю") / count if count else 0
+    month_name = RUSSIAN_MONTHS_GENITIVE[monday.month - 1]
+    return _render_dashboard_reports(
+        report=report,
+        financial_cards=(
+            ("Сумма продаж за неделю", _format_byn(sales_amount)),
+            ("План продаж на неделю", _format_byn(weekly_plan)),
+            ("Средний чек", _format_byn(average_check)),
+        ),
+        heading="Еженедельный отчёт",
+        calls_heading="Еженедельный отчёт по звонкам",
+        period_caption=(
+            f"{_week_period_label(monday)} · Факт плана {month_name}: "
+            f"{_format_byn(month_clean_revenue)} / {_format_byn(monthly_sales_plan)}"
+        ),
+        leads_output_path=leads_output_path,
+        calls_output_path=calls_output_path,
+    )
 
 
 async def _bitrix_auth_blocker(page: object) -> str:
@@ -921,5 +1017,44 @@ async def send_telegram_reports(
                     )
                 if not accepted(response):
                     raise ReportDeliveryError("Telegram не принял снимок BI-конструктора")
+    except httpx.HTTPError as exc:
+        raise ReportDeliveryError("Не удалось связаться с Telegram") from exc
+
+
+async def send_telegram_weekly_report(
+    *, token: str, chat_id: str, text: WeeklyReportText, image_paths: tuple[Path, Path]
+) -> None:
+    """Deliver one Monday–Friday text and its two deterministic images."""
+    if not token:
+        raise ReportDeliveryError("Не задан TELEGRAM_BOT_TOKEN")
+    if not chat_id.strip():
+        raise ReportDeliveryError("Не указан Telegram chat_id")
+    import httpx
+
+    def accepted(response: httpx.Response) -> bool:
+        try:
+            return response.status_code == 200 and bool(response.json().get("ok"))
+        except ValueError:
+            return False
+
+    base_url = f"https://api.telegram.org/bot{token}"
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(f"{base_url}/sendMessage", data={"chat_id": chat_id, "text": text.sales})
+            if not accepted(response):
+                raise ReportDeliveryError("Telegram не принял текст еженедельного отчёта")
+            for image_path, caption in zip(
+                image_paths,
+                ("Еженедельный отчёт — Лиды и сделки", "Еженедельный отчёт — Звонки"),
+                strict=True,
+            ):
+                with image_path.open("rb") as image:
+                    response = await client.post(
+                        f"{base_url}/sendPhoto",
+                        data={"chat_id": chat_id, "caption": caption},
+                        files={"photo": (image_path.name, image, "image/png")},
+                    )
+                if not accepted(response):
+                    raise ReportDeliveryError("Telegram не принял снимок еженедельного отчёта")
     except httpx.HTTPError as exc:
         raise ReportDeliveryError("Не удалось связаться с Telegram") from exc

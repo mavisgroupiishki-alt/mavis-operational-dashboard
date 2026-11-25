@@ -16,6 +16,26 @@ def test_telegram_schedule_uses_the_enabled_channel_on_weekdays_at_18():
     assert not main._scheduled_report_due(datetime(2026, 10, 10, 18, 0, tzinfo=timezone))
 
 
+def test_weekly_dashboard_metrics_use_only_monday_to_friday_and_prorate_plan(monkeypatch):
+    with tempfile.TemporaryDirectory() as directory:
+        storage = Storage(Path(directory) / "dashboard.sqlite3")
+        storage.set_plans("2026-11", "sales", "overall", "", {"sales_amount": 110000})
+        monkeypatch.setattr(main, "storage", storage)
+        days_amount = [0] * 30
+        days_sales = [0] * 30
+        for day, amount, count in ((16, 5030, 5), (17, 3560, 4), (18, 3810, 5), (19, 9270, 10), (20, 2140, 2)):
+            days_amount[day - 1] = amount
+            days_sales[day - 1] = count
+        result = main.weekly_dashboard_sales_metrics({
+            "2026-11": {"sales": {"overall": {"total": {"days": {"sales_amount": days_amount, "sales": days_sales}}}}}
+        }, "2026-11-16")
+
+    assert result == {
+        "week_start": "2026-11-16", "week_end": "2026-11-20",
+        "sales_amount": 23810.0, "sales_count": 26, "weekly_plan": round(110000 * 5 / 21, 2),
+    }
+
+
 def test_daily_sales_archive_keeps_first_snapshot_for_a_day():
     with tempfile.TemporaryDirectory() as directory:
         storage = Storage(Path(directory) / "dashboard.sqlite3")

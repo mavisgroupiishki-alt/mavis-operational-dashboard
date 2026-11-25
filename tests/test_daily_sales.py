@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from app.daily_sales import (
     archive_snapshot,
     build_daily_sales_report,
+    build_weekly_sales_report,
     call_direction,
     daily_archive_due_date,
     duration_seconds,
@@ -141,3 +142,39 @@ def test_daily_report_uses_the_supplied_dashboard_roster_not_a_fixed_legacy_team
 
     assert report["scope"] == {"managers": ["Новый сотрудник"]}
     assert report["leads"]["total"] == report["deals"]["total"] == report["calls"]["total"] == 0
+
+
+class WeeklyFakeBitrix(FakeBitrix):
+    async def lead_list(self, filters, select):
+        assert filters[">=DATE_CREATE"].startswith("2026-11-16")
+        assert filters["<DATE_CREATE"].startswith("2026-11-21")
+        return await super().lead_list({">=DATE_CREATE": "2026-09-30"}, select)
+
+    async def deal_list(self, filters, select):
+        assert filters[">=DATE_CREATE"].startswith("2026-11-16")
+        assert filters["<DATE_CREATE"].startswith("2026-11-21")
+        return await super().deal_list({"CATEGORY_ID": filters["CATEGORY_ID"]}, select)
+
+    async def list_all(self, method, params):
+        assert params["FILTER"][">=CALL_START_DATE"].startswith("2026-11-16")
+        assert params["FILTER"]["<CALL_START_DATE"].startswith("2026-11-21")
+        return await super().list_all(method, {"FILTER": {">=CALL_START_DATE": "2026-09-30"}})
+
+
+def test_weekly_report_covers_monday_through_friday_only():
+    report = asyncio.run(build_weekly_sales_report(
+        WeeklyFakeBitrix(), "2026-11-16", "Europe/Minsk", ["Ирина Базылева"]
+    ))
+
+    assert report["week_start"] == "2026-11-16"
+    assert report["week_end"] == "2026-11-20"
+    assert report["period_end"] == "2026-11-20"
+
+
+def test_weekly_report_rejects_a_non_monday_start():
+    try:
+        asyncio.run(build_weekly_sales_report(FakeBitrix(), "2026-11-17", "Europe/Minsk", []))
+    except ValueError as exc:
+        assert "Monday" in str(exc)
+    else:
+        raise AssertionError("Expected weekly start validation")

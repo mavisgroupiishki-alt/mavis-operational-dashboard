@@ -13,9 +13,11 @@ from app.telegram_reports import (
     _financial_texts_match,
     dashboard_finance_display_values,
     render_dashboard_daily_reports,
+    render_dashboard_weekly_reports,
     _safe_page_location,
     _wait_for_bi_report_ready,
     build_daily_report_texts,
+    build_weekly_report_text,
 )
 
 
@@ -110,12 +112,46 @@ class TelegramReportsTests(unittest.TestCase):
             self.assertGreater(leads.stat().st_size, 10_000)
             self.assertGreater(calls.stat().st_size, 10_000)
 
+    def test_weekly_text_uses_sales_for_week_and_clean_revenue_for_plan_fact(self):
+        result = build_weekly_report_text(
+            week_start="2026-11-16", sales_amount=23810, weekly_plan=26190.48,
+            sales_count=26, month_clean_revenue=65964, monthly_sales_plan=110000,
+        )
+
+        self.assertEqual(result.sales, (
+            "Еженедельный 16 - 20 ноября 2026\n\n"
+            "💰 Сумма продаж - 23 810 BYN\n\n"
+            "📈 План продаж на неделю - 26 190 BYN\n\n"
+            "Средний чек - 916 BYN\n\n"
+            "📈 Факт плана продаж ноября - 65 964 BYN / 110 000 BYN\n\n"
+            "Звонки 16.11-20.11.2026"
+        ))
+
+    def test_server_render_creates_two_nonempty_weekly_report_images(self):
+        report = {
+            "leads": {"total": 7, "by_source": [{"name": "Входящий звонок", "count": 7}], "by_manager_source": []},
+            "deals": {"total": 12, "by_source": [{"name": "Холодный звонок", "count": 12}], "by_stage": []},
+            "calls": {"total": 25, "unclassified_count": 0, "without_duration_count": 0, "by_manager": []},
+        }
+        with TemporaryDirectory() as folder:
+            leads, calls = render_dashboard_weekly_reports(
+                week_start="2026-11-16", report=report, sales_amount=23810, weekly_plan=26190,
+                sales_count=26, month_clean_revenue=65964, monthly_sales_plan=110000,
+                leads_output_path=Path(folder) / "leads.png", calls_output_path=Path(folder) / "calls.png",
+            )
+            from PIL import Image
+            self.assertEqual(Image.open(leads).size[0], 1800)
+            self.assertEqual(Image.open(calls).size[0], 1800)
+            self.assertGreater(leads.stat().st_size, 10_000)
+            self.assertGreater(calls.stat().st_size, 10_000)
+
     def test_bi_reports_are_limited_to_the_sales_department(self):
         self.assertEqual(SALES_BI_MANAGERS, (
             "Алена Хурсик",
             "Ирина Базылева",
             "Ирина Богомольцева",
             "Роман Авсеенко",
+            "Екатерина",
         ))
 
     def test_bi_capture_waits_until_loading_indicators_disappear(self):

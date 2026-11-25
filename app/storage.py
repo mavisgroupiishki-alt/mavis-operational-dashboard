@@ -359,6 +359,17 @@ class Storage:
             team[key].append(name)
         self._set("team", team)
 
+    def add_team_member_once(self, migration_key: str, role: str, name: str) -> bool:
+        """Apply a roster addition once without undoing a later manual removal."""
+        applied = self._get("team_roster_migrations", [])
+        if not isinstance(applied, list):
+            applied = []
+        if migration_key in applied:
+            return False
+        self.add_team_member(role, name)
+        self._set("team_roster_migrations", [*applied, migration_key])
+        return True
+
     def remove_team_member(self, role, name):
         team = self.team()
         key = "managers" if role == "manager" else "experts"

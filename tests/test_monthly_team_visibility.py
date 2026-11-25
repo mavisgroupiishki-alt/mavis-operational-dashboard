@@ -36,6 +36,18 @@ class MonthlyTeamVisibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ГГГГ-ММ"):
             self.storage.set_team_member_hidden("october", "manager", "Анна", True)
 
+    def test_one_time_roster_addition_does_not_restore_a_manually_removed_manager(self):
+        self.assertTrue(self.storage.add_team_member_once(
+            "2026-11-add-ekaterina-sales", "manager", "Екатерина"
+        ))
+        self.assertIn("Екатерина", self.storage.team()["managers"])
+        self.storage.remove_team_member("manager", "Екатерина")
+
+        self.assertFalse(self.storage.add_team_member_once(
+            "2026-11-add-ekaterina-sales", "manager", "Екатерина"
+        ))
+        self.assertNotIn("Екатерина", self.storage.team()["managers"])
+
 
 if __name__ == "__main__":
     unittest.main()

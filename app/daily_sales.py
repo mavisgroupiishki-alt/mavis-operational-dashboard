@@ -86,6 +86,17 @@ def daily_bounds(value: str, timezone: str) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
+def report_range_bounds(start_value: str, end_value: str, timezone: str) -> tuple[datetime, datetime]:
+    """Return a timezone-aware half-open interval for inclusive report dates."""
+    start = date.fromisoformat(str(start_value or "")[:10])
+    end = date.fromisoformat(str(end_value or "")[:10])
+    if end < start:
+        raise ValueError("Report end date precedes its start date")
+    tz = ZoneInfo(timezone)
+    range_start = datetime.combine(start, time.min, tzinfo=tz)
+    return range_start, datetime.combine(end + timedelta(days=1), time.min, tzinfo=tz)
+
+
 def _number(value: Any) -> float | None:
     if value in (None, ""):
         return None
@@ -269,11 +280,15 @@ def summarize_daily_sales(
     }
 
 
-async def build_daily_sales_report(
-    client: Any, selected_date: str, timezone: str, manager_names: list[str]
+async def build_sales_report_for_range(
+    client: Any,
+    start_value: str,
+    end_value: str,
+    timezone: str,
+    manager_names: list[str],
 ) -> dict[str, Any]:
-    """Load one calendar day from Bitrix and make partial availability explicit."""
-    start, end = daily_bounds(selected_date, timezone)
+    """Load an inclusive calendar range from Bitrix with one roster scope."""
+    start, end = report_range_bounds(start_value, end_value, timezone)
     lead_task = client.lead_list({">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, LEAD_SELECT)
     sales_deals_task = client.deal_list({"CATEGORY_ID": 0, ">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, DEAL_SELECT)
     reanimation_deals_task = client.deal_list({"CATEGORY_ID": 20, ">=DATE_CREATE": start.isoformat(), "<DATE_CREATE": end.isoformat()}, DEAL_SELECT)
@@ -304,6 +319,7 @@ async def build_daily_sales_report(
     report.update({
         "ok": True,
         "date": start.date().isoformat(),
+        "period_end": (end.date() - timedelta(days=1)).isoformat(),
         "generated_at": datetime.now(ZoneInfo(timezone)).isoformat(),
         "source": "Bitrix24 CRM (read-only)",
         "scope": {"managers": list(manager_names)},
@@ -313,4 +329,27 @@ async def build_daily_sales_report(
             "calls": calls_availability,
         },
     })
+    return report
+
+
+async def build_daily_sales_report(
+    client: Any, selected_date: str, timezone: str, manager_names: list[str]
+) -> dict[str, Any]:
+    """Load one calendar day from Bitrix and make partial availability explicit."""
+    return await build_sales_report_for_range(client, selected_date, selected_date, timezone, manager_names)
+
+
+async def build_weekly_sales_report(
+    client: Any, week_start: str, timezone: str, manager_names: list[str]
+) -> dict[str, Any]:
+    """Load the Monday–Friday report range; weekends are deliberately excluded."""
+    monday = date.fromisoformat(str(week_start or "")[:10])
+    if monday.weekday() != 0:
+        raise ValueError("Weekly report must start on Monday")
+    friday = monday + timedelta(days=4)
+    report = await build_sales_report_for_range(
+        client, monday.isoformat(), friday.isoformat(), timezone, manager_names
+    )
+    report["week_start"] = monday.isoformat()
+    report["week_end"] = friday.isoformat()
     return report

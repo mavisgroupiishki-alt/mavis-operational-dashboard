@@ -33,6 +33,7 @@ from .acts_experts import ACTS_PROJECT_ID, build_acts_experts_report, linked_dea
 from .daily_sales import (
     archive_snapshot,
     build_daily_sales_report,
+    build_weekly_sales_report,
     corrected_archive_snapshot,
     daily_archive_due_date,
     daily_bounds,
@@ -47,10 +48,23 @@ from .cabinet_ui import cabinet_html
 from .cabinet_payroll import register as register_cabinet_payroll, settings_key as payroll_settings_key
 from .settings import settings
 from .storage import Storage
-from .telegram_reports import DailyReportTexts, ReportDeliveryError, build_daily_report_texts, capture_dashboard_daily_reports, send_telegram_reports
+from .telegram_reports import (
+    DailyReportTexts,
+    ReportDeliveryError,
+    WeeklyReportText,
+    build_daily_report_texts,
+    build_weekly_report_text,
+    capture_dashboard_daily_reports,
+    render_dashboard_weekly_reports,
+    send_telegram_reports,
+    send_telegram_weekly_report,
+)
 
 STATIC = Path(__file__).parent / "static"
 storage = Storage(settings.data_dir / "mavis_dashboard_v2.sqlite3", settings.supabase_url, settings.supabase_key)
+# Екатерина уже заведена в Bitrix24 под этим именем.  Миграция выполняется
+# один раз, поэтому последующее ручное удаление в интерфейсе сохраняется.
+storage.add_team_member_once("2026-11-add-ekaterina-sales", "manager", "Екатерина")
 client = BitrixClient(settings.bitrix_webhook)
 
 cache = {}
@@ -281,6 +295,94 @@ async def load_daily_sales_finance(selected_date: str, force: bool = False) -> d
     daily_sales_finance_cache[day] = result
     daily_sales_finance_cache_time[day] = time.monotonic()
     return copy.deepcopy(result)
+
+
+def weekly_period(week_start: str) -> tuple[date, date]:
+    """Return the inclusive Monday–Friday report period."""
+    monday = date.fromisoformat(str(week_start or "")[:10])
+    if monday.weekday() != 0:
+        raise ValueError("Weekly report must start on Monday")
+    return monday, monday + timedelta(days=4)
+
+
+def _month_business_days(month: str) -> int:
+    year, month_number = (int(value) for value in month.split("-", 1))
+    return sum(
+        date(year, month_number, day).weekday() < 5
+        for day in range(1, monthrange(year, month_number)[1] + 1)
+    )
+
+
+def weekly_dashboard_sales_metrics(snapshots: dict[str, dict], week_start: str) -> dict:
+    """Sum successful-sales dashboard days for Monday through Friday only."""
+    monday, friday = weekly_period(week_start)
+    amount = 0.0
+    count = 0.0
+    for offset in range(5):
+        report_day = monday + timedelta(days=offset)
+        snapshot = snapshots.get(report_day.strftime("%Y-%m"))
+        if not isinstance(snapshot, dict):
+            raise ReportDeliveryError("Нет снимка дашборда для еженедельного отчёта")
+        total = (((snapshot.get("sales") or {}).get("overall") or {}).get("total") or {})
+        days = total.get("days") or {}
+        amounts = days.get("sales_amount") or []
+        counts = days.get("sales") or []
+        index = report_day.day - 1
+        try:
+            amount += float(amounts[index] or 0)
+            count += float(counts[index] or 0)
+        except (IndexError, TypeError, ValueError) as exc:
+            raise ReportDeliveryError("В дашборде нет дневных продаж для еженедельного отчёта") from exc
+    weekly_plan = 0.0
+    for offset in range(5):
+        report_day = monday + timedelta(days=offset)
+        month = report_day.strftime("%Y-%m")
+        plan = _sales_plan_amount(month)
+        if plan is None:
+            raise ReportDeliveryError("Не задан план продаж для еженедельного отчёта")
+        weekly_plan += plan / _month_business_days(month)
+    return {
+        "week_start": monday.isoformat(),
+        "week_end": friday.isoformat(),
+        "sales_amount": round(amount, 2),
+        "sales_count": int(count),
+        "weekly_plan": round(weekly_plan, 2),
+    }
+
+
+async def load_weekly_sales_finance(week_start: str) -> dict:
+    """Load plan fact through the Friday of the selected work week."""
+    _, friday = weekly_period(week_start)
+    month = friday.strftime("%Y-%m")
+    through = await load_clean_revenue_through(
+        month, datetime(friday.year, friday.month, friday.day, tzinfo=ZoneInfo(settings.timezone))
+    )
+    return {
+        "ok": True,
+        "week_start": week_start,
+        "week_end": friday.isoformat(),
+        "month_clean_revenue": through,
+        "sales_plan_amount": _sales_plan_amount(month),
+    }
+
+
+async def _weekly_dashboard_snapshots(week_start: str) -> dict[str, dict]:
+    """Load all monthly dashboard snapshots touched by one Monday–Friday period."""
+    monday, friday = weekly_period(week_start)
+    result: dict[str, dict] = {}
+    months = {monday.strftime("%Y-%m"), friday.strftime("%Y-%m")}
+    for month in months:
+        key = (month, "month", "", "")
+        source_snapshot = cache.get(key)
+        if source_snapshot is None:
+            await warm_snapshot_from_storage(month, "month")
+            source_snapshot = cache.get(key)
+        if source_snapshot is None:
+            schedule_snapshot(month, "month", force=False)
+            raise ReportDeliveryError("Данные дашборда ещё загружаются из Bitrix24; повторите через минуту")
+        result[month] = source_snapshot
+        schedule_snapshot(month, "month", force=True)
+    return result
 
 
 def _key_task_cache_key(members):
@@ -1844,7 +1946,7 @@ def _scheduled_report_due(now: datetime) -> bool:
 
 
 async def scheduled_telegram_reports_loop():
-    """Deliver the configured weekday report once per local calendar day."""
+    """Deliver the configured daily and, when enabled, weekly reports."""
     while True:
         try:
             config = storage.get_setting("telegram_report_schedule", {})
@@ -1865,6 +1967,23 @@ async def scheduled_telegram_reports_loop():
                 else:
                     config["last_sent_date"] = day
                     config["last_error"] = ""
+                    storage.set_setting("telegram_report_schedule", config)
+            if (
+                isinstance(config, dict)
+                and config.get("weekly_enabled")
+                and config.get("chat_id")
+                and now.weekday() == 4
+                and _scheduled_report_due(now)
+            ):
+                week_start = (now.date() - timedelta(days=4)).isoformat()
+                if config.get("last_weekly_sent_week") != week_start:
+                    try:
+                        await deliver_weekly_telegram_report(str(config["chat_id"]), week_start)
+                    except ReportDeliveryError as exc:
+                        config["last_weekly_error"] = str(exc)
+                    else:
+                        config["last_weekly_sent_week"] = week_start
+                        config["last_weekly_error"] = ""
                     storage.set_setting("telegram_report_schedule", config)
         except Exception:
             pass
@@ -4073,6 +4192,12 @@ class TelegramReportScheduleBody(BaseModel):
     chat_id: str
     admin_key: str = ""
     enabled: bool = True
+    weekly_enabled: bool = False
+
+
+class WeeklyReportPreviewBody(BaseModel):
+    admin_key: str = ""
+    week_start: str = ""
 
 
 @app.get("/api/plans")
@@ -4172,6 +4297,55 @@ async def deliver_telegram_reports(
     return {"ok": True, "month": month, "report": "dashboard-daily"}
 
 
+async def prepare_weekly_telegram_report(week_start: str) -> tuple[WeeklyReportText, tuple[Path, Path], dict]:
+    """Assemble a verified Monday–Friday report without sending it anywhere."""
+    monday, friday = weekly_period(week_start)
+    roster = storage.team_for_month(monday.strftime("%Y-%m"))["managers"]
+    snapshots_task = _weekly_dashboard_snapshots(monday.isoformat())
+    crm_task = build_weekly_sales_report(client, monday.isoformat(), settings.timezone, roster)
+    finance_task = load_weekly_sales_finance(monday.isoformat())
+    snapshots, report, finance = await asyncio.gather(snapshots_task, crm_task, finance_task)
+    metrics = weekly_dashboard_sales_metrics(snapshots, monday.isoformat())
+    month_clean_revenue = finance.get("month_clean_revenue") or {}
+    if month_clean_revenue.get("status") not in {"online", "stale"}:
+        raise ReportDeliveryError("Чистая выручка для факта недельного плана недоступна")
+    monthly_plan = finance.get("sales_plan_amount")
+    if monthly_plan is None:
+        raise ReportDeliveryError("Не задан месячный план продаж для еженедельного отчёта")
+    text = build_weekly_report_text(
+        week_start=monday.isoformat(),
+        sales_amount=metrics["sales_amount"],
+        weekly_plan=metrics["weekly_plan"],
+        sales_count=metrics["sales_count"],
+        month_clean_revenue=month_clean_revenue.get("value"),
+        monthly_sales_plan=monthly_plan,
+    )
+    image_paths = render_dashboard_weekly_reports(
+        week_start=monday.isoformat(),
+        report=report,
+        sales_amount=metrics["sales_amount"],
+        weekly_plan=metrics["weekly_plan"],
+        sales_count=metrics["sales_count"],
+        month_clean_revenue=month_clean_revenue.get("value"),
+        monthly_sales_plan=monthly_plan,
+        leads_output_path=settings.data_dir / f"weekly-leads-{monday.isoformat()}-{friday.isoformat()}.png",
+        calls_output_path=settings.data_dir / f"weekly-calls-{monday.isoformat()}-{friday.isoformat()}.png",
+    )
+    return text, image_paths, {"metrics": metrics, "finance": finance, "report": report}
+
+
+async def deliver_weekly_telegram_report(chat_id: str, week_start: str) -> dict:
+    """Send the weekly report only after every required source was verified."""
+    text, image_paths, context = await prepare_weekly_telegram_report(week_start)
+    await send_telegram_weekly_report(
+        token=settings.telegram_bot_token,
+        chat_id=chat_id,
+        text=text,
+        image_paths=image_paths,
+    )
+    return {"ok": True, "report": "dashboard-weekly", **context["metrics"]}
+
+
 async def latest_telegram_private_chat_id() -> str:
     """Return the latest private conversation that explicitly contacted the bot."""
     if not settings.telegram_bot_token:
@@ -4206,12 +4380,15 @@ async def telegram_report_schedule():
         "configured": bool(config.get("chat_id")),
         "last_sent_date": config.get("last_sent_date", ""),
         "last_error": config.get("last_error", ""),
+        "weekly_enabled": bool(config.get("weekly_enabled")),
+        "last_weekly_sent_week": config.get("last_weekly_sent_week", ""),
+        "last_weekly_error": config.get("last_weekly_error", ""),
         # The schedule itself is the single source of truth for delivery.
         # This avoids a stale deployment environment flag silently stopping
         # an enabled channel report.
         "paused": False,
         "timezone": settings.timezone,
-        "schedule": "Пн–Пт 18:00; Сб–Вс без отправки",
+        "schedule": "Пн–Пт 18:00; еженедельный отчёт в пятницу в 18:00 при включённой настройке",
     }
 
 
@@ -4227,6 +4404,9 @@ async def save_telegram_report_schedule(body: TelegramReportScheduleBody):
         "enabled": body.enabled,
         "last_sent_date": "",
         "last_error": "",
+        "weekly_enabled": body.weekly_enabled,
+        "last_weekly_sent_week": "",
+        "last_weekly_error": "",
     })
     return await telegram_report_schedule()
 
@@ -4312,6 +4492,45 @@ async def get_telegram_report_preview(report_date: str, tab: str, admin_key: str
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date) or tab not in {"leads", "calls"}:
         raise HTTPException(400, "Некорректный запрос снимка")
     image_path = settings.data_dir / f"daily-{tab}-{report_date}.png"
+    if not image_path.is_file():
+        raise HTTPException(404, "Снимок ещё не сформирован")
+    return FileResponse(image_path, media_type="image/png", filename=image_path.name)
+
+
+@app.post("/api/reports/weekly-preview")
+async def capture_weekly_telegram_report_preview(body: WeeklyReportPreviewBody):
+    """Create a Monday–Friday preview without publishing it to Telegram."""
+    if settings.admin_key and not secrets.compare_digest(body.admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    try:
+        requested = body.week_start or (datetime.now(ZoneInfo(settings.timezone)).date() - timedelta(days=7)).isoformat()
+        monday, friday = weekly_period(requested)
+        text, _image_paths, context = await prepare_weekly_telegram_report(monday.isoformat())
+        return {
+            "ok": True,
+            "week_start": monday.isoformat(),
+            "week_end": friday.isoformat(),
+            "text": text.sales,
+            "metrics": context["metrics"],
+        }
+    except ValueError as exc:
+        raise HTTPException(400, "Дата начала недели должна быть понедельником в формате ГГГГ-ММ-ДД") from exc
+    except ReportDeliveryError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/reports/weekly-preview/{week_start}/{tab}")
+async def get_weekly_telegram_report_preview(week_start: str, tab: str, admin_key: str = ""):
+    """Return a weekly preview image after it has been generated."""
+    if settings.admin_key and not secrets.compare_digest(admin_key, settings.admin_key):
+        raise HTTPException(403, "Неверный ADMIN_KEY")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_start) or tab not in {"leads", "calls"}:
+        raise HTTPException(400, "Некорректный запрос снимка")
+    try:
+        monday, friday = weekly_period(week_start)
+    except ValueError as exc:
+        raise HTTPException(400, "Дата начала недели должна быть понедельником") from exc
+    image_path = settings.data_dir / f"weekly-{tab}-{monday.isoformat()}-{friday.isoformat()}.png"
     if not image_path.is_file():
         raise HTTPException(404, "Снимок ещё не сформирован")
     return FileResponse(image_path, media_type="image/png", filename=image_path.name)
