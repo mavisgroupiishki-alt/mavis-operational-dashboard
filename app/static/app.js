@@ -2325,7 +2325,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     const b=document.createElement("span");
     b.id="buildMarker";
     b.className="build-marker";
-    b.textContent="v3.6.48";
+    b.textContent="v3.6.49";
     top.appendChild(b);
   }
 });

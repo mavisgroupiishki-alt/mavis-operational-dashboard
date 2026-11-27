@@ -1768,8 +1768,8 @@ def _apply_runtime(snap, details, month, compact=False):
     p['weekly']=production_weekly_dynamics(list(prod_details.get('closed') or []),month_start)
     all_rows=list(prod_details.get('dormant') or [])
     p['stuck_flow'] = _stuck_flow(month, details)
-    if not compact:
-        p['stuck_breakdown'] = _stuck_breakdown(month, details, p['stuck_flow'])
+    # The browser requests compact snapshots; production breakdown must be included.
+    p['stuck_breakdown'] = _stuck_breakdown(month, details, p['stuck_flow'])
     # Управленческий показатель «Зависшие» считается только из карточек,
     # чья предполагаемая дата закрытия попадает в выбранный период.
     expected_rows=list(prod_details.get('dormant_expected') or [])
