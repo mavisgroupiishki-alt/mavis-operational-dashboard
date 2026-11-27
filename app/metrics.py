@@ -1252,6 +1252,34 @@ def production_weekly_dynamics(closed: List[Dict[str, Any]], month_start: dateti
     return {"weeks": weeks, "days": days_map}
 
 
+def dormant_group(stage):
+    label = norm_text(stage)
+    if label in ("в работе", "отложенный спрос"):
+        return "active"
+    if label in ("потенциальный возврат", "согласованный возврат", "в счет будущих услуг", "черный список", "сгоревшие"):
+        return "inactive"
+    return "unknown"
+
+
+def potential_return_field(meta):
+    for code, field in (meta.get("deal_fields") or {}).items():
+        labels = [norm_text(field.get(key)) for key in ("title", "formLabel", "listLabel", "filterLabel")]
+        if any("комментар" in label and "потенциаль" in label and "возврат" in label for label in labels):
+            return code
+    return None
+
+
+def dormant_source_stage(history, events, labels, direct=False):
+    def key(row):
+        return (str(row.get("CREATED_TIME") or ""), int(row.get("ID") or 0))
+    candidates = [event for event in events if str(event.get("OWNER_ID")) == str(history.get("OWNER_ID")) and (key(event) < key(history) or (direct and key(event) == key(history)))]
+    for event in sorted(candidates, key=key, reverse=True):
+        stage = labels.get(str(event.get("STAGE_ID") or event.get("STATUS_ID") or ""), "")
+        if dormant_group(stage) != "unknown":
+            return stage
+    return None
+
+
 def split_dormant_completions(rows):
     """Classify category-30 completions by the actual button/stage name.
 
@@ -1263,7 +1291,7 @@ def split_dormant_completions(rows):
         stage = norm_text(row.get("stage"))
         if "в производство" in stage:
             to_production.append(row)
-        elif "возврат" in stage and "потенциаль" not in stage:
+        elif "возврат" in stage and dormant_group(stage) == "unknown":
             to_returns.append(row)
     return to_production, to_returns
 
@@ -1362,7 +1390,9 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     returns_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "STAGE_ID": PROD_RETURN, ">=CLOSEDATE": iso(range_start), "<CLOSEDATE": iso(range_end)}, DEAL_SELECT)
     active_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
     production_at_start_task = client.deal_list({"CATEGORY_ID": PROD_CATEGORY, "<DATE_CREATE": iso(month_start)}, DEAL_SELECT)
-    dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, DEAL_SELECT)
+    comment_field = potential_return_field(meta)
+    dormant_select = list(dict.fromkeys(DEAL_SELECT + ([comment_field] if comment_field else [])))
+    dormant_task = client.deal_list({"CATEGORY_ID": DORMANT_CATEGORY, "CLOSED": "N"}, dormant_select)
     # «В производство» / «Возврат» are selected in the completion dialog.
     # Bitrix records that choice in stage history, then a card can be moved to
     # another funnel immediately, so filtering current/closed category-30
@@ -1425,6 +1455,10 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
     returns = convert(returns_raw)
     active = convert(active_raw)
     dormant = convert(dormant_raw, role="dormant")
+    raw_by_id = {str(d.get("ID")): d for d in dormant_raw}
+    for row in dormant:
+        row["potential_return_comment"] = raw_by_id.get(row["id"], {}).get(comment_field) if comment_field else None
+        row["potential_return_comment_available"] = bool(comment_field)
     dormant_entry_ids = set(history_owner_ids(dormant_funnel_entries(completed_dormant_flow_raw)))
     dormant_entered_since_month_start = [row for row in dormant if row["id"] in dormant_entry_ids]
     _, returned_history = split_dormant_completion_history(completed_dormant_period_raw, dormant_stage_labels)
@@ -1434,7 +1468,8 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
         production_stage_labels,
     )
     completed_to_production_history = unique_history_rows_by_owner(completed_to_production_history)
-    direct_to_production_history = unique_history_rows_by_owner(direct_to_production_history)
+    direct_to_production_history = unique_history_rows_by_owner(list(reversed(direct_to_production_history)))
+    dormant_to_return_history = unique_history_rows_by_owner(dormant_to_return_history)
 
     async def hydrate_completion_rows(history_rows):
         ids = history_owner_ids(history_rows)
@@ -1450,7 +1485,22 @@ async def load_production(client, month_key: str, period: str, meta: Dict[str, A
             row = prod_item(client, meta, deal, tz, month_start, next_start)
             row["stage"] = history_row.get("stage") or row["stage"]
             row["stage_id"] = (history_row.get("history") or {}).get("STAGE_ID") or row["stage_id"]
-            row["completion_at"] = (history_row.get("history") or {}).get("CREATED_TIME")
+            event = history_row.get("history") or {}
+            row["completion_at"] = event.get("CREATED_TIME")
+            direct = history_row.get("stage") == "Прямой перенос"
+            row["source_stage"] = dormant_source_stage(event, completed_dormant_flow_raw + dormant_to_production_target_history_raw, dormant_stage_labels, direct)
+            if not row["source_stage"] and not direct:
+                # The previous stage can predate the monthly history window.
+                # Fetch it by deal ID, never infer from the current stage.
+                try:
+                    earlier = await client.list_all("crm.stagehistory.list", {
+                        "entityTypeId": 2, "order": {"CREATED_TIME": "DESC", "ID": "DESC"},
+                        "filter": {"OWNER_ID": int(row["id"]), "CATEGORY_ID": DORMANT_CATEGORY, "<CREATED_TIME": event.get("CREATED_TIME")},
+                        "select": history_select,
+                    }, limit=50)
+                    row["source_stage"] = dormant_source_stage(event, earlier or [], dormant_stage_labels)
+                except Exception:
+                    pass
             out.append(row)
         return out
 

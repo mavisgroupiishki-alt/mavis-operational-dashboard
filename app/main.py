@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .bitrix import BitrixClient
+from .metrics import dormant_group
 from .bitrix_identity import BITRIX_SESSION_COOKIE, BitrixIdentity, application_token_fingerprint, director_ids, issue_session, portal_host, read_session
 from .metrics import DEAL_SELECT, F_DEAL_CLIENT_TYPE, F_SERVICE, build_snapshot, build_trends_light, derive_production_period, enum_label, filter_prod_details, filter_sales_details, money, month_bounds, parse_dt, period_bounds, production_weekly_dynamics, sales_block, source_name, user_name, week_of_month
 from .nps import NPS_GROUP_ID, aggregate_automatic_nps, automatic_nps_period
@@ -1675,6 +1676,55 @@ def _stuck_flow(month, details, observed_at=None):
         "exact_cohort": bool(baseline_ids),
     }
 
+def _stuck_breakdown(month, details, flow):
+    prod = (details or {}).get("production") or {}
+    baseline = storage.dormant_baseline(month)
+    ids = {str(value) for value in baseline.get("ids") or []}
+    def unique(rows):
+        return list({str(row.get("id")): row for row in rows if row.get("id")}.values())
+    current = unique(prod.get("dormant") or [])
+    def transitions(key):
+        rows = unique(prod.get(key) or [])
+        return [row for row in rows if not ids or str(row.get("id")) in ids]
+    to_prod = transitions("dormant_to_production")
+    to_return = transitions("dormant_to_return")
+    # Manually reconciled historical totals have no reliable group attribution.
+    legacy = baseline.get("confirmed_to_return_count") is not None or baseline.get("confirmed_to_production_count") is not None
+    def reasons(rows, key="stuck_reasons"):
+        acc = {}
+        for row in rows:
+            values = row.get(key) or ["Причина не указана"]
+            if not isinstance(values, list): values = [values]
+            names = set()
+            for value in values:
+                label = str(value).strip()
+                if not label: continue
+                if label.isupper(): label = label[:1] + label[1:].lower()
+                names.add(label)
+            for label in names or {"Причина не указана"}:
+                item = acc.setdefault(label, {"name": label, "count": 0, "amount": 0})
+                item["count"] += 1
+                item["amount"] += float(row.get("amount") or 0)
+        return sorted(acc.values(), key=lambda item: (-item["count"], item["name"]))
+    def totals(rows):
+        return {"count": len(rows), "amount": round(sum(float(r.get("amount") or 0) for r in rows), 2), "companies": len({r.get("company_id") for r in rows if r.get("company_id")}), "reasons": reasons(rows)}
+    def group(name):
+        rows = [r for r in current if name == "all" or dormant_group(r.get("stage")) == name]
+        a = [r for r in to_prod if name == "all" or dormant_group(r.get("source_stage")) == name]
+        b = [r for r in to_return if name == "all" or dormant_group(r.get("source_stage")) == name]
+        result = totals(rows)
+        result.update(to_production=totals(a), to_return=totals(b))
+        result["to_return"]["reasons"] = reasons(b, "return_reason")
+        if legacy:
+            result["to_production"]["count"] = flow["to_production_count"] if name == "all" else None
+            result["to_return"]["count"] = flow["to_returns_count"] if name == "all" else None
+        result["stages"] = [{"name": stage, **totals([r for r in rows if r.get("stage") == stage])} for stage in sorted({r.get("stage") or "Не указана" for r in rows})]
+        return result
+    potential = [r for r in current if str(r.get("stage") or "").strip().lower() == "потенциальный возврат"]
+    return {**{name: group(name) for name in ("all", "active", "inactive", "unknown")},
+            "legacy": legacy, "potential": [{k: r.get(k) for k in ("id", "title", "company", "service", "expert", "amount", "url", "stuck_reasons", "potential_return_comment", "potential_return_comment_available")} for r in potential]}
+
+
 def _apply_runtime(snap, details, month, compact=False):
     if compact:
         # The hub only needs a handful of sales metrics.  Copy just the path
@@ -1718,6 +1768,8 @@ def _apply_runtime(snap, details, month, compact=False):
     p['weekly']=production_weekly_dynamics(list(prod_details.get('closed') or []),month_start)
     all_rows=list(prod_details.get('dormant') or [])
     p['stuck_flow'] = _stuck_flow(month, details)
+    if not compact:
+        p['stuck_breakdown'] = _stuck_breakdown(month, details, p['stuck_flow'])
     # Управленческий показатель «Зависшие» считается только из карточек,
     # чья предполагаемая дата закрытия попадает в выбранный период.
     expected_rows=list(prod_details.get('dormant_expected') or [])
